@@ -21,7 +21,7 @@
 - 订单内「记一场」默认导入截图，可切换手工填写，始终共用同一份结果。截图导入后改为手填仍校对同一张图，不再生成重复流水；核对本场结果及假账扣除后入账，仍停在原订单。
 - 原图长期保存到私有 OSS；所有 OCR 行、识别文本、人工校对结果和订单账本保存到 PostgreSQL，并自动归档到 OSS，按账号隔离。可查看原图、重新识别、改正记录和手动删除。
 
-账号、老板资料及备注、订单、个人模板和每场记录通过 API 保存于服务端数据库，等待保存成功后才更新界面；同一账号在独立客户端重新登录后可查看。本地只保留外观、关闭方式与快捷键偏好，以及登录会话。0.9.10 正式安装包连接 `https://pwtools.liukersun.com/api`，开发环境默认使用本机服务。邮箱仅作为登录标识，当前没有邮箱验证、找回密码或支付流程。
+账号、老板资料及备注、订单、个人模板和每场记录通过 API 保存于服务端数据库，等待保存成功后才更新界面；同一账号在独立客户端重新登录后可查看。本地只保留外观、关闭方式与快捷键偏好，以及登录会话。0.9.11 正式安装包连接 `https://pwtools.liukersun.com/api`，开发环境默认使用本机服务。邮箱仅作为登录标识，当前没有邮箱验证、找回密码或支付流程。
 
 ## 技术选型
 
@@ -160,7 +160,7 @@ npm run build
 npm run package:win
 ```
 
-Windows 安装包生成在 `apps/desktop/release/`，当前版本的文件名为 `PWTools-Setup-0.9.10.exe`，应用可执行文件为 `PWTools.exe`，卸载程序为 `Uninstall-PWTools.exe`。文件与默认安装路径均不带空格；默认安装到 `%LOCALAPPDATA%\Programs\PWToolsNative`，与旧 Electron 客户端分开。程序文件位于 `apps/desktop/release/native-win-x64/`。安装包不包含 Docker 后端或数据库，正式版通过 HTTPS 访问已部署的 API。[本地安装包](apps/desktop/release/PWTools-Setup-0.9.10.exe)。安装包保留在本地。
+Windows 安装包生成在 `apps/desktop/release/`，当前版本的文件名为 `PWTools-Setup-0.9.11.exe`，应用可执行文件为 `PWTools.exe`，卸载程序为 `Uninstall-PWTools.exe`。文件与默认安装路径均不带空格；默认安装到 `%LOCALAPPDATA%\Programs\PWToolsNative`，与旧 Electron 客户端分开。程序文件位于 `apps/desktop/release/native-win-x64/`。安装包不包含 Docker 后端或数据库，正式版通过 HTTPS 访问已部署的 API。[本地安装包](apps/desktop/release/PWTools-Setup-0.9.11.exe)。安装包保留在本地。
 
 制作安装包需要 NSIS 3 的 `makensis.exe`，可安装到默认位置或加入 `PATH`；脚本也可复用本机既有的 NSIS 缓存。当前未配置 Windows 代码签名。
 
@@ -257,6 +257,8 @@ cargo run --manifest-path services/api/Cargo.toml --bin pwtools-api
 本机 Rust 开发需要单独启动 OCR 才能自动识别；Compose 默认不向宿主机映射 OCR，按照 [OCR 开发说明](services/ocr/README.md) 启动本机服务。没有 OCR 时仍能保存原图和人工校对。
 
 ## 检查与测试
+
+0.9.11 调整老板详情页顶部操作：返回所有老板固定在左侧，导入战绩和刷新集中在右侧；窄屏时操作组换行，保持原有顺序。类型检查、安装包构建与 2 项打包版订单展开回归通过；在 1320、760、390 像素宽度下检查位置和溢出，并验证返回与刷新仍正常。
 
 0.9.10 将快捷导入改为屏幕框选截图，框选与编辑界面复用 MIT 许可的 [react-screenshots 0.6.1](https://github.com/nashaofu/screenshots)。通过现有草稿与保存检查后先最小化主窗口，框选并确认后才恢复窗口并打开订单选择；Esc、右键或超时取消，不上传。选区 PNG 在内存中生成，不读写剪贴板，选择订单后沿用现有识别与入账流程。取消截图保留原有表单和窗口状态，截图过程中阻止重复触发及退出。组件许可证随安装包的第三方声明一起提供。
 

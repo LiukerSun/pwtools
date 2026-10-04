@@ -3,7 +3,7 @@ Unicode true
 !include "LogicLib.nsh"
 !include "x64.nsh"
 
-!define PRODUCT_VERSION "0.9.10"
+!define PRODUCT_VERSION "0.9.11"
 !define PAYLOAD_DIR "${__FILEDIR__}\..\release\native-win-x64"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\PWToolsNative"
 Name "PWTools"
@@ -15,7 +15,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 BrandingText "PWTools"
-VIProductVersion "0.9.10.0"
+VIProductVersion "0.9.11.0"
 VIAddVersionKey /LANG=1033 "ProductName" "PWTools"
 VIAddVersionKey /LANG=1033 "FileDescription" "PWTools setup"
 VIAddVersionKey /LANG=1033 "FileVersion" "${PRODUCT_VERSION}"

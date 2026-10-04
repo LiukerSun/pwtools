@@ -244,7 +244,13 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
         })}</tbody></table> : <div className="ledger-list-empty"><Search size={25} /><strong>{listError ? '老板数据暂时未加载' : '没有符合条件的老板'}</strong>{!listError && <button onClick={() => { setSearch(''); setFilter('all'); }}>查看全部老板</button>}</div>}
 
       </section> : <section className="ledger-detail" aria-label="老板详情与订单" aria-busy={detailLoading}>
-        <div className="ledger-detail-navigation">{onRequestImport && <Button variant="default" size="xs" leftSection={<FileImage size={14} />} disabled={navigationBusy} onClick={onRequestImport}>导入战绩</Button>}<Button variant="subtle" size="xs" leftSection={<ArrowLeft size={14} />} disabled={navigationBusy} onClick={() => { pendingAnchor.current = null; setSelectedId(null); setExpandedOrderId(null); setCompletedOpen(false); }}>返回所有老板</Button><Button variant="subtle" size="xs" aria-label="刷新老板订单" leftSection={<RefreshCw size={13} />} disabled={navigationBusy || detailLoading} onClick={refreshLedger}>刷新</Button></div>
+        <div className="ledger-detail-navigation">
+          <Button variant="subtle" size="xs" leftSection={<ArrowLeft size={14} />} disabled={navigationBusy} onClick={() => { pendingAnchor.current = null; setSelectedId(null); setExpandedOrderId(null); setCompletedOpen(false); }}>返回所有老板</Button>
+          <div className="ledger-detail-actions">
+            {onRequestImport && <Button variant="default" size="xs" leftSection={<FileImage size={14} />} disabled={navigationBusy} onClick={onRequestImport}>导入战绩</Button>}
+            <Button variant="subtle" size="xs" aria-label="刷新老板订单" leftSection={<RefreshCw size={13} />} disabled={navigationBusy || detailLoading} onClick={refreshLedger}>刷新</Button>
+          </div>
+        </div>
         {!currentBoss && detailLoading ? <div className="ledger-loading ledger-detail-loading" role="status"><Loader size="sm" /><span>加载中…</span></div> : <>
           {detailError && <Alert color="red" title="老板订单未加载">{detailError}<Button variant="subtle" color="red" size="xs" onClick={refreshLedger}>重新加载</Button></Alert>}
           {currentBoss && <>

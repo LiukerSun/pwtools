@@ -304,7 +304,9 @@
 .ledger-onboarding h2 { font-size: 20px; margin-top: 18px; }
 .ledger-onboarding > .mantine-Button-root { margin-top: 20px; }
 .ledger-detail { gap: 14px; }
-.ledger-detail-navigation { justify-content: space-between; gap: 8px; }
+.ledger-detail-navigation { justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.ledger-detail-navigation > button { flex-shrink: 0; }
+.ledger-detail-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
 .ledger-boss-header.ledger-boss-header-compact { border: 0; background: transparent; padding: 0 2px; border-radius: 0; align-items: center; }
 .ledger-boss-header-compact h2 { font-size: 20px; }
 .ledger-boss-header-compact .ledger-boss-identifiers { margin-top: 4px; gap: 4px 12px; }
