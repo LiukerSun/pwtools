@@ -1,0 +1,7 @@
+target
+.env
+.env.*
+*.log
+*.backup
+*.dump
+*.sql.gz

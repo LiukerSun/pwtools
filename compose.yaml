@@ -1,0 +1,64 @@
+name: pwtools
+services:
+  postgres:
+    image: postgres:18-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pwtools
+      POSTGRES_USER: pwtools
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Copy .env.example to .env and set a password}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pwtools -d pwtools"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  api:
+    build:
+      context: ./services/api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://pwtools:${POSTGRES_PASSWORD}@postgres:5432/pwtools
+      API_HOST: 0.0.0.0
+      API_PORT: 8080
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-}
+      RUST_LOG: ${RUST_LOG:-info,tower_http=info}
+      OCR_URL: http://ocr:8090
+      OSS_REGION: ${OSS_REGION:-cn-beijing}
+      OSS_ENDPOINT: ${OSS_ENDPOINT:-oss-cn-beijing.aliyuncs.com}
+      OSS_BUCKET: ${OSS_BUCKET:?Set OSS_BUCKET in .env}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:?Set OSS_ACCESS_KEY_ID in .env}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:?Set OSS_ACCESS_KEY_SECRET in .env}
+      OSS_PREFIX: ${OSS_PREFIX:-pwtools}
+      OSS_SECURITY_TOKEN: ${OSS_SECURITY_TOKEN:-}
+    ports:
+      - "${API_BIND_IP:-127.0.0.1}:${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ocr:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+  ocr:
+    build:
+      context: ./services/ocr
+    restart: unless-stopped
+    expose:
+      - "8090"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+volumes:
+  postgres_data:

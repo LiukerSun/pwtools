@@ -1,0 +1,40 @@
+[package]
+name = "pwtools-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+default-run = "pwtools-api"
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.5"
+axum = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+hmac = "0.12"
+md-5 = "0.10"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+percent-encoding = "2"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+

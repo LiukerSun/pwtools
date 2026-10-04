@@ -1,0 +1,103 @@
+import { expect, test } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, join, resolve, sep } from 'node:path';
+import { NativeApplication } from './native-helpers';
+
+test('原生客户端四类订单、模板、中文日期与深浅主题布局', async () => {
+  test.setTimeout(150_000);
+  const directory = await mkdtemp(join(tmpdir(), 'pwtools-native-layout-'));
+  let app: NativeApplication | undefined;
+  try {
+    app = await NativeApplication.launch(directory);
+    const page = app.page;
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.name));
+    await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+    const context = await page.evaluate(async id => {
+      const api = window.pwtools!;
+      await api.register({ email: `native-layout-${id}@example.test`, password: `Test-${id}!` });
+      const boss = await api.createBoss({ display_name: '小桃老板', game_id: 'boss-001', game_name: '小桃知晚', notes: '晚上 22:00 后上线。' });
+      const create = (title: string, kind: 'hourly' | 'escort' | 'single_round' | 'wager', target: number, extra = {}) => api.createOrder(boss.id, { title, kind, target_quantity: target, failure_default_quantity: 0, note: '', ...extra });
+      const hourly = await create('晚间陪玩', 'hourly', 180);
+      const escort = await create('航天基地护航', 'escort', 5000000, { failure_trigger: 'failed_below_standard', failure_standard_quantity: 1000000, failure_mode: 'manual', failure_default_quantity: 500000 });
+      const single = await create('单场带出 100 万', 'single_round', 1000000);
+      const wager = await create('非洲之心对赌', 'wager', 1, { wager_item_name: '非洲之心', wager_item_id: null, wager_condition: 'appearance', wager_expected: 'obtained' });
+      const template = await api.createOrderTemplate({ name: '晚间护航', title: '航天基地护航', kind: 'escort', target_quantity: 5000000, failure_default_quantity: 500000, failure_trigger: 'failed_below_standard', failure_standard_quantity: 1000000, failure_mode: 'manual', note: '按原图核对假账。' });
+      await api.createBoss({ display_name: '团团老板', game_id: 'boss-002', game_name: '团团吃大饼', notes: '周日上线。' });
+      return { hourly, escort, single, wager, template };
+    }, randomUUID());
+    await page.reload();
+    await page.getByRole('button', { name: '查看小桃老板订单', exact: true }).click();
+    const order = (title: string) => page.getByRole('article', { name: `${title}订单`, exact: true });
+    await expect(page.getByRole('region', { name: '进行中订单', exact: true }).getByRole('article')).toHaveCount(4);
+    await mkdir('.artifacts', { recursive: true });
+    await page.screenshot({ path: '.artifacts/native-orders-dark.png' });
+    await order('晚间陪玩').getByRole('button', { name: '记一场', exact: true }).click();
+    let round = page.getByRole('dialog', { name: '记一场', exact: true });
+    await round.getByLabel('本次陪玩时长分钟', { exact: true }).fill('45');
+    await round.locator('.round-supplement > summary').click();
+    await round.getByLabel('场次时间', { exact: true }).click();
+    const picker = page.getByRole('dialog', { name: '选择场次时间', exact: true });
+    await picker.getByRole('button', { name: '现在', exact: true }).click();
+    await picker.getByLabel('小时', { exact: true }).fill('22');
+    await picker.getByLabel('分钟', { exact: true }).fill('00');
+    await page.screenshot({ path: '.artifacts/native-calendar-dark.png' });
+    await page.keyboard.press('Escape');
+    await expect(picker).toBeHidden(); await expect(round).toBeVisible();
+    await round.getByLabel('备注', { exact: true }).fill('原生客户端记 45 分钟');
+    await round.getByRole('button', { name: '确认入账', exact: true }).click();
+    await expect(round).toHaveCount(0);
+    const hourly = await page.evaluate(id => window.pwtools!.listLedgerEntries(id), context.hourly.id);
+    expect(hourly.items).toHaveLength(1); expect(hourly.items[0].quantity).toBe(45);
+    expect(new Date(hourly.items[0].occurred_at).getUTCHours()).toBe(14);
+
+    await page.getByRole('button', { name: '新建订单', exact: true }).click();
+    const create = page.getByRole('dialog', { name: '新建订单', exact: true });
+    await create.getByLabel('个人模板', { exact: true }).click();
+    await page.getByRole('option', { name: '晚间护航 · 护航单', exact: true }).click();
+    await expect(create.getByLabel(/^约定带出金额/)).toHaveValue('5,000,000');
+    await create.getByLabel(/^订单名称/).fill('模板新开护航');
+    await create.getByRole('button', { name: '创建订单', exact: true }).click();
+    await expect(create).toHaveCount(0); await expect(order('模板新开护航')).toBeVisible();
+    const changed = await page.evaluate(async id => {
+      const api = window.pwtools!;
+      const original = (await api.listOrderTemplates()).items.find(item => item.id === id)!;
+      const { id: _id, created_at: _created, updated_at: _updated, ...defaults } = original;
+      const updated = await api.updateOrderTemplate(id, { ...defaults, name: '晚间护航新版', failure_default_quantity: 600000 });
+      await api.deleteOrderTemplate(id);
+      return { changed: updated.failure_default_quantity, templates: await api.listOrderTemplates(), catalog: await api.listCatalog({ q: '非洲之心', page_size: 5 }) };
+    }, context.template.id);
+    expect(changed.changed).toBe(600000); expect(changed.templates.items).toHaveLength(0);
+    expect(changed.catalog.items.length).toBeGreaterThan(0);
+
+    await page.getByRole('navigation').getByRole('button', { name: '设置', exact: true }).click();
+    await page.locator('label').filter({ hasText: '浅色' }).click();
+    await page.getByRole('navigation').getByRole('button', { name: '老板账本', exact: true }).click();
+    await page.getByRole('button', { name: '查看小桃老板订单', exact: true }).click();
+    await app.setSize(960, 760);
+    await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight }))).toEqual({ width: 960, height: 760 });
+    await page.getByRole('button', { name: '收起侧栏', exact: true }).click();
+    await expect(page.locator('.page-main')).toBeVisible();
+    expect(await page.locator('.page-main').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
+    await page.screenshot({ path: '.artifacts/native-orders-light-960.png' });
+    await order('晚间陪玩').getByRole('button', { name: '记一场', exact: true }).click();
+    round = page.getByRole('dialog', { name: '记一场', exact: true });
+    await round.locator('.round-supplement > summary').click();
+    await round.getByLabel('场次时间', { exact: true }).click();
+    await picker.getByRole('button', { name: '现在', exact: true }).click();
+    await expect(picker).toBeInViewport({ ratio: 1 });
+    await expect(picker.getByRole('button', { name: '确定时间', exact: true })).toBeInViewport({ ratio: 1 });
+    await picker.getByLabel('小时', { exact: true }).fill('21');
+    await picker.getByLabel('分钟', { exact: true }).fill('00');
+    await page.screenshot({ path: '.artifacts/native-calendar-light-960.png', animations: 'disabled', timeout: 10000 });
+    await page.keyboard.press('Escape');
+    await round.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('dialog', { name: '尚有未保存结果', exact: true }).getByRole('button', { name: '放弃修改', exact: true }).click();
+    expect(errors).toEqual([]);
+  } finally {
+    await app?.close().catch(() => {});
+    if (resolve(directory).startsWith(resolve(tmpdir()) + sep) && basename(directory).startsWith('pwtools-native-layout-')) await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  }
+});

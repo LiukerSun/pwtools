@@ -1,0 +1,9 @@
+[Unit]
+Description=PWTools database backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/pwtools/deploy/backup-database.sh
+UMask=0077

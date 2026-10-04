@@ -1,0 +1,12 @@
+rapidocr==3.9.2
+onnxruntime==1.23.2
+numpy==2.2.6
+opencv-python==4.11.0.86
+shapely==2.1.2
+PyYAML==6.0.3
+pyclipper==1.4.0
+pillow==12.3.0
+fastapi==0.135.1
+starlette==0.52.1
+pydantic==2.12.5
+uvicorn==0.42.0

@@ -1,0 +1,22 @@
+.date-time-field-input { cursor: pointer; text-align: left; font-variant-numeric: tabular-nums; }
+.date-time-field-input:not(:disabled):hover { border-color: var(--border-strong); }
+.date-time-field-input:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.date-time-field .mantine-Input-section { color: var(--subtle); }
+.date-time-popover.mantine-Popover-dropdown { padding: 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); max-width: calc(100vw - 24px); max-height: calc(100dvh - 80px); overflow-y: auto; }
+.date-time-popover .mantine-DateTimePicker-calendarHeaderControl, .date-time-popover .mantine-DateTimePicker-calendarHeaderLevel { color: var(--text); }
+.date-time-popover .mantine-DateTimePicker-calendarHeaderControl:hover, .date-time-popover .mantine-DateTimePicker-calendarHeaderLevel:hover { background: var(--hover); }
+.date-time-popover .mantine-DateTimePicker-weekday { color: var(--subtle); font-size: 12px; }
+.date-time-popover .mantine-DateTimePicker-day { color: var(--text); border-radius: 5px; }
+.date-time-popover .mantine-DateTimePicker-day[data-outside] { color: var(--subtle); }
+.date-time-popover .mantine-DateTimePicker-day:not([data-selected]):not(:disabled):hover { background: var(--hover); }
+.date-time-popover .mantine-DateTimePicker-day[data-selected] { color: var(--primary-ink); background: var(--blue); }
+.date-time-popover .mantine-DateTimePicker-presetButton { color: var(--blue); font-size: 12px; }
+.date-time-time-row { align-items: end; border-top: 1px solid var(--border); padding-top: 11px; margin-top: 8px; }
+.date-time-time-row .mantine-InputWrapper-label { color: var(--subtle); font-size: 12px; }
+.date-time-time-row .mantine-Input-input { background: var(--input); color: var(--text); border-color: var(--border); }
+.date-time-time-row .mantine-TimePicker-field { color: var(--text); font-variant-numeric: tabular-nums; }
+.date-time-confirm.mantine-ActionIcon-root { color: var(--blue); border-color: var(--border-strong); background: var(--input); }
+.date-time-confirm.mantine-ActionIcon-root:not(:disabled):hover { background: var(--blue-soft); }
+.date-time-popover button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+@media (max-width: 760px) { .date-time-popover.mantine-Popover-dropdown { padding: 9px; } }
+@media (prefers-reduced-motion: reduce) { .date-time-field *, .date-time-popover { transition: none !important; animation: none !important; } }

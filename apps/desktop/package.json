@@ -1,0 +1,35 @@
+{
+  "name": "@pwtools/desktop",
+  "version": "0.9.4",
+  "private": true,
+  "description": "PWTools 私人老板与订单账本",
+  "author": "PWTools",
+  "scripts": {
+    "dev": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ../../scripts/native-dev.ps1",
+    "dev:web": "vite --config vite.web.config.ts",
+    "typecheck": "tsc --noEmit",
+    "build:renderer": "vite build --config vite.native.config.ts",
+    "build": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ../../scripts/native-build.ps1",
+    "package:win": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ../../scripts/native-package.ps1",
+    "package:dir": "npm run build"
+  },
+  "dependencies": {
+    "@mantine/core": "^9.6.3",
+    "@mantine/dates": "9.6.3",
+    "@mantine/form": "^9.6.3",
+    "@mantine/hooks": "^9.6.3",
+    "@mantine/notifications": "^9.6.3",
+    "dayjs": "1.11.23",
+    "lucide-react": "^0.468.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6"
+  }
+}

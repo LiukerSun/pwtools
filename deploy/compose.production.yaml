@@ -1,0 +1,69 @@
+name: pwtools
+services:
+  postgres:
+    image: postgres:18.3-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pwtools
+      POSTGRES_USER: pwtools
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a database password}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pwtools -d pwtools"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 384m
+  api:
+    image: pwtools-api:0.9.4
+    build: ../services/api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://pwtools:${POSTGRES_PASSWORD}@postgres:5432/pwtools
+      API_HOST: 0.0.0.0
+      API_PORT: 8080
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://pwtools.liukersun.com}
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-172.30.94.1}
+      RUST_LOG: info,tower_http=info
+      OCR_URL: http://ocr:8090
+      OSS_REGION: ${OSS_REGION:?Set OSS region}
+      OSS_ENDPOINT: ${OSS_ENDPOINT:?Set OSS endpoint}
+      OSS_BUCKET: ${OSS_BUCKET:?Set OSS bucket}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:?Set OSS access key}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:?Set OSS secret}
+      OSS_PREFIX: ${OSS_PREFIX:-pwtools}
+      OSS_SECURITY_TOKEN: ${OSS_SECURITY_TOKEN:-}
+    ports: ["127.0.0.1:8187:8080"]
+    networks: [backend]
+    depends_on:
+      postgres: { condition: service_healthy }
+      ocr: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    mem_limit: 640m
+  ocr:
+    image: pwtools-ocr:0.9.4
+    build: ../services/ocr
+    restart: unless-stopped
+    expose: ["8090"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+    mem_limit: 768m
+    cpus: 1.5
+networks:
+  backend:
+    ipam:
+      config: [{ subnet: 172.30.94.0/24, gateway: 172.30.94.1 }]
+volumes:
+  postgres_data:
