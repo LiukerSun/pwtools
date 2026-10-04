@@ -1,6 +1,5 @@
 pub mod account_archive;
 mod auth;
-pub mod catalog;
 mod error;
 mod ledger;
 mod matches;
@@ -8,6 +7,7 @@ mod model;
 mod ocr;
 mod order_templates;
 mod rate_limit;
+mod retired_fields;
 pub mod storage;
 pub mod storage_migration;
 mod validation;
@@ -115,7 +115,6 @@ pub fn router(state: AppState, allowed_origins: Vec<HeaderValue>) -> Router {
         .route("/api/health", get(health))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/me", get(auth::me))
-        .route("/api/catalog/items", get(catalog::list_catalog))
         .route(
             "/api/order-templates",
             get(order_templates::list).post(order_templates::create),

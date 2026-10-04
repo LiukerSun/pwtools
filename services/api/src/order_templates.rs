@@ -16,7 +16,7 @@ use crate::{
     AppState,
     auth::AuthenticatedUser,
     error::{ApiError, ApiJson},
-    ledger::{OrderInput, clean_configuration},
+    ledger::{OrderInput, clean_configuration, supported_kind},
 };
 
 // A flat wire format reuses the strict order DTO without serde flatten/deny-unknown ambiguity.
@@ -69,7 +69,7 @@ pub struct OrderTemplate {
 pub struct TemplateList {
     items: Vec<OrderTemplate>,
 }
-const COLUMNS: &str = "id,name,title,kind,target_quantity,failure_default_quantity,note,failure_trigger,failure_standard_quantity,failure_mode,wager_item_id,wager_item_name,wager_expected,wager_condition,created_at,updated_at";
+const COLUMNS: &str = "id,name,title,kind,target_quantity,failure_default_quantity,note,failure_trigger,failure_standard_quantity,failure_mode,created_at,updated_at";
 fn missing() -> ApiError {
     ApiError::new(
         StatusCode::NOT_FOUND,
@@ -101,7 +101,7 @@ pub async fn list(
     session: AuthenticatedUser,
 ) -> Result<Json<TemplateList>, ApiError> {
     let items = sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM order_templates WHERE user_id=$1 ORDER BY updated_at DESC,id DESC"
+        "SELECT {COLUMNS} FROM order_templates WHERE user_id=$1 AND kind IN ('hourly','escort','single_round') ORDER BY updated_at DESC,id DESC"
     ))
     .bind(session.user.id)
     .fetch_all(&state.pool)
@@ -115,10 +115,10 @@ pub async fn create(
     ApiJson(input): ApiJson<TemplateInput>,
 ) -> Result<(StatusCode, Json<OrderTemplate>), ApiError> {
     let name = clean_name(input.name)?;
-    let c = clean_configuration(input.configuration, None)?;
-    let template=sqlx::query_as(&format!("INSERT INTO order_templates(id,user_id,name,title,kind,target_quantity,failure_default_quantity,note,failure_trigger,failure_standard_quantity,failure_mode,wager_item_id,wager_item_name,wager_expected,wager_condition) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING {COLUMNS}"))
+    let c = clean_configuration(input.configuration)?;
+    let template=sqlx::query_as(&format!("INSERT INTO order_templates(id,user_id,name,title,kind,target_quantity,failure_default_quantity,note,failure_trigger,failure_standard_quantity,failure_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING {COLUMNS}"))
         .bind(Uuid::new_v4()).bind(session.user.id).bind(name).bind(c.title).bind(c.kind).bind(c.target_quantity).bind(c.failure_default_quantity).bind(c.note)
-        .bind(c.failure_trigger).bind(c.failure_standard_quantity).bind(c.failure_mode).bind(c.wager_item_id).bind(c.wager_item_name).bind(c.wager_expected).bind(c.wager_condition)
+        .bind(c.failure_trigger).bind(c.failure_standard_quantity).bind(c.failure_mode)
         .fetch_one(&state.pool).await.map_err(|_|ApiError::internal("order template creation failed"))?;
     Ok((StatusCode::CREATED, Json(template)))
 }
@@ -144,18 +144,11 @@ pub async fn update(
     .map_err(|_| ApiError::internal("order template lookup failed"))?
     .ok_or_else(missing)?;
     let name = clean_name(input.name)?;
-    let old_config = &old.configuration;
-    let c = clean_configuration(
-        input.configuration,
-        Some((
-            old_config.kind.as_str(),
-            old_config.wager_item_id.as_deref(),
-            old_config.wager_item_name.as_str(),
-        )),
-    )?;
-    let template=sqlx::query_as(&format!("UPDATE order_templates SET name=$3,title=$4,kind=$5,target_quantity=$6,failure_default_quantity=$7,note=$8,failure_trigger=$9,failure_standard_quantity=$10,failure_mode=$11,wager_item_id=$12,wager_item_name=$13,wager_expected=$14,wager_condition=$15,updated_at=now() WHERE user_id=$1 AND id=$2 RETURNING {COLUMNS}"))
+    supported_kind(&old.configuration.kind)?;
+    let c = clean_configuration(input.configuration)?;
+    let template=sqlx::query_as(&format!("UPDATE order_templates SET name=$3,title=$4,kind=$5,target_quantity=$6,failure_default_quantity=$7,note=$8,failure_trigger=$9,failure_standard_quantity=$10,failure_mode=$11,updated_at=now() WHERE user_id=$1 AND id=$2 RETURNING {COLUMNS}"))
         .bind(session.user.id).bind(id).bind(name).bind(c.title).bind(c.kind).bind(c.target_quantity).bind(c.failure_default_quantity).bind(c.note)
-        .bind(c.failure_trigger).bind(c.failure_standard_quantity).bind(c.failure_mode).bind(c.wager_item_id).bind(c.wager_item_name).bind(c.wager_expected).bind(c.wager_condition)
+        .bind(c.failure_trigger).bind(c.failure_standard_quantity).bind(c.failure_mode)
         .fetch_one(&mut *tx).await.map_err(|_|ApiError::internal("order template update failed"))?;
     tx.commit()
         .await
@@ -168,15 +161,33 @@ pub async fn delete(
     path: Result<Path<Uuid>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
     let id = path_id(path)?;
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("order template deletion transaction failed"))?;
+    let kind: String = sqlx::query_scalar(
+        "SELECT kind FROM order_templates WHERE user_id=$1 AND id=$2 FOR UPDATE",
+    )
+    .bind(session.user.id)
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("order template lookup failed"))?
+    .ok_or_else(missing)?;
+    supported_kind(&kind)?;
     let result = sqlx::query("DELETE FROM order_templates WHERE user_id=$1 AND id=$2")
         .bind(session.user.id)
         .bind(id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::internal("order template deletion failed"))?;
     if result.rows_affected() == 0 {
         return Err(missing());
     }
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("order template deletion commit failed"))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -192,8 +203,8 @@ mod tests {
             clean_name(parsed.name).unwrap_or_else(|_| panic!("valid name")),
             "常用小时"
         );
-        let config = clean_configuration(parsed.configuration, None)
-            .unwrap_or_else(|_| panic!("no boss needed"));
+        let config =
+            clean_configuration(parsed.configuration).unwrap_or_else(|_| panic!("no boss needed"));
         assert_eq!(config.title, "两小时");
         assert_eq!(config.note, "约定");
         assert_eq!(config.failure_trigger, "failed");
@@ -204,5 +215,27 @@ mod tests {
         assert!(clean_name(" ".into()).is_err());
         assert!(clean_name("x".repeat(81)).is_err());
         assert!(clean_name("bad\nname".into()).is_err());
+    }
+
+    #[test]
+    fn neutral_released_fields_are_accepted_but_never_returned() {
+        let mut wire = json!({"name":"旧版小时模板","title":"两小时","kind":"hourly","target_quantity":120,"failure_default_quantity":0,"note":"","wager_item_id":null,"wager_item_name":"","wager_expected":"obtained","wager_condition":"appearance"});
+        let parsed: TemplateInput = serde_json::from_value(wire.clone()).expect("released DTO");
+        let configuration = clean_configuration(parsed.configuration)
+            .unwrap_or_else(|_| panic!("neutral compatibility"));
+        let result = serde_json::to_value(configuration).expect("configuration response");
+        assert!(
+            result
+                .as_object()
+                .expect("object")
+                .keys()
+                .all(|key| !key.starts_with("wager_") && !key.starts_with("retired_"))
+        );
+        wire["wager_item_name"] = json!("非中性物品配置");
+        let parsed: TemplateInput = serde_json::from_value(wire).expect("known released field");
+        match clean_configuration(parsed.configuration) {
+            Err(error) => assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY),
+            Ok(_) => panic!("retired field must never restore product behavior"),
+        }
     }
 }

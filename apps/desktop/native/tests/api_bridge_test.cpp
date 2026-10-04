@@ -221,7 +221,6 @@ void Run(const std::filesystem::path& directory) {
     {"createOrderTemplate", Json::array({order_template}), "POST", "/api/order-templates"},
     {"updateOrderTemplate", Json::array({id, order_template}), "PATCH", "/api/order-templates/" + id},
     {"deleteOrderTemplate", Json::array({id}), "DELETE", "/api/order-templates/" + id},
-    {"listCatalog", Json::array({Json{{"q", "海洋之泪"}, {"category", "collection"}, {"page", 2}, {"page_size", 40}}}), "GET", "/api/catalog/items?q=%E6%B5%B7%E6%B4%8B%E4%B9%8B%E6%B3%AA&category=collection&page=2&page_size=40"},
     {"listLedgerEntries", Json::array({id}), "GET", "/api/orders/" + id + "/entries?page=1&page_size=20"},
     {"addLedgerEntry", Json::array({id, entry}), "POST", "/api/orders/" + id + "/entries"},
     {"deleteLedgerEntry", Json::array({id, other_id}), "DELETE", "/api/orders/" + id + "/entries/" + other_id},
@@ -243,6 +242,13 @@ void Run(const std::filesystem::path& directory) {
   Reject([&] { bridge.Execute("listBosses", Json::array({std::string(201, 'x')})); }, "INVALID_INPUT");
   Reject([&] { bridge.Execute("createBoss", Json::array({Json::array()})); }, "INVALID_INPUT");
   Reject([&] { bridge.Execute("createOrder", Json::array({id, Json{{"title", "x"}}})); }, "INVALID_INPUT");
+  Json retired_order = order; retired_order["kind"] = "wager";
+  Reject([&] { bridge.Execute("createOrder", Json::array({id, retired_order})); }, "INVALID_INPUT");
+  retired_order["name"] = "旧类型模板";
+  Reject([&] { bridge.Execute("createOrderTemplate", Json::array({retired_order})); }, "INVALID_INPUT");
+  Json retired_entry = entry; retired_entry["kind"] = "item_result";
+  Reject([&] { bridge.Execute("addLedgerEntry", Json::array({id, retired_entry})); }, "INVALID_INPUT");
+  Reject([&] { bridge.Execute("listCatalog", Json::array()); }, "INVALID_METHOD");
   for (const auto malformed : {"", "A===", "AAAA=", "AR==", "!!!="}) Reject([&] { bridge.Execute("uploadMatch", Json::array({Json{{"name", "x.png"}, {"content_type", "image/png"}, {"data_base64", malformed}}})); }, "INVALID_IMAGE");
   Reject([&] { bridge.Execute("uploadMatch", Json::array({Json{{"name", "x.svg"}, {"content_type", "image/svg+xml"}, {"data_base64", "AQID"}}})); }, "INVALID_IMAGE");
   fixture.RedirectNext(); Reject([&] { bridge.Execute("health", Json::array()); }, "NETWORK_ERROR");

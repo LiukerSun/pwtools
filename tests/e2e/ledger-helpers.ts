@@ -54,7 +54,7 @@ export async function selectOption(page: Page, input: Locator, name: string | Re
   await page.getByRole('option', { name, exact: typeof name === 'string' }).click();
 }
 
-const labels: Record<OrderKind, string> = { hourly: '小时单', escort: '护航单', single_round: '单局单', wager: '对赌单' };
+const labels: Record<OrderKind, string> = { hourly: '小时单', escort: '护航单', single_round: '单局单' };
 
 export async function createOrder(page: Page, title: string, kind: OrderKind, configure: (dialog: Locator) => Promise<void>): Promise<ServiceOrder> {
   await page.getByRole('button', { name: '新建订单', exact: true }).click();

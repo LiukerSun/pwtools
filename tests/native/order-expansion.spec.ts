@@ -16,8 +16,7 @@ function emptyOrder(kind: OrderKind): ServiceOrder {
     id: orderId, boss_id: bossId, boss_name: '未开局老板', boss_game_name: '未开局老板',
     title: '尚未开局订单', kind, target_quantity: quantity, failure_default_quantity: 0,
     failure_trigger: 'failed', failure_standard_quantity: 0, failure_mode: 'manual',
-    wager_item_id: null, wager_item_name: '', wager_expected: 'obtained', wager_condition: 'appearance',
-    note: '', configuration_locked: false, best_round_quantity: 0, settlement_result: null,
+    note: '', configuration_locked: false, best_round_quantity: 0,
     completed_quantity: 0, failure_quantity: 0, adjustment_quantity: 0, total_quantity: quantity,
     remaining_quantity: quantity, excess_quantity: 0, status: 'active', record_count: 0,
     created_at: '2026-10-04T02:01:00Z', updated_at: timestamp,
@@ -47,7 +46,7 @@ for (const kind of ['hourly', 'escort'] as const) {
         id: bossId, display_name: '未开局老板', game_id: 'empty-history', game_name: '未开局老板', notes: '',
         active_order_count: 2, remaining_minutes: kind === 'hourly' ? 240 : 0,
         remaining_amount: kind === 'escort' ? 2000000 : 0,
-        pending_single_round_count: 0, pending_wager_count: 0, created_at: timestamp, updated_at: timestamp,
+        pending_single_round_count: 0, created_at: timestamp, updated_at: timestamp,
       };
       await page.evaluate(({ boss, order, following, runtime, timestamp }) => {
         const bridge = window.pwtools!;

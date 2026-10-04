@@ -15,7 +15,6 @@ export interface RoundDraft {
   minutes: number | '';
   outcome: MatchOutcome;
   failure_extra_amount: number | '';
-  item_obtained: 'true' | 'false' | '';
   played_at: string;
   note: string;
 }
@@ -44,7 +43,7 @@ function localTime(value: string | null): string {
   return `${part('year')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}`;
 }
 
-const initialDraft = (): RoundDraft => ({ amount: '', fake_amount: '', hours: 0, minutes: 0, outcome: 'success', failure_extra_amount: '', item_obtained: '', played_at: '', note: '' });
+const initialDraft = (): RoundDraft => ({ amount: '', fake_amount: '', hours: 0, minutes: 0, outcome: 'success', failure_extra_amount: '', played_at: '', note: '' });
 const integer = (value: string | number): number | '' => value === '' ? '' : Number(value);
 const validAmount = (value: number | ''): value is number => value !== '' && Number.isSafeInteger(value) && value >= 0 && value <= MAX_QUANTITY;
 
@@ -52,7 +51,7 @@ export function roundNet(draft: RoundDraft): number | null {
   return validAmount(draft.amount) && validAmount(draft.fake_amount) && draft.fake_amount <= draft.amount ? draft.amount - draft.fake_amount : null;
 }
 
-export function validateRoundDraft(order: ServiceOrder, draft: RoundDraft, confirmed: boolean, record?: MatchRecord | null): RoundErrors {
+export function validateRoundDraft(order: ServiceOrder, draft: RoundDraft, confirmed: boolean): RoundErrors {
   const errors: RoundErrors = {};
   if (order.kind === 'hourly') {
     if (!validAmount(draft.hours)) errors.hours = '小时填写非负整数。';
@@ -60,15 +59,9 @@ export function validateRoundDraft(order: ServiceOrder, draft: RoundDraft, confi
     if (!Object.keys(errors).length && (Number(draft.hours) * 60 + Number(draft.minutes) <= 0 || Number(draft.hours) * 60 + Number(draft.minutes) > MAX_QUANTITY)) errors.minutes = '本次陪玩时长需要大于 0，且不超过允许范围。';
   } else {
     if (confirmed && draft.outcome === 'unknown') errors.outcome = '明确选择撤离成功或失败。';
-    if (order.kind === 'wager') {
-      if (confirmed && !draft.item_obtained) errors.item_obtained = '根据本场凭证明确选择物品结果。';
-      if (order.wager_condition === 'extracted' && draft.outcome === 'failed' && draft.item_obtained === 'true') errors.item_obtained = '撤离失败不能标记为成功带出物品。';
-      if (confirmed && order.status === 'completed' && !record?.confirmed) errors.item_obtained = '这笔对赌已结算，请校对原已确认记录，或先删除误记结果。';
-    } else {
-      if ((confirmed || draft.amount !== '') && !validAmount(draft.amount)) errors.amount = '明确填写 0–9 万亿之间的带出原值整数。';
-      if ((confirmed || draft.fake_amount !== '') && (!validAmount(draft.fake_amount) || (validAmount(draft.amount) && draft.fake_amount > draft.amount))) errors.fake_amount = '明确填写假账扣除，0 表示没有假账，扣除不能大于原值。';
-      if (ruleTriggered(order, draft.outcome, roundNet(draft)) && order.failure_mode === 'manual' && (confirmed || draft.failure_extra_amount !== '') && !validAmount(draft.failure_extra_amount)) errors.failure_extra_amount = '本场触发追加规则，请明确填写追加金额，0 表示不追加。';
-    }
+    if ((confirmed || draft.amount !== '') && !validAmount(draft.amount)) errors.amount = '明确填写 0–9 万亿之间的带出原值整数。';
+    if ((confirmed || draft.fake_amount !== '') && (!validAmount(draft.fake_amount) || (validAmount(draft.amount) && draft.fake_amount > draft.amount))) errors.fake_amount = '明确填写假账扣除，0 表示没有假账，扣除不能大于原值。';
+    if (ruleTriggered(order, draft.outcome, roundNet(draft)) && order.failure_mode === 'manual' && (confirmed || draft.failure_extra_amount !== '') && !validAmount(draft.failure_extra_amount)) errors.failure_extra_amount = '本场触发追加规则，请明确填写追加金额，0 表示不追加。';
   }
   if (draft.note.length > 1000) errors.note = '备注最多 1000 个字符。';
   if (draft.played_at && Number.isNaN(new Date(`${draft.played_at}:00+08:00`).getTime())) errors.played_at = '填写有效的场次时间，或留空。';
@@ -79,20 +72,14 @@ export function RoundResultFields({ order, draft, record, disabled, errors, onCh
   const net = roundNet(draft);
   const triggered = ruleTriggered(order, draft.outcome, net);
   const unchangedResult = record?.confirmed && draft.amount === record.amount && draft.fake_amount === record.fake_amount && draft.outcome === record.outcome;
-  const itemLabel = order.wager_condition === 'appearance' ? '本场物品是否出现' : '本场是否成功带出物品';
   const netNotice = net === null ? '' : draft.outcome === 'failed' ? '失败不计入进度' : draft.outcome === 'success' && order.kind === 'single_round' ? net >= order.total_quantity ? '本场达标' : '本场未达标，需单场达标' : '';
   return <div className="round-result-fields">
     {order.kind === 'hourly' ? <fieldset className="round-time-fields"><legend>本次陪玩时长</legend><div className="round-two-fields"><NumberInput label="小时" aria-label="本次陪玩时长小时" value={draft.hours} min={0} max={Math.floor(MAX_QUANTITY / 60)} allowDecimal={false} hideControls disabled={disabled} error={errors.hours} onChange={(value) => onChange({ hours: integer(value) })} /><NumberInput label="分钟" aria-label="本次陪玩时长分钟" value={draft.minutes} min={0} max={59} allowDecimal={false} hideControls disabled={disabled} error={errors.minutes} onChange={(value) => onChange({ minutes: integer(value) })} /></div></fieldset> : <>
       <Select label="撤离结果" value={draft.outcome} data={[{ value: 'success', label: '撤离成功' }, { value: 'failed', label: '撤离失败' }, { value: 'unknown', label: '待核对' }]} allowDeselect={false} disabled={disabled} error={errors.outcome} onChange={(value) => { if (value) onChange({ outcome: value as MatchOutcome }); }} />
-      {order.kind === 'wager' ? <>
-        <div className="round-item-rule"><strong>{order.wager_item_name}</strong><p>{order.wager_expected === 'obtained' ? order.wager_condition === 'appearance' ? '出现则我方获胜' : '带出则我方获胜' : order.wager_condition === 'appearance' ? '未出现则我方获胜' : '未带出则我方获胜'}</p></div>
-        <Select label={itemLabel} required placeholder="选择结果" value={draft.item_obtained || null} data={[{ value: 'true', label: order.wager_condition === 'appearance' ? '已出现' : '已成功带出' }, { value: 'false', label: order.wager_condition === 'appearance' ? '未出现' : '未成功带出' }]} allowDeselect={false} disabled={disabled} error={errors.item_obtained} onChange={(value) => onChange({ item_obtained: (value || '') as RoundDraft['item_obtained'] })} />
-      </> : <>
-        <NumberInput label="带出金额（哈夫币）" required placeholder="输入金额" value={draft.amount} min={0} max={MAX_QUANTITY} allowDecimal={false} thousandSeparator="," hideControls disabled={disabled} error={errors.amount} onChange={(value) => onChange({ amount: integer(value) })} />
-        <div className="round-fake-field"><NumberInput label="假账扣除（哈夫币）" required placeholder="没有则填 0" value={draft.fake_amount} min={0} max={MAX_QUANTITY} allowDecimal={false} thousandSeparator="," hideControls disabled={disabled} error={errors.fake_amount} onChange={(value) => onChange({ fake_amount: integer(value) })} /><Button type="button" variant="subtle" size="xs" disabled={disabled} onClick={() => onChange({ fake_amount: 0 })}>无假账，填 0</Button></div>
-        <section className="round-net-preview" aria-label="本场净值" aria-live="polite"><div><span>带出</span><strong>{draft.amount === '' ? '—' : amountFormat.format(draft.amount)}</strong></div><i>−</i><div><span>假账</span><strong>{draft.fake_amount === '' ? '—' : amountFormat.format(draft.fake_amount)}</strong></div><i>=</i><div><span>净带出</span><strong>{net === null ? '—' : amountFormat.format(net)}</strong></div>{netNotice && <p>{netNotice}</p>}</section>
-        {order.kind === 'escort' && triggered && <div className="round-extra-rule">{order.failure_mode === 'manual' ? <><NumberInput label="追加金额（哈夫币）" required placeholder="不追加则填 0" value={draft.failure_extra_amount} min={0} max={MAX_QUANTITY} allowDecimal={false} thousandSeparator="," hideControls disabled={disabled} error={errors.failure_extra_amount} onChange={(value) => onChange({ failure_extra_amount: integer(value) })} /><Button type="button" size="xs" variant="subtle" disabled={disabled} onClick={() => onChange({ failure_extra_amount: order.failure_default_quantity })}>使用默认值 {amountFormat.format(order.failure_default_quantity)}</Button></> : order.failure_mode === 'fixed' && record ? <span>{unchangedResult ? `本场追加 ${amountFormat.format(record.failure_extra_amount)} 哈夫币` : '按本场原有约定追加，保存后核对金额'}</span> : <strong>本场预计追加 {amountFormat.format(automaticExtra(order, net))} 哈夫币</strong>}</div>}
-      </>}
+      <NumberInput label="带出金额（哈夫币）" required placeholder="输入金额" value={draft.amount} min={0} max={MAX_QUANTITY} allowDecimal={false} thousandSeparator="," hideControls disabled={disabled} error={errors.amount} onChange={(value) => onChange({ amount: integer(value) })} />
+      <div className="round-fake-field"><NumberInput label="假账扣除（哈夫币）" required placeholder="没有则填 0" value={draft.fake_amount} min={0} max={MAX_QUANTITY} allowDecimal={false} thousandSeparator="," hideControls disabled={disabled} error={errors.fake_amount} onChange={(value) => onChange({ fake_amount: integer(value) })} /><Button type="button" variant="subtle" size="xs" disabled={disabled} onClick={() => onChange({ fake_amount: 0 })}>无假账，填 0</Button></div>
+      <section className="round-net-preview" aria-label="本场净值" aria-live="polite"><div><span>带出</span><strong>{draft.amount === '' ? '—' : amountFormat.format(draft.amount)}</strong></div><i>−</i><div><span>假账</span><strong>{draft.fake_amount === '' ? '—' : amountFormat.format(draft.fake_amount)}</strong></div><i>=</i><div><span>净带出</span><strong>{net === null ? '—' : amountFormat.format(net)}</strong></div>{netNotice && <p>{netNotice}</p>}</section>
+      {order.kind === 'escort' && triggered && <div className="round-extra-rule">{order.failure_mode === 'manual' ? <><NumberInput label="追加金额（哈夫币）" required placeholder="不追加则填 0" value={draft.failure_extra_amount} min={0} max={MAX_QUANTITY} allowDecimal={false} thousandSeparator="," hideControls disabled={disabled} error={errors.failure_extra_amount} onChange={(value) => onChange({ failure_extra_amount: integer(value) })} /><Button type="button" size="xs" variant="subtle" disabled={disabled} onClick={() => onChange({ failure_extra_amount: order.failure_default_quantity })}>使用默认值 {amountFormat.format(order.failure_default_quantity)}</Button></> : order.failure_mode === 'fixed' && record ? <span>{unchangedResult ? `本场追加 ${amountFormat.format(record.failure_extra_amount)} 哈夫币` : '按本场原有约定追加，保存后核对金额'}</span> : <strong>本场预计追加 {amountFormat.format(automaticExtra(order, net))} 哈夫币</strong>}</div>}
     </>}
     <details className="round-supplement"><summary>补充信息{(draft.played_at || draft.note) && <span>已填写</span>}<ChevronDown size={15} /></summary><div><DateTimeField label="场次时间" value={draft.played_at} disabled={disabled} error={errors.played_at} onChange={(played_at) => onChange({ played_at })} onOpenChange={onDatePickerOpenChange} /><Textarea label="备注" minRows={2} maxLength={1000} value={draft.note} disabled={disabled} error={errors.note} onChange={(event) => onChange({ note: event.currentTarget.value })} /></div></details>
   </div>;
@@ -141,7 +128,7 @@ export default function RoundEntry({ order, matchId, onClose, onSaved, onError, 
   function mergeRecord(next: MatchRecord, initial: boolean) {
     setRecord(next);
     const patch: Partial<RoundDraft> = { amount: next.amount ?? '', outcome: next.outcome };
-    if (initial) Object.assign(patch, { fake_amount: next.fake_amount ?? '', item_obtained: next.item_obtained === null ? '' : next.item_obtained ? 'true' : 'false', failure_extra_amount: next.failure_extra_amount, played_at: localTime(next.played_at), note: next.note });
+    if (initial) Object.assign(patch, { fake_amount: next.fake_amount ?? '', failure_extra_amount: next.failure_extra_amount, played_at: localTime(next.played_at), note: next.note });
     setDraft((current) => {
       const merged = { ...current };
       for (const key of Object.keys(patch) as DraftKey[]) if (!touched.current.has(key)) Object.assign(merged, { [key]: patch[key] });
@@ -260,16 +247,16 @@ export default function RoundEntry({ order, matchId, onClose, onSaved, onError, 
     if (saveUncertain && pendingSave.current) { submitSnapshot(pendingSave.current); return; }
     if (uploadUncertain) { setError('上传结果尚未确认，请重试同一张截图后保存本场。已填写的结果会保留。'); return; }
     if (order.kind !== 'hourly' && mode === 'screenshot' && !record) { setError('先上传本场截图，或切换为手工填写后保存。'); return; }
-    const validation = validateRoundDraft(order, draft, confirmed, record);
+    const validation = validateRoundDraft(order, draft, confirmed);
     setErrors(validation);
     if (Object.keys(validation).length) return;
     const playedAt = draft.played_at ? new Date(`${draft.played_at}:00+08:00`).toISOString() : null;
     if (record) {
-      submitSnapshot({ kind: 'match', id: record.id, confirmed, input: { player_name: record.boss_player_name, outcome: draft.outcome, amount: order.kind === 'wager' || draft.amount === '' ? null : draft.amount, fake_amount: order.kind === 'wager' || draft.fake_amount === '' ? null : draft.fake_amount, item_obtained: order.kind === 'wager' && draft.item_obtained ? draft.item_obtained === 'true' : null, ...(order.failure_mode === 'manual' && (!ruleTriggered(order, draft.outcome, roundNet(draft)) || draft.failure_extra_amount !== '') ? { failure_extra_amount: ruleTriggered(order, draft.outcome, roundNet(draft)) ? Number(draft.failure_extra_amount) : 0 } : {}), confirmed, order_id: order.id, played_at: playedAt, note: draft.note.trim() } });
+      submitSnapshot({ kind: 'match', id: record.id, confirmed, input: { player_name: record.boss_player_name, outcome: draft.outcome, amount: draft.amount === '' ? null : draft.amount, fake_amount: draft.fake_amount === '' ? null : draft.fake_amount, ...(order.failure_mode === 'manual' && (!ruleTriggered(order, draft.outcome, roundNet(draft)) || draft.failure_extra_amount !== '') ? { failure_extra_amount: ruleTriggered(order, draft.outcome, roundNet(draft)) ? Number(draft.failure_extra_amount) : 0 } : {}), confirmed, order_id: order.id, played_at: playedAt, note: draft.note.trim() } });
     } else {
-      const quantity = order.kind === 'hourly' ? Number(draft.hours) * 60 + Number(draft.minutes) : order.kind === 'wager' ? 0 : Number(draft.amount);
-      const input: LedgerEntryInput = { kind: order.kind === 'wager' ? 'item_result' : 'progress', quantity, occurred_at: playedAt, note: draft.note.trim(), idempotency_key: idempotencyKey.current };
-      if (order.kind !== 'hourly') Object.assign(input, { outcome: draft.outcome, ...(order.kind === 'wager' ? { item_obtained: draft.item_obtained === 'true' } : { amount: draft.amount, fake_amount: draft.fake_amount, ...(order.failure_mode === 'manual' ? { failure_extra_amount: ruleTriggered(order, draft.outcome, roundNet(draft)) ? draft.failure_extra_amount : 0 } : {}) }) });
+      const quantity = order.kind === 'hourly' ? Number(draft.hours) * 60 + Number(draft.minutes) : Number(draft.amount);
+      const input: LedgerEntryInput = { kind: 'progress', quantity, occurred_at: playedAt, note: draft.note.trim(), idempotency_key: idempotencyKey.current };
+      if (order.kind !== 'hourly') Object.assign(input, { outcome: draft.outcome, amount: draft.amount, fake_amount: draft.fake_amount, ...(order.failure_mode === 'manual' ? { failure_extra_amount: ruleTriggered(order, draft.outcome, roundNet(draft)) ? draft.failure_extra_amount : 0 } : {}) });
       submitSnapshot({ kind: 'manual', confirmed: true, input });
     }
   };
@@ -289,7 +276,7 @@ export default function RoundEntry({ order, matchId, onClose, onSaved, onError, 
           {record && <><p className="round-source-caption">{record.original_name}{!record.confirmed && ' · 草稿'}</p>{(record.ocr_status === 'failed' || record.warnings.length > 0) && <Alert color="orange" title={record.ocr_status === 'failed' ? '识别失败，可手工填写' : '请核对结果'}>{record.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</Alert>}</>}
         </section>}
         <section className="round-results" aria-label="本场结果"><div className="round-pane-heading"><h3>{order.kind === 'hourly' ? <Clock3 size={16} /> : <Check size={16} />}结果</h3></div><RoundResultFields order={order} draft={draft} record={record} disabled={saving || saveUncertain} errors={errors} onChange={patchDraft} onDatePickerOpenChange={setDatePickerOpen} /></section>
-        <div className="round-actions">{record?.confirmed && <span>撤销后保留为草稿</span>}<Button type="button" variant="default" disabled={busy || uploadUncertain || saveUncertain} onClick={close}>取消</Button>{record && <Button type="button" variant="default" disabled={busy || saveUncertain} onClick={() => save(false)}>{record.confirmed ? order.kind === 'wager' ? '撤销结算' : '撤销入账' : '保存草稿'}</Button>}<Button type="submit" leftSection={<Check size={15} />} loading={saving} disabled={busy || uploadUncertain || (!saveUncertain && ((Boolean(matchId) && !record) || (order.kind === 'wager' && order.status === 'completed' && !record?.confirmed)))}>{saveUncertain ? '重试核实本场' : record?.confirmed ? '保存校对' : '确认入账'}</Button></div>
+        <div className="round-actions">{record?.confirmed && <span>撤销后保留为草稿</span>}<Button type="button" variant="default" disabled={busy || uploadUncertain || saveUncertain} onClick={close}>取消</Button>{record && <Button type="button" variant="default" disabled={busy || saveUncertain} onClick={() => save(false)}>{record.confirmed ? '撤销入账' : '保存草稿'}</Button>}<Button type="submit" leftSection={<Check size={15} />} loading={saving} disabled={busy || uploadUncertain || (!saveUncertain && Boolean(matchId) && !record)}>{saveUncertain ? '重试核实本场' : record?.confirmed ? '保存校对' : '确认入账'}</Button></div>
       </form>
     </Modal>
     <Modal opened={discardOpen} onClose={() => setDiscardOpen(false)} title="尚有未保存结果" centered size="sm"><p className="round-discard-copy">未保存内容将丢失，已上传的截图保留。</p><div className="round-discard-actions"><Button variant="default" onClick={() => setDiscardOpen(false)}>继续填写</Button><Button color="orange" onClick={() => { setDiscardOpen(false); onClose(); }}>放弃修改</Button></div></Modal>

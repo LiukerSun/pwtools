@@ -121,14 +121,27 @@ const browserBridge: DesktopBridge = {
   createOrderTemplate: input => request('/order-templates', { method: 'POST', body: JSON.stringify(input) }),
   updateOrderTemplate: (id, input) => request(`/order-templates/${ledgerId(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),
   deleteOrderTemplate: id => request(`/order-templates/${ledgerId(id)}`, { method: 'DELETE' }),
-  listCatalog: (query = {}) => request(`/catalog/items?${new URLSearchParams({ q: query.q || '', category: query.category || '', page: String(query.page || 1), page_size: String(query.page_size || 40) })}`),
   listLedgerEntries: (orderId, page = 1, pageSize = 20) => request(`${ledgerPath('orders', orderId)}/entries?page=${page}&page_size=${pageSize}`),
   addLedgerEntry: (orderId, input) => request(`${ledgerPath('orders', orderId)}/entries`, { method: 'POST', body: JSON.stringify(input) }),
   deleteLedgerEntry: (orderId, entryId) => request(`${ledgerPath('orders', orderId)}${ledgerPath('entries', entryId)}`, { method: 'DELETE' }),
 };
 
 export const isDesktop = Boolean(window.pwtools);
-export const api: DesktopBridge = window.pwtools || browserBridge;
+const transport = window.pwtools || browserBridge;
+const supportedKind = (kind: string) => kind === 'hourly' || kind === 'escort' || kind === 'single_round';
+export const api: DesktopBridge = new Proxy(transport, {
+  get(target, property, receiver) {
+    if (property === 'listOrders') return async (bossId?: string) => {
+      const response = await target.listOrders(bossId);
+      return { ...response, items: response.items.filter(order => supportedKind(order.kind)) };
+    };
+    if (property === 'listOrderTemplates') return async () => {
+      const response = await target.listOrderTemplates();
+      return { ...response, items: response.items.filter(template => supportedKind(template.kind)) };
+    };
+    return Reflect.get(target, property, receiver);
+  },
+});
 
 export function errorInfo(error: unknown): ApiErrorData {
   if (typeof error === 'object' && error !== null) {

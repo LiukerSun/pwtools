@@ -42,8 +42,6 @@ pub struct Boss {
     remaining_amount: i64,
     #[sqlx(default)]
     pending_single_round_count: i64,
-    #[sqlx(default)]
-    pending_wager_count: i64,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -130,8 +128,6 @@ fn populate_boss(boss: &mut Boss, orders: &[ServiceOrder]) -> Result<(), ApiErro
             amount += i128::from(order.remaining_quantity);
         } else if order.kind == "single_round" && order.status == "active" {
             boss.pending_single_round_count += 1;
-        } else if order.kind == "wager" && order.status == "active" {
-            boss.pending_wager_count += 1;
         }
     }
     boss.remaining_minutes = safe_quantity(minutes)?;
@@ -227,25 +223,33 @@ pub struct OrderInput {
     pub(crate) failure_standard_quantity: i64,
     #[serde(default = "manual_mode")]
     pub(crate) failure_mode: String,
-    pub(crate) wager_item_id: Option<String>,
-    #[serde(default)]
-    pub(crate) wager_item_name: String,
-    #[serde(default = "obtained_expected")]
-    pub(crate) wager_expected: String,
-    #[serde(default = "appearance_condition")]
-    pub(crate) wager_condition: String,
+    // Released clients include neutral legacy fields. Never read or write retired columns.
+    #[serde(default, rename = "wager_item_id", skip_serializing)]
+    #[sqlx(skip)]
+    retired_item_id: Option<String>,
+    #[serde(default, rename = "wager_item_name", skip_serializing)]
+    #[sqlx(skip)]
+    retired_item_name: String,
+    #[serde(
+        default = "crate::retired_fields::obtained",
+        rename = "wager_expected",
+        skip_serializing
+    )]
+    #[sqlx(skip)]
+    retired_expected: String,
+    #[serde(
+        default = "crate::retired_fields::appearance",
+        rename = "wager_condition",
+        skip_serializing
+    )]
+    #[sqlx(skip)]
+    retired_condition: String,
 }
 fn failed_trigger() -> String {
     "failed".into()
 }
 fn manual_mode() -> String {
     "manual".into()
-}
-fn obtained_expected() -> String {
-    "obtained".into()
-}
-fn appearance_condition() -> String {
-    "appearance".into()
 }
 #[derive(Serialize)]
 pub struct ServiceOrder {
@@ -261,13 +265,8 @@ pub struct ServiceOrder {
     failure_trigger: String,
     failure_standard_quantity: i64,
     failure_mode: String,
-    wager_item_id: Option<String>,
-    wager_item_name: String,
-    wager_expected: String,
-    wager_condition: String,
     configuration_locked: bool,
     best_round_quantity: i64,
-    settlement_result: Option<&'static str>,
     completed_quantity: i64,
     failure_quantity: i64,
     adjustment_quantity: i64,
@@ -293,14 +292,8 @@ struct OrderRow {
     failure_trigger: String,
     failure_standard_quantity: i64,
     failure_mode: String,
-    wager_item_id: Option<String>,
-    wager_item_name: String,
-    wager_expected: String,
-    wager_condition: String,
     configuration_locked: bool,
     best: i64,
-    wins: i64,
-    losses: i64,
     progress: String,
     failure: String,
     adjustment: String,
@@ -311,19 +304,30 @@ struct OrderRow {
 
 // Confirmed screenshots are a projection into the ledger, never a second stored entry.
 const ORDER_QUERY: &str = r#"SELECT o.id,o.boss_id,b.display_name AS boss_name,b.game_name AS boss_game_name,o.title,o.kind,o.target_quantity,o.failure_default_quantity,o.note,
-o.failure_trigger,o.failure_standard_quantity,o.failure_mode,o.wager_item_id,o.wager_item_name,o.wager_expected,o.wager_condition,
+o.failure_trigger,o.failure_standard_quantity,o.failure_mode,
 (EXISTS(SELECT 1 FROM ledger_entries WHERE user_id=o.user_id AND order_id=o.id) OR EXISTS(SELECT 1 FROM matches WHERE user_id=o.user_id AND order_id=o.id)) AS configuration_locked,
-tot.progress::text AS progress,tot.failure::text AS failure,tot.adjustment::text AS adjustment,tot.best,tot.wins,tot.losses,tot.record_count,o.created_at,GREATEST(o.updated_at,COALESCE(tot.latest,o.updated_at)) AS updated_at
+tot.progress::text AS progress,tot.failure::text AS failure,tot.adjustment::text AS adjustment,tot.best,tot.record_count,o.created_at,GREATEST(o.updated_at,COALESCE(tot.latest,o.updated_at)) AS updated_at
 FROM service_orders o JOIN bosses b ON b.user_id=o.user_id AND b.id=o.boss_id CROSS JOIN LATERAL (
  SELECT COALESCE(sum(credit),0) AS progress,COALESCE(sum(extra),0) AS failure,COALESCE(sum(adjustment),0) AS adjustment,COALESCE(max(credit),0) AS best,
- count(*) FILTER(WHERE item_obtained IS NOT NULL AND item_obtained=(o.wager_expected='obtained')) AS wins,
- count(*) FILTER(WHERE item_obtained IS NOT NULL AND item_obtained<>(o.wager_expected='obtained')) AS losses,
  count(*) AS record_count,max(updated_at) AS latest FROM (
  SELECT CASE WHEN o.kind='hourly' AND kind='progress' THEN quantity ELSE COALESCE(credited_amount,0) END AS credit,
- failure_extra_amount AS extra,CASE WHEN kind='adjustment' THEN quantity ELSE 0 END AS adjustment,item_obtained,created_at AS updated_at
+ failure_extra_amount AS extra,CASE WHEN kind='adjustment' THEN quantity ELSE 0 END AS adjustment,created_at AS updated_at
  FROM ledger_entries WHERE user_id=o.user_id AND order_id=o.id
- UNION ALL SELECT COALESCE(credited_amount,0),failure_extra_amount,0,item_obtained,updated_at FROM matches WHERE user_id=o.user_id AND order_id=o.id AND confirmed
+ UNION ALL SELECT COALESCE(credited_amount,0),failure_extra_amount,0,updated_at FROM matches WHERE user_id=o.user_id AND order_id=o.id AND confirmed
  ) events) tot"#;
+
+/// Retired rows stay in the database and raw account archives, never in active business logic.
+pub(crate) fn supported_kind(kind: &str) -> Result<(), ApiError> {
+    if matches!(kind, "hourly" | "escort" | "single_round") {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "ORDER_TYPE_UNSUPPORTED",
+            "该订单类型已停用，历史数据保留在账户归档中",
+        ))
+    }
+}
 
 fn overflow() -> ApiError {
     ApiError::new(
@@ -339,42 +343,19 @@ fn safe_quantity(value: i128) -> Result<i64, ApiError> {
     Ok(value as i64)
 }
 fn projection(row: OrderRow) -> Result<ServiceOrder, ApiError> {
+    supported_kind(&row.kind)?;
     let progress = row.progress.parse::<i128>().map_err(|_| overflow())?;
     let failure = row.failure.parse::<i128>().map_err(|_| overflow())?;
     let adjustment = row.adjustment.parse::<i128>().map_err(|_| overflow())?;
     if adjustment.abs() > i128::from(MAX_AMOUNT) {
         return Err(overflow());
     }
-    if row.kind == "wager" && row.wins + row.losses > 1 {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "WAGER_ALREADY_SETTLED",
-            "对赌单只能确认一场结果，请先修正或删除已有结算",
-        ));
-    }
-    let settlement_result = if row.kind == "wager" {
-        Some(if row.wins > 0 {
-            "won"
-        } else if row.losses > 0 {
-            "lost"
-        } else {
-            "pending"
-        })
-    } else {
-        None
-    };
     let progress = if row.kind == "single_round" {
         i128::from(row.best)
-    } else if row.kind == "wager" {
-        i128::from(row.wins + row.losses)
     } else {
         progress
     };
-    let total = if row.kind == "wager" {
-        1
-    } else {
-        i128::from(row.target_quantity) + failure + adjustment
-    };
+    let total = i128::from(row.target_quantity) + failure + adjustment;
     let completed_quantity = safe_quantity(progress)?;
     let failure_quantity = safe_quantity(failure)?;
     let total_quantity = safe_quantity(total)?;
@@ -402,13 +383,8 @@ fn projection(row: OrderRow) -> Result<ServiceOrder, ApiError> {
         failure_trigger: row.failure_trigger,
         failure_standard_quantity: row.failure_standard_quantity,
         failure_mode: row.failure_mode,
-        wager_item_id: row.wager_item_id,
-        wager_item_name: row.wager_item_name,
-        wager_expected: row.wager_expected,
-        wager_condition: row.wager_condition,
         configuration_locked: row.configuration_locked,
         best_round_quantity,
-        settlement_result,
         completed_quantity,
         failure_quantity,
         adjustment_quantity: adjustment as i64,
@@ -432,7 +408,7 @@ async fn fetch_orders(
     order: Option<Uuid>,
 ) -> Result<Vec<ServiceOrder>, ApiError> {
     let sql = format!(
-        "{ORDER_QUERY} WHERE o.user_id=$1 AND ($2::uuid IS NULL OR o.boss_id=$2) AND ($3::uuid IS NULL OR o.id=$3) ORDER BY o.created_at DESC,o.id DESC"
+        "{ORDER_QUERY} WHERE o.user_id=$1 AND o.kind IN ('hourly','escort','single_round') AND ($2::uuid IS NULL OR o.boss_id=$2) AND ($3::uuid IS NULL OR o.id=$3) ORDER BY o.created_at DESC,o.id DESC"
     );
     sqlx::query_as::<_, OrderRow>(&sql)
         .bind(owner)
@@ -468,8 +444,10 @@ pub async fn get_order(
     session: AuthenticatedUser,
     path: Result<Path<Uuid>, PathRejection>,
 ) -> Result<Json<ServiceOrder>, ApiError> {
+    let id = path_id(path)?;
+    binding(&state, session.user.id, id).await?;
     Ok(Json(
-        fetch_orders(&state, session.user.id, None, Some(path_id(path)?))
+        fetch_orders(&state, session.user.id, None, Some(id))
             .await?
             .into_iter()
             .next()
@@ -484,11 +462,11 @@ pub async fn create_order(
 ) -> Result<(StatusCode, Json<ServiceOrder>), ApiError> {
     let boss_id = path_id(path)?;
     let boss = boss_detail(&state, session.user.id, boss_id).await?;
-    let input = clean_order(input, &boss.game_name, None)?;
+    let input = clean_order(input, &boss.game_name)?;
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO service_orders(id,user_id,boss_id,title,kind,target_quantity,failure_default_quantity,note,failure_trigger,failure_standard_quantity,failure_mode,wager_item_id,wager_item_name,wager_expected,wager_condition) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
+    sqlx::query("INSERT INTO service_orders(id,user_id,boss_id,title,kind,target_quantity,failure_default_quantity,note,failure_trigger,failure_standard_quantity,failure_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
         .bind(id).bind(session.user.id).bind(boss_id).bind(input.title).bind(input.kind).bind(input.target_quantity).bind(input.failure_default_quantity).bind(input.note)
-        .bind(input.failure_trigger).bind(input.failure_standard_quantity).bind(input.failure_mode).bind(input.wager_item_id).bind(input.wager_item_name).bind(input.wager_expected).bind(input.wager_condition)
+        .bind(input.failure_trigger).bind(input.failure_standard_quantity).bind(input.failure_mode)
         .execute(&state.pool).await.map_err(|_| ApiError::internal("order creation failed"))?;
     Ok((
         StatusCode::CREATED,
@@ -502,21 +480,8 @@ pub async fn create_order(
     ))
 }
 
-fn clean_order(
-    input: OrderInput,
-    game_name: &str,
-    existing: Option<&OrderBinding>,
-) -> Result<OrderInput, ApiError> {
-    let input = clean_configuration(
-        input,
-        existing.map(|old| {
-            (
-                old.kind.as_str(),
-                old.wager_item_id.as_deref(),
-                old.wager_item_name.as_str(),
-            )
-        }),
-    )?;
+fn clean_order(input: OrderInput, game_name: &str) -> Result<OrderInput, ApiError> {
+    let input = clean_configuration(input)?;
     if matches!(input.kind.as_str(), "escort" | "single_round") && game_name.is_empty() {
         return Err(ApiError::validation(
             "创建金额订单前，请先填写老板的截图昵称",
@@ -526,14 +491,15 @@ fn clean_order(
 }
 
 /// Validate reusable configuration independently of the boss selected when opening an order.
-pub(crate) fn clean_configuration(
-    mut input: OrderInput,
-    existing: Option<(&str, Option<&str>, &str)>,
-) -> Result<OrderInput, ApiError> {
-    if !matches!(
-        input.kind.as_str(),
-        "hourly" | "escort" | "single_round" | "wager"
-    ) || !(1..=MAX_AMOUNT).contains(&input.target_quantity)
+pub(crate) fn clean_configuration(mut input: OrderInput) -> Result<OrderInput, ApiError> {
+    supported_kind(&input.kind)?;
+    crate::retired_fields::configuration(
+        input.retired_item_id.as_deref(),
+        &input.retired_item_name,
+        &input.retired_expected,
+        &input.retired_condition,
+    )?;
+    if !(1..=MAX_AMOUNT).contains(&input.target_quantity)
         || !(0..=MAX_AMOUNT).contains(&input.failure_default_quantity)
         || !(0..=MAX_AMOUNT).contains(&input.failure_standard_quantity)
         || !matches!(
@@ -544,8 +510,6 @@ pub(crate) fn clean_configuration(
             input.failure_mode.as_str(),
             "manual" | "fixed" | "shortfall"
         )
-        || !matches!(input.wager_expected.as_str(), "obtained" | "not_obtained")
-        || !matches!(input.wager_condition.as_str(), "appearance" | "extracted")
     {
         return Err(ApiError::validation("订单类型、目标数量或规则不正确"));
     }
@@ -559,29 +523,6 @@ pub(crate) fn clean_configuration(
     }
     input.title = text(input.title, 1, 120, false)?;
     input.note = text(input.note, 0, 2000, true)?;
-    if input.kind == "wager" {
-        input.target_quantity = 1;
-        if let Some(id) = &input.wager_item_id {
-            if let Some((_, _, name)) = existing
-                .filter(|(kind, old_id, _)| *kind == "wager" && *old_id == Some(id.as_str()))
-            {
-                input.wager_item_name = name.to_owned();
-            } else {
-                let item = crate::catalog::lookup_item(id).ok_or_else(|| {
-                    ApiError::validation("所选物品已不在目录中，请重新选择或手填")
-                })?;
-                input.wager_item_name = item.name.clone();
-            }
-        } else {
-            input.wager_item_name = text(input.wager_item_name, 1, 160, false)?;
-        }
-    } else if input.wager_item_id.is_some()
-        || !input.wager_item_name.is_empty()
-        || input.wager_expected != "obtained"
-        || input.wager_condition != "appearance"
-    {
-        return Err(ApiError::validation("只有对赌单可以配置物品结果"));
-    }
     Ok(input)
 }
 
@@ -598,7 +539,7 @@ pub async fn update_order(
         .await
         .map_err(|_| ApiError::internal("order update transaction failed"))?;
     let old = lock_order(&mut tx, session.user.id, id).await?;
-    let input = clean_order(input, &old.game_name, Some(&old))?;
+    let input = clean_order(input, &old.game_name)?;
     let locked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ledger_entries WHERE user_id=$1 AND order_id=$2) OR EXISTS(SELECT 1 FROM matches WHERE user_id=$1 AND order_id=$2)")
         .bind(session.user.id).bind(id).fetch_one(&mut *tx).await.map_err(|_|ApiError::internal("order configuration lookup failed"))?;
     if locked
@@ -606,11 +547,7 @@ pub async fn update_order(
             || old.target_quantity != input.target_quantity
             || old.failure_trigger != input.failure_trigger
             || old.failure_standard_quantity != input.failure_standard_quantity
-            || old.failure_mode != input.failure_mode
-            || old.wager_item_id != input.wager_item_id
-            || old.wager_item_name != input.wager_item_name
-            || old.wager_expected != input.wager_expected
-            || old.wager_condition != input.wager_condition)
+            || old.failure_mode != input.failure_mode)
     {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
@@ -618,9 +555,9 @@ pub async fn update_order(
             "订单已有记录，类型和核心规则不能修改；名称、备注及未来默认补量仍可修改",
         ));
     }
-    sqlx::query("UPDATE service_orders SET title=$3,kind=$4,target_quantity=$5,failure_default_quantity=$6,note=$7,failure_trigger=$8,failure_standard_quantity=$9,failure_mode=$10,wager_item_id=$11,wager_item_name=$12,wager_expected=$13,wager_condition=$14,updated_at=now() WHERE user_id=$1 AND id=$2")
+    sqlx::query("UPDATE service_orders SET title=$3,kind=$4,target_quantity=$5,failure_default_quantity=$6,note=$7,failure_trigger=$8,failure_standard_quantity=$9,failure_mode=$10,updated_at=now() WHERE user_id=$1 AND id=$2")
         .bind(session.user.id).bind(id).bind(input.title).bind(input.kind).bind(input.target_quantity).bind(input.failure_default_quantity).bind(input.note)
-        .bind(input.failure_trigger).bind(input.failure_standard_quantity).bind(input.failure_mode).bind(input.wager_item_id).bind(input.wager_item_name).bind(input.wager_expected).bind(input.wager_condition)
+        .bind(input.failure_trigger).bind(input.failure_standard_quantity).bind(input.failure_mode)
         .execute(&mut *tx).await.map_err(|_|ApiError::internal("order update failed"))?;
     validate_order(&mut tx, session.user.id, id).await?;
     tx.commit()
@@ -645,12 +582,8 @@ pub(crate) struct OrderBinding {
     pub failure_trigger: String,
     pub failure_standard_quantity: i64,
     pub failure_mode: String,
-    pub wager_item_id: Option<String>,
-    pub wager_item_name: String,
-    pub wager_expected: String,
-    pub wager_condition: String,
 }
-const BINDING_QUERY: &str = "SELECT o.kind,b.boss_key,b.game_name,o.failure_default_quantity,o.target_quantity,o.failure_trigger,o.failure_standard_quantity,o.failure_mode,o.wager_item_id,o.wager_item_name,o.wager_expected,o.wager_condition FROM service_orders o JOIN bosses b ON b.user_id=o.user_id AND b.id=o.boss_id WHERE o.user_id=$1 AND o.id=$2";
+const BINDING_QUERY: &str = "SELECT o.kind,b.boss_key,b.game_name,o.failure_default_quantity,o.target_quantity,o.failure_trigger,o.failure_standard_quantity,o.failure_mode FROM service_orders o JOIN bosses b ON b.user_id=o.user_id AND b.id=o.boss_id WHERE o.user_id=$1 AND o.id=$2";
 
 pub(crate) fn money(
     amount: Option<i64>,
@@ -714,26 +647,30 @@ pub(crate) async fn binding(
     owner: Uuid,
     id: Uuid,
 ) -> Result<OrderBinding, ApiError> {
-    sqlx::query_as(BINDING_QUERY)
+    let order: OrderBinding = sqlx::query_as(BINDING_QUERY)
         .bind(owner)
         .bind(id)
         .fetch_optional(&state.pool)
         .await
         .map_err(|_| ApiError::internal("order binding lookup failed"))?
-        .ok_or_else(missing)
+        .ok_or_else(missing)?;
+    supported_kind(&order.kind)?;
+    Ok(order)
 }
 pub(crate) async fn lock_order(
     connection: &mut PgConnection,
     owner: Uuid,
     id: Uuid,
 ) -> Result<OrderBinding, ApiError> {
-    sqlx::query_as(&format!("{BINDING_QUERY} FOR UPDATE OF o"))
+    let order: OrderBinding = sqlx::query_as(&format!("{BINDING_QUERY} FOR UPDATE OF o"))
         .bind(owner)
         .bind(id)
         .fetch_optional(&mut *connection)
         .await
         .map_err(|_| ApiError::internal("order lock failed"))?
-        .ok_or_else(missing)
+        .ok_or_else(missing)?;
+    supported_kind(&order.kind)?;
+    Ok(order)
 }
 pub(crate) async fn validate_order(
     connection: &mut PgConnection,
@@ -769,7 +706,8 @@ pub struct EntryInput {
     amount: Option<i64>,
     fake_amount: Option<i64>,
     outcome: Option<String>,
-    item_obtained: Option<bool>,
+    #[serde(default, rename = "item_obtained")]
+    retired_item_result: Option<bool>,
     failure_extra_amount: Option<i64>,
 }
 #[derive(Serialize, FromRow)]
@@ -787,11 +725,10 @@ pub struct LedgerEntry {
     net_amount: Option<i64>,
     credited_amount: Option<i64>,
     outcome: Option<String>,
-    item_obtained: Option<bool>,
     failure_extra_amount: i64,
 }
-const ENTRY_COLUMNS: &str = "id,order_id,kind,quantity,occurred_at,note,'manual'::text AS source,NULL::uuid AS match_id,amount,fake_amount,net_amount,credited_amount,outcome,item_obtained,failure_extra_amount";
-const EVENTS: &str = "SELECT id,order_id,kind,quantity,occurred_at,note,'manual'::text AS source,NULL::uuid AS match_id,amount,fake_amount,net_amount,credited_amount,outcome,item_obtained,failure_extra_amount FROM ledger_entries WHERE user_id=$1 AND order_id=$2 UNION ALL SELECT id,order_id,CASE WHEN item_obtained IS NOT NULL THEN 'item_result' WHEN outcome='success' THEN 'progress' ELSE 'failure' END,CASE WHEN item_obtained IS NOT NULL THEN 0 WHEN outcome='success' THEN COALESCE(credited_amount,0) ELSE failure_extra_amount END,COALESCE(played_at,created_at),note,'screenshot'::text,id,amount,fake_amount,net_amount,credited_amount,outcome,item_obtained,failure_extra_amount FROM matches WHERE user_id=$1 AND order_id=$2 AND confirmed";
+const ENTRY_COLUMNS: &str = "id,order_id,kind,quantity,occurred_at,note,'manual'::text AS source,NULL::uuid AS match_id,amount,fake_amount,net_amount,credited_amount,outcome,failure_extra_amount";
+const EVENTS: &str = "SELECT id,order_id,kind,quantity,occurred_at,note,'manual'::text AS source,NULL::uuid AS match_id,amount,fake_amount,net_amount,credited_amount,outcome,failure_extra_amount FROM ledger_entries WHERE user_id=$1 AND order_id=$2 UNION ALL SELECT id,order_id,CASE WHEN outcome='success' THEN 'progress' ELSE 'failure' END,CASE WHEN outcome='success' THEN COALESCE(credited_amount,0) ELSE failure_extra_amount END,COALESCE(played_at,created_at),note,'screenshot'::text,id,amount,fake_amount,net_amount,credited_amount,outcome,failure_extra_amount FROM matches WHERE user_id=$1 AND order_id=$2 AND confirmed";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PageQuery {
@@ -878,7 +815,6 @@ pub async fn add_entry(
             || existing.amount != input.amount
             || existing.fake_amount != input.fake_amount
             || existing.outcome != input.outcome
-            || existing.item_obtained != input.item_obtained
             || existing.failure_extra_amount != input.failure_extra_amount.unwrap_or(0)
             || input
                 .occurred_at
@@ -892,9 +828,9 @@ pub async fn add_entry(
         }
         return Ok((StatusCode::OK, Json(existing)));
     }
-    let entry=sqlx::query_as(&format!("INSERT INTO ledger_entries(id,user_id,order_id,kind,quantity,occurred_at,note,idempotency_key,amount,fake_amount,outcome,item_obtained,failure_extra_amount) VALUES($1,$2,$3,$4,$5,COALESCE($6,now()),$7,$8,$9,$10,$11,$12,$13) RETURNING {ENTRY_COLUMNS}"))
+    let entry=sqlx::query_as(&format!("INSERT INTO ledger_entries(id,user_id,order_id,kind,quantity,occurred_at,note,idempotency_key,amount,fake_amount,outcome,failure_extra_amount) VALUES($1,$2,$3,$4,$5,COALESCE($6,now()),$7,$8,$9,$10,$11,$12) RETURNING {ENTRY_COLUMNS}"))
         .bind(Uuid::new_v4()).bind(session.user.id).bind(id).bind(input.kind).bind(input.quantity).bind(input.occurred_at).bind(input.note).bind(input.idempotency_key)
-        .bind(input.amount).bind(input.fake_amount).bind(input.outcome).bind(input.item_obtained).bind(input.failure_extra_amount.unwrap_or(0))
+        .bind(input.amount).bind(input.fake_amount).bind(input.outcome).bind(input.failure_extra_amount.unwrap_or(0))
         .fetch_one(&mut *tx).await.map_err(|_|ApiError::internal("ledger insertion failed"))?;
     validate_order(&mut tx, session.user.id, id).await?;
     tx.commit()
@@ -903,6 +839,7 @@ pub async fn add_entry(
     Ok((StatusCode::CREATED, Json(entry)))
 }
 fn normalize_entry(mut input: EntryInput, order: &OrderBinding) -> Result<EntryInput, ApiError> {
+    crate::retired_fields::item_result(input.retired_item_result)?;
     input.note = text(input.note, 0, 2000, true)?;
     if !(-MAX_AMOUNT..=MAX_AMOUNT).contains(&input.quantity)
         || input
@@ -912,31 +849,8 @@ fn normalize_entry(mut input: EntryInput, order: &OrderBinding) -> Result<EntryI
     {
         return Err(ApiError::validation("记账数量或撤离状态不正确"));
     }
-    if order.kind == "wager" {
-        if input.kind != "item_result" || input.quantity != 0 || input.item_obtained.is_none() {
-            return Err(ApiError::validation("对赌单请人工选择物品出了或没出"));
-        }
-        input.outcome = Some(input.outcome.unwrap_or_else(|| "success".into()));
-        if order.wager_condition == "extracted"
-            && input.outcome.as_deref() == Some("failed")
-            && input.item_obtained == Some(true)
-        {
-            return Err(ApiError::validation(
-                "约定成功带出物品时，撤离失败不能标记已带出",
-            ));
-        }
-        money(input.amount, input.fake_amount, false)?;
-        if input.failure_extra_amount.unwrap_or(0) != 0 {
-            return Err(ApiError::validation("对赌单不追加金额"));
-        }
-        input.failure_extra_amount = Some(0);
-        return Ok(input);
-    }
-    if input.item_obtained.is_some() {
-        return Err(ApiError::validation("只有对赌单可以记录物品结果"));
-    }
     if input.kind == "adjustment" || order.kind == "hourly" {
-        if matches!(order.kind.as_str(), "single_round" | "wager")
+        if order.kind == "single_round"
             || !matches!(input.kind.as_str(), "progress" | "adjustment")
             || (input.kind == "progress" && input.quantity <= 0)
             || (input.kind == "adjustment" && input.quantity == 0)

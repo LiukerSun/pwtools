@@ -6,7 +6,7 @@ import { addBoss, confirmRound, createOrder, openLedger, openOrderAction, openRo
 
 async function openPrivateLedger(page: Page) {
   const ledger = await openLedger(page);
-  const boss = await addBoss(page, '四类订单老板');
+  const boss = await addBoss(page, '三类订单老板');
   await expect(page.getByRole('region', { name: '老板详情与订单', exact: true })).toBeVisible();
   return { ...ledger, boss };
 }
@@ -17,7 +17,7 @@ async function showCompletedOrders(page: Page) {
   if (await completed.getAttribute('aria-expanded') !== 'true') await completed.click();
 }
 
-test('四种订单配置、目录和手填物品、人工对赌结算分别保存', async ({ page }) => {
+test('三种订单配置分别保存且不提供对赌与物品目录', async ({ page }) => {
   test.setTimeout(150_000);
   const ledger = await openPrivateLedger(page);
   const hourly = await createOrder(page, '两小时十五分钟陪玩', 'hourly', async (form) => {
@@ -40,47 +40,16 @@ test('四种订单配置、目录和手填物品、人工对赌结算分别保�
     await expect(form.getByRole('combobox', { name: '追加计算方式', exact: true })).toHaveCount(0);
   });
   expect(single.kind).toBe('single_round');
-  const wager = await createOrder(page, '海洋之泪没出我赢', 'wager', async (form) => {
-    await form.getByLabel('搜索对赌物品').fill('海洋之泪');
-    await selectOption(page, form.getByRole('combobox', { name: '物品分类', exact: true }), '收集品');
-    await form.getByRole('button', { name: /^海洋之泪/ }).click();
-    await expect(form).toContainText('已选：海洋之泪');
-    await selectOption(page, form.getByRole('combobox', { name: '我方获胜条件', exact: true }), '物品未出现');
-  });
-  expect(wager.wager_item_id).toBe('15080050142');
-  expect(wager.wager_item_name).toBe('海洋之泪');
-  expect(wager.wager_expected).toBe('not_obtained');
-  const custom = await createOrder(page, '手填对赌物品', 'wager', async (form) => {
-    await form.locator('label').filter({ hasText: '手动填写物品' }).click();
-    await form.getByLabel('自定义物品名称').fill('目录之外的指定物品');
-    await selectOption(page, form.getByRole('combobox', { name: '对赌判断依据', exact: true }), '本场物品是否成功带出');
-    await selectOption(page, form.getByRole('combobox', { name: '我方获胜条件', exact: true }), '未成功带出物品');
-  });
-  expect(custom.wager_item_id).toBeNull();
-  expect(custom.wager_item_name).toBe('目录之外的指定物品');
-  expect(custom.wager_condition).toBe('extracted');
-  expect(custom.wager_expected).toBe('not_obtained');
-
-  const before = await ledger.get<Boss>(`/bosses/${ledger.boss.id}`);
-  const form = await openRound(page, wager.title);
-  await expect(form.getByLabel('假账扣除（哈夫币）')).toHaveCount(0);
-  await expect(form.getByRole('combobox', { name: /^本场物品是否出现/ })).toHaveValue('');
-  await selectOption(page, form.getByRole('combobox', { name: /^本场物品是否出现/ }), '未出现');
-  const result: LedgerEntry = await confirmRound(page, form);
-  expect(result.item_obtained).toBe(false);
-  const settled = await ledger.get<ServiceOrder>(`/orders/${wager.id}`);
-  expect(settled.status).toBe('completed');
-  expect(settled.settlement_result).toBe('won');
-  await showCompletedOrders(page);
-  const article = orderArticle(page, wager.title);
-  await expect(article).toContainText('已赢');
-  await expect(article.getByRole('button', { name: '记一场', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '新建订单', exact: true }).click();
+  const orderForm = page.getByRole('dialog', { name: '新建订单', exact: true });
+  await expect(orderForm.getByRole('radio', { name: /^使用.*模板$/ })).toHaveCount(3);
+  await expect(orderForm.getByText('对赌单', { exact: true })).toHaveCount(0);
+  await expect(orderForm.getByRole('combobox', { name: '物品分类', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
   const after = await ledger.get<Boss>(`/bosses/${ledger.boss.id}`);
-  expect(after.remaining_amount).toBe(before.remaining_amount);
-  expect(after.remaining_minutes).toBe(before.remaining_minutes);
-  expect(after.pending_wager_count).toBe(before.pending_wager_count - 1);
+  expect(after.active_order_count).toBe(3);
   await page.getByRole('button', { name: '返回所有老板', exact: true }).click();
-  const row = page.getByRole('row', { name: '四类订单老板老板汇总', exact: true });
+  const row = page.getByRole('row', { name: '三类订单老板老板汇总', exact: true });
   await expect(row).toContainText('2,000,000 哈夫币');
   await expect(row).toContainText('2 小时 15 分钟');
   await expect(row).toContainText('单局待达标');
@@ -140,7 +109,7 @@ test('假账必须明确填写，护航按净值追加，已有流水锁规则�
   await openOrderAction(page, order.title, '订单配置');
   const config = page.getByRole('dialog', { name: '订单配置', exact: true });
   await expect(config.getByText('约定已锁定', { exact: true })).toBeVisible();
-  for (const kind of ['小时单', '护航单', '单局单', '对赌单']) await expect(config.getByRole('radio', { name: kind, exact: true })).toBeDisabled();
+  for (const kind of ['小时单', '护航单', '单局单']) await expect(config.getByRole('radio', { name: kind, exact: true })).toBeDisabled();
   await expect(config.getByLabel('约定带出金额（哈夫币）')).toBeDisabled();
   const advanced = config.getByRole('button', { name: /^高级约定与备注/ });
   if (await advanced.getAttribute('aria-expanded') !== 'true') await advanced.click();

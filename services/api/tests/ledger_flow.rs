@@ -9,6 +9,7 @@ use http_body_util::BodyExt;
 use image::{DynamicImage, ImageFormat, RgbImage};
 use pwtools_api::{AppState, MIGRATOR, router};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, postgres::PgConnectOptions};
 use std::{io::Cursor, net::SocketAddr, str::FromStr};
 use tower::ServiceExt;
@@ -744,11 +745,11 @@ async fn run_flow(app: Router, pool: PgPool) {
     assert_eq!(count, 2, "a net-zero monetary round remains a stored event");
     let new_boss=call(&app,"POST","/api/bosses",Some(json!({"display_name":"四类型老板","game_id":"new-types","game_name":"团团吃大饼","notes":"独立规则验收"})),Some(token)).await;
     assert_eq!(new_boss.0, StatusCode::CREATED);
-    four_order_types(&app, &pool, token, other, hourly_boss_id, id(&new_boss.1)).await;
+    current_order_types(&app, &pool, token, other, hourly_boss_id, id(&new_boss.1)).await;
 }
 
 async fn new_order(app: &Router, token: &str, boss: &str, kind: &str, extra: Value) -> Value {
-    let mut body = json!({"title":"新类型订单","kind":kind,"target_quantity":1000,"failure_default_quantity":0,"note":""});
+    let mut body = json!({"title":"新类型订单","kind":kind,"target_quantity":1000,"failure_default_quantity":0,"note":"","wager_item_id":null,"wager_item_name":"","wager_expected":"obtained","wager_condition":"appearance"});
     for (key, value) in extra.as_object().expect("order options") {
         body[key] = value.clone();
     }
@@ -774,7 +775,7 @@ async fn round(
 ) -> (StatusCode, Value) {
     call(app,"POST",&format!("/api/orders/{order}/entries"),Some(json!({"kind":"progress","quantity":gross,"amount":gross,"fake_amount":fake,"outcome":outcome,"failure_extra_amount":extra,"note":"一场","idempotency_key":Uuid::new_v4()})),Some(token)).await
 }
-async fn four_order_types(
+async fn current_order_types(
     app: &Router,
     pool: &PgPool,
     token: &str,
@@ -797,7 +798,7 @@ async fn four_order_types(
             .0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    let retry_body = json!({"kind":"progress","quantity":400,"amount":400,"fake_amount":100,"outcome":"success","note":"可安全重试的场次","idempotency_key":Uuid::new_v4()});
+    let retry_body = json!({"kind":"progress","quantity":400,"amount":400,"fake_amount":100,"outcome":"success","note":"可安全重试的场次","idempotency_key":Uuid::new_v4(),"item_obtained":null});
     let credited = call(
         app,
         "POST",
@@ -813,6 +814,23 @@ async fn four_order_types(
     assert_eq!(credited.1["quantity"], 300);
     assert_eq!(credited.1["credited_amount"], 300);
     assert_eq!(credited.1["failure_extra_amount"], 100);
+    for item_result in [true, false] {
+        let mut retired = retry_body.clone();
+        retired["idempotency_key"] = json!(Uuid::new_v4());
+        retired["item_obtained"] = json!(item_result);
+        assert_eq!(
+            call(
+                app,
+                "POST",
+                &format!("/api/orders/{order_id}/entries"),
+                Some(retired),
+                Some(token)
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
     let failed = round(app, token, order_id, 700, Some(250), "failed", None).await;
     assert_eq!(failed.0, StatusCode::CREATED);
     assert_eq!(failed.1["amount"], 700);
@@ -1005,186 +1023,6 @@ async fn four_order_types(
     );
     assert_eq!(balance(app, token, single_id).await["status"], "active");
 
-    // Wagers need no nickname, cannot contaminate money totals, and resolve one confirmed event.
-    let before = call(
-        app,
-        "GET",
-        &format!("/api/bosses/{no_nickname}"),
-        None,
-        Some(token),
-    )
-    .await
-    .1;
-    let wager=new_order(app,token,no_nickname,"wager",json!({"target_quantity":1,"wager_item_id":null,"wager_item_name":"自定义物品","wager_expected":"not_obtained","wager_condition":"appearance"})).await;
-    let wid = id(&wager);
-    assert_eq!(wager["settlement_result"], "pending");
-    let wager_body = json!({"kind":"item_result","quantity":0,"item_obtained":false,"outcome":"failed","note":"没出","idempotency_key":Uuid::new_v4()});
-    let settled = call(
-        app,
-        "POST",
-        &format!("/api/orders/{wid}/entries"),
-        Some(wager_body.clone()),
-        Some(token),
-    )
-    .await;
-    assert_eq!(settled.0, StatusCode::CREATED, "{}", settled.1);
-    assert_eq!(balance(app, token, wid).await["settlement_result"], "won");
-    assert_eq!(
-        call(
-            app,
-            "POST",
-            &format!("/api/orders/{wid}/entries"),
-            Some(wager_body),
-            Some(token)
-        )
-        .await
-        .0,
-        StatusCode::OK,
-        "idempotency replays one settlement"
-    );
-    let second = json!({"kind":"item_result","quantity":0,"item_obtained":true,"note":"新一场","idempotency_key":Uuid::new_v4()});
-    assert_eq!(
-        call(
-            app,
-            "POST",
-            &format!("/api/orders/{wid}/entries"),
-            Some(second.clone()),
-            Some(token)
-        )
-        .await
-        .1["error"]["code"],
-        "WAGER_ALREADY_SETTLED"
-    );
-    assert_eq!(
-        call(
-            app,
-            "DELETE",
-            &format!("/api/orders/{wid}/entries/{}", id(&settled.1)),
-            None,
-            Some(other)
-        )
-        .await
-        .0,
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        call(
-            app,
-            "DELETE",
-            &format!("/api/orders/{wid}/entries/{}", id(&settled.1)),
-            None,
-            Some(token)
-        )
-        .await
-        .0,
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        balance(app, token, wid).await["settlement_result"],
-        "pending"
-    );
-    assert_eq!(
-        call(
-            app,
-            "POST",
-            &format!("/api/orders/{wid}/entries"),
-            Some(second),
-            Some(token)
-        )
-        .await
-        .0,
-        StatusCode::CREATED
-    );
-    assert_eq!(balance(app, token, wid).await["settlement_result"], "lost");
-    let after = call(
-        app,
-        "GET",
-        &format!("/api/bosses/{no_nickname}"),
-        None,
-        Some(token),
-    )
-    .await
-    .1;
-    assert_eq!(after["remaining_amount"], before["remaining_amount"]);
-    assert_eq!(
-        entry(app, token, wid, "adjustment", 1).await.0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert_eq!(
-        upload(app, token, Some(wid), 150).await.0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    let extracted = new_order(
-        app,
-        token,
-        boss,
-        "wager",
-        json!({"target_quantity":1,"wager_item_name":"必须带出","wager_condition":"extracted"}),
-    )
-    .await;
-    let eid = id(&extracted);
-    let invalid = json!({"kind":"item_result","quantity":0,"item_obtained":true,"outcome":"failed","note":"","idempotency_key":Uuid::new_v4()});
-    assert_eq!(
-        call(
-            app,
-            "POST",
-            &format!("/api/orders/{eid}/entries"),
-            Some(invalid),
-            Some(token)
-        )
-        .await
-        .0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    let catalog = call(
-        app,
-        "GET",
-        "/api/catalog/items?page_size=1",
-        None,
-        Some(token),
-    )
-    .await;
-    assert_eq!(catalog.0, StatusCode::OK);
-    if let Some(item) = catalog.1["items"].as_array().and_then(|i| i.first()) {
-        let selected = new_order(
-            app,
-            token,
-            boss,
-            "wager",
-            json!({"wager_item_id":item["id"],"wager_item_name":"伪造名称"}),
-        )
-        .await;
-        assert_eq!(selected["wager_item_name"], item["name"]);
-        let selected_id = id(&selected);
-        let locked_event = json!({"kind":"item_result","quantity":0,"item_obtained":true,"note":"","idempotency_key":Uuid::new_v4()});
-        assert_eq!(
-            call(
-                app,
-                "POST",
-                &format!("/api/orders/{selected_id}/entries"),
-                Some(locked_event),
-                Some(token)
-            )
-            .await
-            .0,
-            StatusCode::CREATED
-        );
-        // Simulate a retired catalog item: old named snapshots remain editable.
-        sqlx::query("UPDATE service_orders SET wager_item_id='retired-item-id',wager_item_name='下单时的名称快照' WHERE id=$1")
-            .bind(Uuid::parse_str(selected_id).expect("selected UUID")).execute(pool).await.expect("retired item fixture");
-        let retained = json!({"title":"仅改备注","kind":"wager","target_quantity":1000,"failure_default_quantity":0,"note":"目录后续变化仍保留旧名称","wager_item_id":"retired-item-id","wager_item_name":"客户端名称不可重写旧快照"});
-        let edited = call(
-            app,
-            "PATCH",
-            &format!("/api/orders/{selected_id}"),
-            Some(retained),
-            Some(token),
-        )
-        .await;
-        assert_eq!(edited.0, StatusCode::OK, "{}", edited.1);
-        assert_eq!(edited.1["wager_item_name"], "下单时的名称快照");
-    }
-
     // Screenshots preserve gross/fake/manual results across OCR, and settle exactly once.
     let screenshot = upload(app, token, Some(single_id), 151).await;
     assert_eq!(screenshot.0, StatusCode::CREATED);
@@ -1206,12 +1044,27 @@ async fn four_order_types(
         app,
         "PATCH",
         &path,
-        Some(json!({"amount":900,"fake_amount":100,"outcome":"success","confirmed":false})),
+        Some(json!({"amount":900,"fake_amount":100,"outcome":"success","confirmed":false,"item_obtained":null})),
         Some(token),
     )
     .await;
     assert_eq!(corrected.0, StatusCode::OK);
     assert_eq!(corrected.1["net_amount"], 800);
+    for result in [true, false] {
+        assert_eq!(
+            call(
+                app,
+                "PATCH",
+                &path,
+                Some(json!({"item_obtained":result,"confirmed":true})),
+                Some(token)
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
     assert_eq!(
         call(app, "POST", &format!("{path}/recognize"), None, Some(token))
             .await
@@ -1222,7 +1075,7 @@ async fn four_order_types(
         app,
         "PATCH",
         &path,
-        Some(json!({"confirmed":true})),
+        Some(json!({"confirmed":true,"item_obtained":null})),
         Some(token),
     )
     .await;
@@ -1259,84 +1112,6 @@ async fn four_order_types(
         .1["error"]["code"],
         "ORDER_CONFIGURATION_LOCKED"
     );
-    let wager_shot = upload(app, token, Some(eid), 153).await;
-    let wpath = format!("/api/matches/{}", id(&wager_shot.1["record"]));
-    assert_eq!(
-        call(
-            app,
-            "PATCH",
-            &wpath,
-            Some(json!({"confirmed":true})),
-            Some(token)
-        )
-        .await
-        .0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert_eq!(
-        call(
-            app,
-            "PATCH",
-            &wpath,
-            Some(json!({"item_obtained":true,"confirmed":true})),
-            Some(token)
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    assert_eq!(balance(app, token, eid).await["settlement_result"], "won");
-    let another = upload(app, token, Some(eid), 154).await;
-    let another_path = format!("/api/matches/{}", id(&another.1["record"]));
-    assert_eq!(
-        call(
-            app,
-            "PATCH",
-            &another_path,
-            Some(json!({"item_obtained":false,"confirmed":true})),
-            Some(token)
-        )
-        .await
-        .1["error"]["code"],
-        "WAGER_ALREADY_SETTLED"
-    );
-    assert_eq!(
-        call(
-            app,
-            "PATCH",
-            &wpath,
-            Some(json!({"confirmed":false})),
-            Some(token)
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    assert_eq!(
-        balance(app, token, eid).await["settlement_result"],
-        "pending"
-    );
-    assert_eq!(
-        call(
-            app,
-            "PATCH",
-            &another_path,
-            Some(json!({"item_obtained":false,"confirmed":true})),
-            Some(token)
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    assert_eq!(balance(app, token, eid).await["settlement_result"], "lost");
-    new_order(
-        app,
-        token,
-        boss,
-        "wager",
-        json!({"wager_item_name":"尚未结算的物品"}),
-    )
-    .await;
     let totals = call(
         app,
         "GET",
@@ -1348,23 +1123,266 @@ async fn four_order_types(
     assert_eq!(totals.0, StatusCode::OK);
     assert_eq!(
         totals.1["remaining_amount"], 2600,
-        "only the three escort orders are currency debt"
+        "only escort orders are currency debt"
     );
     assert_eq!(totals.1["pending_single_round_count"], 2);
-    assert_eq!(totals.1["pending_wager_count"], 1);
+    assert!(totals.1.get("pending_wager_count").is_none());
+    retired_orders_are_hidden_and_preserved(app, pool, token, other, no_nickname).await;
+}
+
+async fn retired_orders_are_hidden_and_preserved(
+    app: &Router,
+    pool: &PgPool,
+    token: &str,
+    other: &str,
+    boss: &str,
+) {
+    let owner: Uuid = sqlx::query_scalar("SELECT user_id FROM bosses WHERE id=$1")
+        .bind(Uuid::parse_str(boss).expect("boss UUID"))
+        .fetch_one(pool)
+        .await
+        .expect("fixture owner");
+    let before = call(
+        app,
+        "GET",
+        &format!("/api/bosses/{boss}"),
+        None,
+        Some(token),
+    )
+    .await
+    .1;
+    let order_id = Uuid::new_v4();
+    let entry_id = Uuid::new_v4();
+    let match_id = Uuid::new_v4();
+    let historical_image = image(156);
+    sqlx::query("INSERT INTO service_orders(id,user_id,boss_id,title,kind,target_quantity,wager_item_id,wager_item_name,wager_expected,wager_condition) VALUES($1,$2,$3,'历史结果订单','wager',1,'retired-item','历史物品名','not_obtained','extracted')")
+        .bind(order_id).bind(owner).bind(Uuid::parse_str(boss).expect("boss UUID")).execute(pool).await.expect("released order fixture");
+    sqlx::query("INSERT INTO ledger_entries(id,user_id,order_id,kind,quantity,idempotency_key,item_obtained,outcome,note) VALUES($1,$2,$3,'item_result',0,$4,false,'failed','历史结果')")
+        .bind(entry_id).bind(owner).bind(order_id).bind(Uuid::new_v4()).execute(pool).await.expect("released item result");
+    sqlx::query("INSERT INTO matches(id,user_id,boss_id,boss_player_name,order_id,original_name,image_content_type,image_bytes,image_sha256,image_width,image_height,image_size,item_obtained,ocr_status) VALUES($1,$2,$3,'历史昵称',$4,'historical.png','image/png',$5,$6,64,64,$7,true,'failed')")
+        .bind(match_id).bind(owner).bind(boss).bind(order_id).bind(&historical_image).bind(format!("{:x}", Sha256::digest(&historical_image))).bind(i32::try_from(historical_image.len()).expect("fixture image size")).execute(pool).await.expect("released evidence fixture");
+    let original: Value =
+        sqlx::query_scalar("SELECT to_jsonb(o) FROM service_orders o WHERE id=$1")
+            .bind(order_id)
+            .fetch_one(pool)
+            .await
+            .expect("raw order");
+    let after = call(
+        app,
+        "GET",
+        &format!("/api/bosses/{boss}"),
+        None,
+        Some(token),
+    )
+    .await
+    .1;
+    for field in [
+        "active_order_count",
+        "remaining_minutes",
+        "remaining_amount",
+        "pending_single_round_count",
+    ] {
+        assert_eq!(
+            before[field], after[field],
+            "retired orders never change {field}"
+        );
+    }
+    let orders = call(
+        app,
+        "GET",
+        &format!("/api/orders?boss_id={boss}"),
+        None,
+        Some(token),
+    )
+    .await;
+    assert_eq!(orders.0, StatusCode::OK);
+    assert!(
+        orders.1["items"]
+            .as_array()
+            .expect("visible orders")
+            .iter()
+            .all(|item| item["kind"] != "wager")
+    );
+    for (field, value) in [
+        ("wager_item_id", json!("retired-item")),
+        ("wager_item_name", json!("不再支持物品")),
+        ("wager_expected", json!("not_obtained")),
+        ("wager_condition", json!("extracted")),
+    ] {
+        let mut legacy = json!({"title":"旧客户端","kind":"hourly","target_quantity":60,"failure_default_quantity":0,"note":"","wager_item_id":null,"wager_item_name":"","wager_expected":"obtained","wager_condition":"appearance"});
+        legacy[field] = value;
+        let rejected = call(
+            app,
+            "POST",
+            &format!("/api/bosses/{boss}/orders"),
+            Some(legacy),
+            Some(token),
+        )
+        .await;
+        assert_eq!(rejected.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(rejected.1["error"]["code"], "VALIDATION_ERROR");
+    }
+    let body = json!({"title":"retired","kind":"wager","target_quantity":1,"failure_default_quantity":0,"note":""});
+    let new = call(
+        app,
+        "POST",
+        &format!("/api/bosses/{boss}/orders"),
+        Some(body),
+        Some(token),
+    )
+    .await;
+    assert_eq!(new.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(new.1["error"]["code"], "ORDER_TYPE_UNSUPPORTED");
+    let replacement = json!({"title":"不能改成金额","kind":"escort","target_quantity":1000,"failure_default_quantity":0,"note":""});
+    let paths = [
+        ("GET", format!("/api/orders/{order_id}"), None),
+        (
+            "PATCH",
+            format!("/api/orders/{order_id}"),
+            Some(replacement),
+        ),
+        ("GET", format!("/api/orders/{order_id}/entries"), None),
+        (
+            "POST",
+            format!("/api/orders/{order_id}/entries"),
+            Some(
+                json!({"kind":"progress","quantity":1,"note":"","idempotency_key":Uuid::new_v4()}),
+            ),
+        ),
+        (
+            "DELETE",
+            format!("/api/orders/{order_id}/entries/{entry_id}"),
+            None,
+        ),
+        ("GET", format!("/api/matches?order_id={order_id}"), None),
+        (
+            "GET",
+            format!("/api/matches/stats?order_id={order_id}"),
+            None,
+        ),
+        ("GET", format!("/api/matches/{match_id}"), None),
+        ("GET", format!("/api/matches/{match_id}/image"), None),
+        (
+            "PATCH",
+            format!("/api/matches/{match_id}"),
+            Some(json!({"note":"禁止修改"})),
+        ),
+        ("POST", format!("/api/matches/{match_id}/recognize"), None),
+        ("DELETE", format!("/api/matches/{match_id}"), None),
+    ];
+    for (method, path, body) in paths {
+        let result = call(app, method, &path, body, Some(token)).await;
+        assert_eq!(
+            result.0,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{method} {path}: {}",
+            result.1
+        );
+        assert_eq!(result.1["error"]["code"], "ORDER_TYPE_UNSUPPORTED");
+    }
     assert_eq!(
         call(
             app,
             "GET",
-            &format!("/api/matches/stats?order_id={eid}"),
+            &format!("/api/orders/{order_id}"),
             None,
+            Some(other)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        upload(app, token, Some(&order_id.to_string()), 150).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        call(
+            app,
+            "PATCH",
+            "/api/matches/settings",
+            Some(json!({"boss_id":boss,"boss_player_name":"历史昵称"})),
             Some(token)
         )
         .await
-        .1["total_amount"],
-        0,
-        "wager evidence does not become currency totals"
+        .0,
+        StatusCode::OK
     );
+    let records_before: i64 = sqlx::query_scalar("SELECT count(*) FROM matches WHERE user_id=$1")
+        .bind(owner)
+        .fetch_one(pool)
+        .await
+        .expect("records before duplicate");
+    let duplicate = upload(app, token, None, 156).await;
+    assert_eq!(duplicate.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(duplicate.1["error"]["code"], "ORDER_TYPE_UNSUPPORTED");
+    let records_after: i64 = sqlx::query_scalar("SELECT count(*) FROM matches WHERE user_id=$1")
+        .bind(owner)
+        .fetch_one(pool)
+        .await
+        .expect("records after duplicate");
+    assert_eq!(
+        records_after, records_before,
+        "retired duplicate never creates another record"
+    );
+    assert_eq!(
+        call(
+            app,
+            "GET",
+            &format!("/api/matches/{match_id}/image"),
+            None,
+            Some(other)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let unchanged: Value =
+        sqlx::query_scalar("SELECT to_jsonb(o) FROM service_orders o WHERE id=$1")
+            .bind(order_id)
+            .fetch_one(pool)
+            .await
+            .expect("unchanged raw order");
+    assert_eq!(unchanged, original);
+    let revision: i64 =
+        sqlx::query_scalar("SELECT revision FROM account_oss_archives WHERE user_id=$1")
+            .bind(owner)
+            .fetch_one(pool)
+            .await
+            .expect("archive revision");
+    let snapshot = pwtools_api::account_archive::load_snapshot(pool, owner, revision)
+        .await
+        .expect("archive")
+        .expect("owner");
+    let orders = snapshot["orders"].as_array().expect("raw orders");
+    let old = orders
+        .iter()
+        .find(|item| item["id"] == order_id.to_string())
+        .expect("retired order archived");
+    assert_eq!(old["kind"], "wager");
+    assert_eq!(old["wager_item_name"], "历史物品名");
+    assert_eq!(old["wager_expected"], "not_obtained");
+    assert_eq!(old["wager_condition"], "extracted");
+    assert!(
+        snapshot["entries"]
+            .as_array()
+            .expect("raw entries")
+            .iter()
+            .any(|item| item["id"] == entry_id.to_string() && item["item_obtained"] == false)
+    );
+    assert!(
+        snapshot["matches"]
+            .as_array()
+            .expect("raw evidence")
+            .iter()
+            .any(|item| item["id"] == match_id.to_string() && item["item_obtained"] == true)
+    );
+    let original_bytes: Vec<u8> = sqlx::query_scalar("SELECT image_bytes FROM matches WHERE id=$1")
+        .bind(match_id)
+        .fetch_one(pool)
+        .await
+        .expect("original evidence retained");
+    assert_eq!(original_bytes, historical_image);
 }
 
 async fn migration_preserves_historical_originals(pool: &PgPool) {

@@ -26,7 +26,6 @@ export interface MatchRecord {
   fake_amount: number | null;
   net_amount: number | null;
   credited_amount: number | null;
-  item_obtained: boolean | null;
   boss_id: string;
   boss_player_name: string;
   original_name: string;
@@ -48,7 +47,7 @@ export interface MatchRecord {
   created_at: string;
   updated_at: string;
 }
-export type MatchUpdateInput = Pick<MatchRecord, 'player_name' | 'outcome' | 'amount' | 'confirmed' | 'played_at' | 'note'> & { failure_extra_amount?: number; fake_amount?: number | null; item_obtained?: boolean | null; order_id?: string };
+export type MatchUpdateInput = Pick<MatchRecord, 'player_name' | 'outcome' | 'amount' | 'confirmed' | 'played_at' | 'note'> & { failure_extra_amount?: number; fake_amount?: number | null; order_id?: string };
 export interface MatchUploadInput { name: string; content_type: string; data: Uint8Array; order_id?: string }
 export interface MatchUploadResponse { record: MatchRecord; duplicate: boolean }
 export interface MatchImage { content_type: string; data: Uint8Array }
@@ -63,11 +62,9 @@ export interface MatchStats {
 }
 export interface MatchSettings { boss_id: string; boss_player_name: string }
 
-export type OrderKind = 'hourly' | 'escort' | 'single_round' | 'wager';
+export type OrderKind = 'hourly' | 'escort' | 'single_round';
 export type FailureTrigger = 'failed' | 'failed_below_standard' | 'below_standard';
 export type FailureMode = 'manual' | 'fixed' | 'shortfall';
-export type WagerCondition = 'appearance' | 'extracted';
-export type WagerExpected = 'obtained' | 'not_obtained';
 export interface BossInput { display_name: string; game_id: string; game_name: string; notes: string }
 export interface Boss extends BossInput {
   id: string;
@@ -75,7 +72,6 @@ export interface Boss extends BossInput {
   remaining_minutes: number;
   remaining_amount: number;
   pending_single_round_count: number;
-  pending_wager_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -87,23 +83,14 @@ export interface OrderInput {
   failure_trigger?: FailureTrigger;
   failure_standard_quantity?: number;
   failure_mode?: FailureMode;
-  wager_item_id?: string | null;
-  wager_item_name?: string;
-  wager_expected?: WagerExpected;
-  wager_condition?: WagerCondition;
   note: string;
 }
 export interface ServiceOrder extends OrderInput {
   failure_trigger: FailureTrigger;
   failure_standard_quantity: number;
   failure_mode: FailureMode;
-  wager_item_id: string | null;
-  wager_item_name: string;
-  wager_expected: WagerExpected;
-  wager_condition: WagerCondition;
   configuration_locked: boolean;
   best_round_quantity: number;
-  settlement_result: 'pending' | 'won' | 'lost' | null;
   id: string;
   boss_id: string;
   boss_name: string;
@@ -125,14 +112,10 @@ export interface OrderTemplate extends OrderTemplateInput {
   failure_trigger: FailureTrigger;
   failure_standard_quantity: number;
   failure_mode: FailureMode;
-  wager_item_id: string | null;
-  wager_item_name: string;
-  wager_expected: WagerExpected;
-  wager_condition: WagerCondition;
   created_at: string;
   updated_at: string;
 }
-export type LedgerEntryKind = 'progress' | 'failure' | 'adjustment' | 'item_result';
+export type LedgerEntryKind = 'progress' | 'failure' | 'adjustment';
 export interface LedgerEntry {
   id: string;
   order_id: string;
@@ -142,7 +125,6 @@ export interface LedgerEntry {
   fake_amount: number | null;
   net_amount: number | null;
   credited_amount: number | null;
-  item_obtained: boolean | null;
   outcome: 'success' | 'failed' | null;
   failure_extra_amount: number;
   occurred_at: string;
@@ -158,31 +140,10 @@ export interface LedgerEntryInput {
   idempotency_key: string;
   amount?: number | null;
   fake_amount?: number | null;
-  item_obtained?: boolean | null;
   outcome?: 'success' | 'failed';
   failure_extra_amount?: number;
 }
 export interface LedgerPage { items: LedgerEntry[]; total: number; page: number; page_size: number }
-
-export interface CatalogCategory { id: string; name: string; count: number }
-export interface CatalogItem {
-  id: string; name: string; category_id: string; category: string; subcategory: string;
-  icon_url: string | null; aliases: string[]; source_url: string; source_version: string | null;
-  source_kind: string;
-  official_source_url: string | null; official_name: string | null;
-}
-export interface CatalogQuery { q?: string; category?: string; page?: number; page_size?: number }
-export interface CatalogResponse {
-  categories: CatalogCategory[];
-  items: CatalogItem[];
-  total: number;
-  page: number;
-  page_size: number;
-  source_url: string;
-  fetched_at: string;
-  scope: string;
-  snapshot_total: number;
-}
 
 export interface DesktopBridge {
   health(): Promise<HealthResponse>;
@@ -216,7 +177,6 @@ export interface DesktopBridge {
   createOrderTemplate(input: OrderTemplateInput): Promise<OrderTemplate>;
   updateOrderTemplate(id: string, input: OrderTemplateInput): Promise<OrderTemplate>;
   deleteOrderTemplate(id: string): Promise<void>;
-  listCatalog(query?: CatalogQuery): Promise<CatalogResponse>;
   listLedgerEntries(orderId: string, page?: number, pageSize?: number): Promise<LedgerPage>;
   addLedgerEntry(orderId: string, input: LedgerEntryInput): Promise<LedgerEntry>;
   deleteLedgerEntry(orderId: string, entryId: string): Promise<void>;

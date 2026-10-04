@@ -38,9 +38,6 @@
 .round-extra-rule p, .round-extra-rule > span { font-size: 12px; line-height: 1.8; color: var(--muted); }
 .round-extra-rule > strong { font-size: 13px; color: var(--warm); }
 .round-extra-rule > button { justify-self: start; }
-.round-item-rule { display: grid; gap: 6px; padding: 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--input); }
-.round-item-rule span, .round-item-rule p { font-size: 12px; line-height: 1.8; color: var(--muted); }
-.round-item-rule strong { font-size: 16px; color: var(--blue); }
 .round-supplement { border-top: 1px solid var(--border); }
 .round-supplement > summary { display: flex; align-items: center; gap: 8px; padding: 13px 0; cursor: pointer; list-style: none; color: var(--muted); font-size: 12px; }
 .round-supplement summary::-webkit-details-marker { display: none; }

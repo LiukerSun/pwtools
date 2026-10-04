@@ -165,7 +165,6 @@ export function createNativeBridge(webview: NativeWebView): {
     createOrderTemplate: input => invoke('createOrderTemplate', [input]),
     updateOrderTemplate: (id, input) => invoke('updateOrderTemplate', [id, input]),
     deleteOrderTemplate: id => invoke('deleteOrderTemplate', [id]),
-    listCatalog: (query = {}) => invoke('listCatalog', [query]),
     listLedgerEntries: (orderId, page = 1, pageSize = 20) => invoke('listLedgerEntries', [orderId, page, pageSize]),
     addLedgerEntry: (orderId, input) => invoke('addLedgerEntry', [orderId, input]),
     deleteLedgerEntry: (orderId, entryId) => invoke('deleteLedgerEntry', [orderId, entryId]),

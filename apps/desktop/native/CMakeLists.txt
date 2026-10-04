@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(PWTools VERSION 0.9.6 LANGUAGES CXX RC)
+project(PWTools VERSION 0.9.7 LANGUAGES CXX RC)
 
 if(NOT WIN32 OR NOT MSVC)
   message(FATAL_ERROR "PWTools requires Windows and the MSVC C++ build tools.")

@@ -46,28 +46,28 @@ Rust 2024 + Axum 0.8 + SQLx 0.8。启动时自动执行 `migrations/`，运行�
 | GET / POST | `/bosses` | 搜索 `?q=` 或创建老板；列表返回 `{ items }` |
 | GET / PATCH | `/bosses/{id}` | 查看余额汇总或修改老板称呼、游戏 ID、截图昵称、长期备注 |
 | GET | `/orders?boss_id={id}` | 指定老板或当前账号所有订单，返回 `{ items }` |
-| POST | `/bosses/{id}/orders` | 建立小时单、护航单、单局单或对赌单 |
+| POST | `/bosses/{id}/orders` | 建立小时单、护航单或单局单 |
 | GET / PATCH | `/orders/{id}` | 查看订单投影或修改订单配置 |
 | GET / POST | `/orders/{id}/entries` | 分页查看场次账本或添加手工进度、失败追加、约定调整 |
 | DELETE | `/orders/{id}/entries/{entry_id}` | 删除手工记录并重算余额；截图场次需通过截图接口修改 |
 
-老板输入为 `{ display_name, game_id, game_name, notes }`，称呼 1–80 字，游戏 ID 和截图昵称各 0–80 字，长期备注最多 2000 字。护航单和单局单需要截图昵称非空；对赌单可只用手工记录，上传截图前仍须设置截图昵称。
+老板输入为 `{ display_name, game_id, game_name, notes }`，称呼 1–80 字，游戏 ID 和截图昵称各 0–80 字，长期备注最多 2000 字。护航单和单局单需要截图昵称非空；小时单可仅用手工时长记录。
 
-订单输入保留 `{ title, kind, target_quantity, failure_default_quantity, note }`，并支持 `failure_trigger`、`failure_standard_quantity`、`failure_mode`、`wager_item_id`、`wager_item_name`、`wager_condition`、`wager_expected`。`hourly` 目标为整数分钟；`escort` 和 `single_round` 目标为整数哈夫币；`wager` 目标固定为 1，表示一笔待判断的对赌。目标大于 0，金额和时长上限为 9000000000000；订单备注最多 2000 字。
+订单输入保留 `{ title, kind, target_quantity, failure_default_quantity, note }`，并支持 `failure_trigger`、`failure_standard_quantity`、`failure_mode`。`hourly` 目标为整数分钟；`escort` 和 `single_round` 目标为整数哈夫币。目标大于 0，金额和时长上限为 9000000000000；订单备注最多 2000 字。
 
 护航追加触发条件为 `failed`（撤离失败）、`failed_below_standard`（失败且净值低于标准）或 `below_standard`（任意结果净值低于标准）。追加方式为 `manual`（本场明确填写，0 有效）、`fixed`（订单固定值）或 `shortfall`（标准减本场净值，最低为 0）。未触发时追加为 0。固定追加按本场开始记录时的配置保存，后续修改默认值不会改变历史场次。
 
-对赌支持目录物品 ID 与名称快照，或没有 ID 的自定义物品。`wager_condition` 为 `appearance`（是否出现）或 `extracted`（是否成功带出），`wager_expected` 为 `obtained`（有）或 `not_obtained`（没有）。用户明确填写本场布尔结果后，这一笔订单结算为 `won` 或 `lost`；不会推算赔率或付款。失败撤离不能标记为成功带出物品。
+`configuration_locked` 表示订单已存在手工记录或截图草稿。此时类型、目标、触发条件、计算方式和标准不能改变；订单名称、备注和未来场次的默认追加量仍可修改。
 
-`configuration_locked` 表示订单已存在手工记录或截图草稿。此时类型、目标、触发条件、计算方式、标准和对赌约定不能改变；订单名称、备注和未来场次的默认追加量仍可修改。相同目录 ID 的原有名称快照保留，不随目录更新改写历史。
+手工场次输入包含 `{ kind, quantity, occurred_at, note, idempotency_key }`。小时单 `progress` 的 `quantity` 是大于 0 的分钟数。护航单和单局单 `progress` 需明确传入 `amount`（带出原值）、`fake_amount`（假账扣除，0 有效）和 `outcome`，并按护航规则填写 `failure_extra_amount`；输入 `quantity` 与原值一致，返回流水中的 `quantity` 为净值。净值为 0 的场次可以记录。兼容旧 `failure` 追加流水；`adjustment` 为小时单或护航单非零有符号约定变化，单局单不支持调整。备注最多 2000 字，幂等 UUID 防止重试重复记账。分页为 `page=1&page_size=20`，每页最多 100 条。
 
-手工场次输入包含 `{ kind, quantity, occurred_at, note, idempotency_key }`。小时单 `progress` 的 `quantity` 是大于 0 的分钟数。护航单和单局单 `progress` 需明确传入 `amount`（带出原值）、`fake_amount`（假账扣除，0 有效）和 `outcome`，并按护航规则填写 `failure_extra_amount`；输入 `quantity` 与原值一致，返回流水中的 `quantity` 为净值。净值为 0 的场次可以记录。对赌用 `item_result`，`quantity` 为 0，`item_obtained` 必须是布尔值。兼容旧 `failure` 追加流水；`adjustment` 为小时单或护航单非零有符号约定变化，单局单和对赌单不支持调整。备注最多 2000 字，幂等 UUID 防止重试重复记账。分页为 `page=1&page_size=20`，每页最多 100 条。
+小时单和护航单余额直接投影手工流水与已确认截图：任务总量 = 初始约定 + 本场追加 + 约定调整；剩余 = max(任务总量 − 已完成, 0)。护航只累计成功撤离的净值。单局单 `completed_quantity` 和 `best_round_quantity` 为成功场次的最高净值；未有单场达标时 `remaining_quantity` 始终是完整目标，不能跨场累加。老板汇总分别返回剩余小时分钟、护航欠额和未完成单局数量，不混为金额。所有影响余额的写入按订单加行锁并在事务内校验；重复确认、校正、撤回或删除不会产生额外流水副本。
 
-小时单和护航单余额直接投影手工流水与已确认截图：任务总量 = 初始约定 + 本场追加 + 约定调整；剩余 = max(任务总量 − 已完成, 0)。护航只累计成功撤离的净值。单局单 `completed_quantity` 和 `best_round_quantity` 为成功场次的最高净值；未有单场达标时 `remaining_quantity` 始终是完整目标，不能跨场累加。对赌只允许一条已确认结果，撤回或删除后恢复待判断。老板汇总分别返回剩余小时分钟、护航欠额、未完成单局数量和未结算对赌数量，不混为金额。所有影响余额的写入按订单加行锁并在事务内校验；重复确认、校正、撤回或删除不会产生额外流水副本。
+已移除 `wager` 和 `item_result`，写入返回 `422 ORDER_TYPE_UNSUPPORTED`。历史记录保留在数据库和原始账户归档中，当前订单与模板列表、老板汇总只包含三种有效类型。目录接口 `/api/catalog/items` 返回 404。兼容旧客户端的空物品字段用于正常三类订单；实际物品配置或布尔物品结果返回 422。
 
 ### 个人订单模板
 
-模板只属于当前账号，不绑定老板，也不保存流水或余额。四种基础模板由客户端提供；个人模板保存在 PostgreSQL，选择后复制默认配置到新订单，仍通过 `/bosses/{id}/orders` 开单。修改或删除模板不会修改已经创建的订单。
+模板只属于当前账号，不绑定老板，也不保存流水或余额。三种基础模板由客户端提供；个人模板保存在 PostgreSQL，选择后复制默认配置到新订单，仍通过 `/bosses/{id}/orders` 开单。修改或删除模板不会修改已经创建的订单。
 
 | 方法 | 路径（带 `/api`） | 响应 |
 | --- | --- | --- |
@@ -76,17 +76,13 @@ Rust 2024 + Axum 0.8 + SQLx 0.8。启动时自动执行 `migrations/`，运行�
 | PATCH | `/order-templates/{id}` | `200`，替换模板完整配置 |
 | DELETE | `/order-templates/{id}` | `204`，只删除模板 |
 
-请求为扁平 `{ name, ...OrderInput }`；`name` 去两端空白后为 1–80 字，订单 `title` 为 1–120 字。目标、类型及所有规则必须有效，不能把未选对赌物品或未填写目标保存为有效模板；省略可选规则时使用订单接口的相同默认值。模板不要求老板截图昵称，使用模板建立金额订单时仍校验所选老板。响应返回完整配置、`id`、`created_at`、`updated_at`，不含账号 ID。新目录物品使用服务端规范名称；编辑相同目录 ID 时保留原有名称快照，目录变化不阻塞修改模板名称或备注。未知字段、重复字段及不完整 PATCH 返回 400；配置无效返回 422；不存在或属于其他账号的模板统一返回 `404 ORDER_TEMPLATE_NOT_FOUND`。
+请求为扁平 `{ name, ...OrderInput }`；`name` 去两端空白后为 1–80 字，订单 `title` 为 1–120 字。目标、类型及所有规则必须有效，不能把未填写目标保存为有效模板；省略可选规则时使用订单接口的相同默认值。模板不要求老板截图昵称，使用模板建立金额订单时仍校验所选老板。响应返回完整配置、`id`、`created_at`、`updated_at`，不含账号 ID。未知字段、重复字段及不完整 PATCH 返回 400；配置无效返回 422；不存在或属于其他账号的模板统一返回 `404 ORDER_TEMPLATE_NOT_FOUND`。
 
 模板创建、更新、删除与账户归档修订在同一数据库事务提交，回滚不会留下待归档修改。账户 JSON 的 `order_templates` 数组按创建时间和 ID 排序，在同一 PostgreSQL 快照读取并保存到现有私有 OSS 账户目录。008 升级为已有账户推进归档修订，保留活跃租约，避免用新 JSON 结构覆盖已有不可变修订。
 
-### 对赌物品目录
-
-登录后 `GET /api/catalog/items?q=&category=&page=1&page_size=40` 查询内置目录，每页最多 100 条。响应包含 `items`、`categories`、`snapshot_total`、`total`、分页、抓取时间和来源范围。当前快照为 2296 个唯一物品、11 类，合并 DDDJ 历史目录与三角洲官方国际站公开资料；这不是国服最新全量承诺。每项保留来源、版本与名称别名，支持搜索、分类和手填目录外物品。API 使用随服务打包的快照，不在用户查询时爬取。来源和刷新方法见 [目录说明](data/README.md)。
-
 ## 老板战绩与原图
 
-所有战绩接口要求登录，并限制在当前账号。新截图通过 `X-Order-Id` 明确绑定护航单、单局单或对赌单，读取对应老板截图昵称；UID 本身通常不出现在截图里，因此需要昵称映射。小时单使用手工时长记录。
+所有战绩接口要求登录，并限制在当前账号。新截图通过 `X-Order-Id` 明确绑定护航单或单局单，读取对应老板截图昵称；UID 本身通常不出现在截图里，因此需要昵称映射。小时单使用手工时长记录。
 
 | 方法 | 路径（带 `/api`） | 用途 |
 | --- | --- | --- |
@@ -100,7 +96,7 @@ Rust 2024 + Axum 0.8 + SQLx 0.8。启动时自动执行 `migrations/`，运行�
 
 上传使用 `Content-Type: image/png` / `image/jpeg` / `image/webp`，并可通过 `X-File-Name: encodeURIComponent(filename)` 指定原始名称。仅上传端点允许 12 MiB，其他端点仍限制为 16 KiB。后端验证真实图片格式并完整解码，单边最多 16000 像素、总像素最多 4000 万，解码和 OCR 均限制并发。
 
-记录包含 `id`、`order_id`、`failure_extra_amount`、`boss_id`、`boss_player_name`、`original_name`、`image_content_type`、`image_sha256`、`image_width`、`image_height`、`image_size`、`players`、`raw_text`、`warnings`、`ocr_status`、`player_name`、`outcome`、`amount`、`fake_amount`、`net_amount`、`credited_amount`、`item_obtained`、`confirmed`、`played_at`、`note`、`created_at`、`updated_at`，不公开所有者 ID、内部校对标志、配置快照或图片字节。`played_at` 是可空 UTC 时间字符串。
+记录包含 `id`、`order_id`、`failure_extra_amount`、`boss_id`、`boss_player_name`、`original_name`、`image_content_type`、`image_sha256`、`image_width`、`image_height`、`image_size`、`players`、`raw_text`、`warnings`、`ocr_status`、`player_name`、`outcome`、`amount`、`fake_amount`、`net_amount`、`credited_amount`、`confirmed`、`played_at`、`note`、`created_at`、`updated_at`，不公开所有者 ID、内部校对标志、配置快照或图片字节。`played_at` 是可空 UTC 时间字符串。
 
 启用 OSS 后，新原图私有存储于独立 `pwtools/` 目录，数据库保留归属、对象引用和 SHA-256。上传使用 Content-MD5，随后回读验证长度与 SHA-256，验证成功才提交记录；OCR 繁忙或失败保留原图和草稿。未启用 OSS 的开发/测试继续使用 PostgreSQL `BYTEA`；旧原图迁移前仍可读取。排队和 OCR 各有 35 秒上限。单个账号、老板标识、SHA-256 的组合唯一，重复上传不增加统计；同老板原图不能重复归到不同订单，同一截图可为不同老板记录其各自结果。
 
@@ -126,11 +122,11 @@ cargo run --bin pwtools-storage -- drain --limit 1000
 
 上传绑定开始时的明确订单及昵称快照，在 OCR 期间切换界面选择不会改变该记录归属。只精确匹配记录中的老板昵称，未匹配时 `player_name` 为空、`outcome` 为 `unknown`、`amount` 为 `null`，并给出警告；不会使用其他队员或默认第一行。识别结果待人工确认。旧未分配图可通过 `order_id` 明确绑定同一老板的截图订单，已关联图不能转到另一笔订单。
 
-人工 PATCH 允许 `player_name`、`outcome`、`amount`、`fake_amount`、`item_obtained`、`confirmed`、`played_at`、`note`、`order_id` 和 `failure_extra_amount`，支持部分修改；可空字段显式传入 `null` 可清空。确认需填写与记录绑定老板一致的玩家名称和明确撤离结果。金额订单还需有效原值和明确假账扣除，0 也必须提交；0 ≤ 假账扣除 ≤ 带出原值 ≤ 9000000000000。`net_amount = amount - fake_amount`；成功时 `credited_amount = net_amount`，失败时为 0，但原值和净值仍保留，用于追加规则和核对。对赌结果由用户填 `item_obtained`，OCR 不判定物品出现或胜负。
+人工 PATCH 允许 `player_name`、`outcome`、`amount`、`fake_amount`、`confirmed`、`played_at`、`note`、`order_id` 和 `failure_extra_amount`，支持部分修改；可空字段显式传入 `null` 可清空。确认需填写与记录绑定老板一致的玩家名称和明确撤离结果。金额订单还需有效原值和明确假账扣除，0 也必须提交；0 ≤ 假账扣除 ≤ 带出原值 ≤ 9000000000000。`net_amount = amount - fake_amount`；成功时 `credited_amount = net_amount`，失败时为 0，但原值和净值仍保留，用于追加规则和核对。旧客户端省略或传入空物品结果时兼容接受；实际布尔物品结果返回 422。历史截图响应中的原有物品证据仅用于归档保留。
 
 新金额草稿 `fake_amount` 为 null，未确认不计账；历史金额记录迁移为假账扣除 0，余额保持。截图备注最多 1000 字。重识别只刷新 OCR 参考；已确认结果和已保存的人工校正草稿均保留。识别失败只更新状态和警告，不丢失上次队员列表、文本、备注或校对；首次识别失败仍保留原图和空结果草稿。
 
-统计响应为 `{ "confirmed_count", "success_count", "failed_count", "draft_count", "total_amount", "success_rate" }`。`total_amount` 只累加已确认、成功撤离的净值，作为截图统计；单局单是否完成仍按 `/orders/{id}` 的最高单场净值判定，对赌不以金额判定。成功率范围 0–100。汇总超过 JavaScript 安全整数 9007199254740991 时返回 `409 TOTAL_AMOUNT_TOO_LARGE`，不会默默舍入。
+统计响应为 `{ "confirmed_count", "success_count", "failed_count", "draft_count", "total_amount", "success_rate" }`。`total_amount` 只累加已确认、成功撤离的净值，作为截图统计；单局单是否完成仍按 `/orders/{id}` 的最高单场净值判定。成功率范围 0–100。汇总超过 JavaScript 安全整数 9007199254740991 时返回 `409 TOTAL_AMOUNT_TOO_LARGE`，不会默默舍入。
 
 未设置老板时上传返回 `422 BOSS_REQUIRED`；未设置时列表和统计为空。不存在或不属于当前账号的记录统一返回 `404 MATCH_NOT_FOUND`。
 
@@ -156,7 +152,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test --tests -- --ignored
 ```
 
-各项测试创建独立随机数据库并执行迁移，验证基本账户、旧账号与业务保留、战绩原图与 OCR、四类订单投影、明确假账扣除、条件追加、单场达标、对赌结算、规则锁定、幂等写入、校正撤回、并发回滚及旧 schema 升级。OCR 使用内部本地 HTTP mock，图片为真实编码的 PNG。结束时删除测试数据库，不修改连接串指向的原数据库或清空任何用户表。
+各项测试创建独立随机数据库并执行迁移，验证基本账户、旧账号与业务保留、战绩原图与 OCR、三类订单投影、明确假账扣除、条件追加、单场达标、已移除类型拒绝与历史保留、规则锁定、幂等写入、校正撤回、并发回滚及旧 schema 升级。OCR 使用内部本地 HTTP mock，图片为真实编码的 PNG。结束时删除测试数据库，不修改连接串指向的原数据库或清空任何用户表。
 
 ### 私人账本自动归档
 

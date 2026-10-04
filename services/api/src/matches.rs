@@ -53,6 +53,7 @@ pub struct MatchRecord {
     pub fake_amount: Option<i64>,
     pub net_amount: Option<i64>,
     pub credited_amount: Option<i64>,
+    // Legacy evidence is retained in raw archives and existing OSS record snapshots.
     pub item_obtained: Option<bool>,
     #[serde(skip_serializing)]
     manual_result_edited: bool,
@@ -159,8 +160,8 @@ pub struct MatchPatch {
     amount: Option<Option<i64>>,
     #[serde(default, deserialize_with = "nullable_patch")]
     fake_amount: Option<Option<i64>>,
-    #[serde(default, deserialize_with = "nullable_patch")]
-    item_obtained: Option<Option<bool>>,
+    #[serde(default, rename = "item_obtained", deserialize_with = "nullable_patch")]
+    retired_item_result: Option<Option<bool>>,
     confirmed: Option<bool>,
     #[serde(default, deserialize_with = "nullable_patch")]
     played_at: Option<Option<DateTime<Utc>>>,
@@ -256,6 +257,17 @@ async fn find_duplicate(
         .map_err(|_| ApiError::internal("duplicate match lookup failed"))
 }
 
+async fn validate_record_order(
+    state: &AppState,
+    owner: Uuid,
+    record: &MatchRecord,
+) -> Result<(), ApiError> {
+    if let Some(order_id) = record.order_id {
+        ledger::binding(state, owner, order_id).await?;
+    }
+    Ok(())
+}
+
 fn check_duplicate_order(record: &MatchRecord, requested: Option<Uuid>) -> Result<(), ApiError> {
     if record
         .order_id
@@ -338,6 +350,7 @@ pub async fn upload(
     if let Some(record) =
         find_duplicate(&state, session.user.id, &digest, &settings.boss_id).await?
     {
+        validate_record_order(&state, session.user.id, &record).await?;
         check_duplicate_order(&record, order_id)?;
         if record.image_content_type != content_type {
             return Err(ApiError::validation("图片真实格式与声明的文件类型不一致"));
@@ -397,6 +410,7 @@ pub async fn upload(
     if let Some(record) =
         find_duplicate(&state, session.user.id, &digest, &settings.boss_id).await?
     {
+        validate_record_order(&state, session.user.id, &record).await?;
         check_duplicate_order(&record, order_id)?;
         transaction
             .rollback()
@@ -464,6 +478,7 @@ pub async fn upload(
         let record = find_duplicate(&state, session.user.id, &digest, &settings.boss_id)
             .await?
             .ok_or_else(not_found)?;
+        validate_record_order(&state, session.user.id, &record).await?;
         check_duplicate_order(&record, order_id)?;
         return Ok((
             StatusCode::OK,
@@ -556,7 +571,9 @@ pub async fn get(
     session: AuthenticatedUser,
     RecordId(id): RecordId,
 ) -> Result<Json<MatchRecord>, ApiError> {
-    Ok(Json(find(&state, session.user.id, id).await?))
+    let record = find(&state, session.user.id, id).await?;
+    validate_record_order(&state, session.user.id, &record).await?;
+    Ok(Json(record))
 }
 
 pub async fn update(
@@ -565,6 +582,7 @@ pub async fn update(
     RecordId(id): RecordId,
     ApiJson(input): ApiJson<MatchPatch>,
 ) -> Result<Json<MatchRecord>, ApiError> {
+    crate::retired_fields::item_result(input.retired_item_result.flatten())?;
     let mut transaction = state
         .pool
         .begin()
@@ -624,9 +642,6 @@ pub async fn update(
     if let Some(fake) = input.fake_amount {
         row.fake_amount = fake;
     }
-    if let Some(item) = input.item_obtained {
-        row.item_obtained = item;
-    }
     if let Some(confirmed) = input.confirmed {
         row.confirmed = confirmed;
     }
@@ -646,24 +661,7 @@ pub async fn update(
         }
         row.note = note.to_owned();
     }
-    let wager = order_binding.as_ref().is_some_and(|o| o.kind == "wager");
-    let net = ledger::money(row.amount, row.fake_amount, row.confirmed && !wager)?;
-    if wager {
-        let order = order_binding.as_ref().expect("wager binding");
-        if row.confirmed && row.item_obtained.is_none() {
-            return Err(ApiError::validation(
-                "对赌结果必须人工选择物品出了或没出，OCR不会判断物品",
-            ));
-        }
-        if order.wager_condition == "extracted"
-            && row.outcome == "failed"
-            && row.item_obtained == Some(true)
-        {
-            return Err(ApiError::validation("撤离失败不能标记物品已成功带出"));
-        }
-    } else if row.item_obtained.is_some() {
-        return Err(ApiError::validation("只有对赌单可以记录物品结果"));
-    }
+    let net = ledger::money(row.amount, row.fake_amount, row.confirmed)?;
     if let Some(order) = &order_binding {
         let changed = previous_money
             != (
@@ -702,7 +700,7 @@ pub async fn update(
         }
     }
     let query = format!(
-        "UPDATE matches SET player_name = $3, outcome = $4, amount = $5, confirmed = $6, played_at = $7, note = $8, order_id=$9, failure_extra_amount=$10, fake_amount=$11,item_obtained=$12,manual_result_edited=$13,failure_default_snapshot=$14,updated_at = now() WHERE user_id = $1 AND id = $2 RETURNING {RECORD_COLUMNS}"
+        "UPDATE matches SET player_name = $3, outcome = $4, amount = $5, confirmed = $6, played_at = $7, note = $8, order_id=$9, failure_extra_amount=$10, fake_amount=$11,manual_result_edited=$12,failure_default_snapshot=$13,updated_at = now() WHERE user_id = $1 AND id = $2 RETURNING {RECORD_COLUMNS}"
     );
     let updated = sqlx::query_as::<_, MatchRecord>(&query)
         .bind(session.user.id)
@@ -716,7 +714,6 @@ pub async fn update(
         .bind(row.order_id)
         .bind(row.failure_extra_amount)
         .bind(row.fake_amount)
-        .bind(row.item_obtained)
         .bind(row.manual_result_edited)
         .bind(row.failure_default_snapshot)
         .fetch_one(&mut *transaction)
@@ -745,6 +742,8 @@ pub async fn original_image(
     session: AuthenticatedUser,
     RecordId(id): RecordId,
 ) -> Result<Response, ApiError> {
+    let record = find(&state, session.user.id, id).await?;
+    validate_record_order(&state, session.user.id, &record).await?;
     let (content_type, bytes, _) = stored_image(&state, session.user.id, id).await?;
     let extension = match content_type.as_str() {
         "image/png" => "png",
@@ -887,6 +886,8 @@ pub async fn recognize(
     session: AuthenticatedUser,
     RecordId(id): RecordId,
 ) -> Result<Json<MatchRecord>, ApiError> {
+    let record = find(&state, session.user.id, id).await?;
+    validate_record_order(&state, session.user.id, &record).await?;
     let (content_type, bytes, boss_player_name) = stored_image(&state, session.user.id, id).await?;
     let recognition = state.ocr.recognize(Bytes::from(bytes), &content_type).await;
     Ok(Json(
@@ -926,14 +927,9 @@ pub async fn stats(
 ) -> Result<Json<MatchStats>, ApiError> {
     let Query(query) = query.map_err(|_| ApiError::validation("订单查询参数不正确"))?;
     let settings = current_settings(&state, session.user.id).await?;
-    let monetary = if let Some(order_id) = query.order_id {
-        ledger::binding(&state, session.user.id, order_id)
-            .await?
-            .kind
-            != "wager"
-    } else {
-        true
-    };
+    if let Some(order_id) = query.order_id {
+        ledger::binding(&state, session.user.id, order_id).await?;
+    }
     if query.order_id.is_none() && settings.boss_id.is_empty() {
         return Ok(Json(MatchStats {
             confirmed_count: 0,
@@ -944,8 +940,8 @@ pub async fn stats(
             success_rate: 0.0,
         }));
     }
-    let row = sqlx::query_as::<_, StatsRow>("SELECT count(*) FILTER (WHERE confirmed) AS confirmed_count, count(*) FILTER (WHERE confirmed AND outcome = 'success') AS success_count, count(*) FILTER (WHERE confirmed AND outcome = 'failed') AS failed_count, count(*) FILTER (WHERE NOT confirmed) AS draft_count, COALESCE(sum(credited_amount) FILTER (WHERE confirmed AND $4),0)::text AS total_amount FROM matches WHERE user_id = $1 AND (($3::uuid IS NOT NULL AND order_id=$3) OR ($3::uuid IS NULL AND boss_id=$2 AND order_id IS NULL))")
-        .bind(session.user.id).bind(&settings.boss_id).bind(query.order_id).bind(monetary).fetch_one(&state.pool).await.map_err(|_| ApiError::internal("match statistics failed"))?;
+    let row = sqlx::query_as::<_, StatsRow>("SELECT count(*) FILTER (WHERE confirmed) AS confirmed_count, count(*) FILTER (WHERE confirmed AND outcome = 'success') AS success_count, count(*) FILTER (WHERE confirmed AND outcome = 'failed') AS failed_count, count(*) FILTER (WHERE NOT confirmed) AS draft_count, COALESCE(sum(credited_amount) FILTER (WHERE confirmed),0)::text AS total_amount FROM matches WHERE user_id = $1 AND (($3::uuid IS NOT NULL AND order_id=$3) OR ($3::uuid IS NULL AND boss_id=$2 AND order_id IS NULL))")
+        .bind(session.user.id).bind(&settings.boss_id).bind(query.order_id).fetch_one(&state.pool).await.map_err(|_| ApiError::internal("match statistics failed"))?;
     let total_amount = row
         .total_amount
         .parse::<i64>()

@@ -108,7 +108,7 @@
 .ledger-order { background: var(--panel); border: 1px solid var(--border); border-radius: 13px; overflow: hidden; padding: 18px 20px 0; }
 .ledger-order-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .ledger-order-kind { display: flex; gap: 5px; align-items: center; font-size: 12px; color: var(--blue); flex-shrink: 0; }
-.ledger-order-kind.escort, .ledger-order-kind.wager { color: var(--warm); }
+.ledger-order-kind.escort { color: var(--warm); }
 .ledger-order-kind.single_round { color: var(--mint); }
 .ledger-order-head h4 { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 .ledger-order-status { margin-left: auto; color: var(--blue); font-size: 12px; padding: 3px 7px; border-radius: 5px; background: var(--blue-soft); flex-shrink: 0; }
@@ -215,16 +215,6 @@
 .ledger-rule-evaluation > p { color: var(--muted); font-size: 12px; line-height: 1.7; }
 .ledger-rule-evaluation > strong { font-size: 13px; color: var(--warm); font-weight: 550; }
 .ledger-rule-evaluation > button { justify-self: start; }
-.ledger-catalog-picker { display: grid; gap: 12px; min-width: 0; }
-.ledger-catalog-selected { display: flex; gap: 6px; align-items: center; color: var(--blue); font-size: 12px; line-height: 1.7; }
-.ledger-catalog-items { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 7px; max-height: 220px; overflow-y: auto; overscroll-behavior: contain; padding: 2px; }
-.ledger-catalog-items > button { position: relative; border: 1px solid var(--border); background: var(--input); padding: 10px 25px 10px 10px; color: var(--text); text-align: left; border-radius: 7px; min-width: 0; transition: border-color var(--fast), background var(--fast); }
-.ledger-catalog-items > button[aria-pressed="true"] { border-color: var(--blue); background: var(--blue-soft); }
-.ledger-catalog-items > button:hover { border-color: var(--blue); }
-.ledger-catalog-items strong { display: block; font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
-.ledger-catalog-items small { display: block; margin-top: 4px; color: var(--subtle); font-size: 12px; overflow-wrap: anywhere; line-height: 1.5; }
-.ledger-catalog-items svg { position: absolute; top: 11px; right: 8px; color: var(--blue); }
-.ledger-catalog-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 9px; color: var(--subtle); font-size: 12px; }
 .ledger-field-label { display: block; color: var(--text); font-size: 13px; font-weight: 550; margin-bottom: 8px; }
 .ledger-form-context { display: flex; align-items: center; gap: 8px; background: var(--input); color: var(--muted); font-size: 13px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 8px; line-height: 1.7; overflow-wrap: anywhere; }
 .ledger-form-context > svg { color: var(--blue); flex-shrink: 0; }
@@ -385,8 +375,6 @@
 .ledger-template-list article strong { display: block; font-size: 14px; font-weight: 550; overflow-wrap: anywhere; }
 .ledger-template-list article span { display: block; margin-top: 4px; color: var(--subtle); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .ledger-template-empty { color: var(--muted); font-size: 13px; padding: 15px 0; line-height: 1.75; }
-.ledger-setup-fields .ledger-catalog-items { max-height: 170px; }
-.ledger-setup-fields .ledger-catalog-items > button { padding: 8px 24px 8px 8px; }
 .ledger-form button:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
 @media (max-width: 1080px) {
   .ledger-order-row-main { grid-template-columns: 66px minmax(0, 1fr); gap: 3px 10px; }

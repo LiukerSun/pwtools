@@ -32,14 +32,14 @@ test('打包 WebView2 内粘贴截图上传原图并显示识别和预览', asyn
     const boss: Boss = {
       id: bossId, display_name: '原生粘贴老板', game_id: 'native-clipboard', game_name: '原生粘贴昵称', notes: '',
       active_order_count: 1, remaining_minutes: 0, remaining_amount: 5000000,
-      pending_single_round_count: 0, pending_wager_count: 0, created_at: timestamp, updated_at: timestamp,
+      pending_single_round_count: 0, created_at: timestamp, updated_at: timestamp,
     };
     const order: ServiceOrder = {
       id: orderId, boss_id: bossId, boss_name: boss.display_name, boss_game_name: boss.game_name,
       title: '原生粘贴护航单', kind: 'escort', target_quantity: 5000000, failure_default_quantity: 0,
       failure_trigger: 'failed', failure_standard_quantity: 0, failure_mode: 'manual',
-      wager_item_id: null, wager_item_name: '', wager_expected: 'obtained', wager_condition: 'appearance',
-      note: '', configuration_locked: false, best_round_quantity: 0, settlement_result: null,
+
+      note: '', configuration_locked: false, best_round_quantity: 0,
       completed_quantity: 0, failure_quantity: 0, adjustment_quantity: 0, total_quantity: 5000000,
       remaining_quantity: 5000000, excess_quantity: 0, status: 'active', record_count: 0,
       created_at: timestamp, updated_at: timestamp,
@@ -51,7 +51,7 @@ test('打包 WebView2 内粘贴截图上传原图并显示识别和预览', asyn
       players: [{ player_name: boss.game_name, amount: 1867449, outcome: 'success', confidence: 0.98 }],
       raw_text: `${boss.game_name} 撤离成功 1,867,449`, warnings: [], ocr_status: 'completed',
       player_name: boss.game_name, outcome: 'success', amount: 1867449, fake_amount: null,
-      net_amount: null, credited_amount: null, item_obtained: null, failure_extra_amount: 0,
+      net_amount: null, credited_amount: null, failure_extra_amount: 0,
       confirmed: false, played_at: null, note: '', created_at: timestamp, updated_at: timestamp,
     };
     await page.evaluate(({ accountId, boss, order, record, bytes, runtime, timestamp }) => {

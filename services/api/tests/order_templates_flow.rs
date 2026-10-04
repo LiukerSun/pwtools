@@ -51,7 +51,7 @@ async fn call(
     )
 }
 fn input(name: &str, kind: &str, target: i64) -> Value {
-    json!({"name":name,"title":"  默认订单标题  ","kind":kind,"target_quantity":target,"failure_default_quantity":0,"note":"  默认备注  "})
+    json!({"name":name,"title":"  默认订单标题  ","kind":kind,"target_quantity":target,"failure_default_quantity":0,"note":"  默认备注  ","wager_item_id":null,"wager_item_name":"","wager_expected":"obtained","wager_condition":"appearance"})
 }
 fn configuration(template: &Value) -> Value {
     let mut result = template.clone();
@@ -140,7 +140,7 @@ async fn run(pool: PgPool) {
     assert_eq!(hourly["title"], "默认订单标题");
     assert_eq!(hourly["note"], "默认备注");
     assert_eq!(hourly["failure_mode"], "manual");
-    assert_eq!(hourly["wager_item_id"], Value::Null);
+    assert!(hourly.get("wager_item_id").is_none());
     assert!(hourly.get("boss_id").is_none());
     assert!(hourly.get("user_id").is_none());
     assert!(hourly.get("remaining_quantity").is_none());
@@ -151,13 +151,6 @@ async fn run(pool: PgPool) {
     let escort = create(&app, token, escort).await;
     assert_eq!(escort["failure_standard_quantity"], 1_000_000);
     create(&app, token, input("单局五百万", "single_round", 5_000_000)).await;
-    let mut wager = input("自定义物品赌单", "wager", 50);
-    wager["wager_item_name"] = json!("  特定物品  ");
-    wager["wager_expected"] = json!("not_obtained");
-    wager["wager_condition"] = json!("extracted");
-    let wager = create(&app, token, wager).await;
-    assert_eq!(wager["target_quantity"], 1);
-    assert_eq!(wager["wager_item_name"], "特定物品");
     assert_eq!(
         call(&app, "GET", "/api/order-templates", None, Some(token))
             .await
@@ -165,7 +158,7 @@ async fn run(pool: PgPool) {
             .as_array()
             .expect("own list")
             .len(),
-        4
+        3
     );
     assert_eq!(
         call(&app, "GET", "/api/order-templates", None, Some(other))
@@ -252,6 +245,25 @@ async fn run(pool: PgPool) {
         .0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
+    for (field, value) in [
+        ("wager_item_id", json!("retired-item")),
+        ("wager_item_name", json!("不再支持物品")),
+        ("wager_expected", json!("not_obtained")),
+        ("wager_condition", json!("extracted")),
+    ] {
+        let mut nonneutral = input("旧物品字段", "hourly", 60);
+        nonneutral[field] = value;
+        let rejected = call(
+            &app,
+            "POST",
+            "/api/order-templates",
+            Some(nonneutral),
+            Some(token),
+        )
+        .await;
+        assert_eq!(rejected.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(rejected.1["error"]["code"], "VALIDATION_ERROR");
+    }
     let mut incomplete = input("完整PATCH", "hourly", 60);
     incomplete.as_object_mut().expect("object").remove("title");
     assert_eq!(
@@ -327,7 +339,7 @@ async fn run(pool: PgPool) {
             .as_array()
             .expect("templates")
             .len(),
-        4
+        3
     );
     assert!(
         snapshot["order_templates"]
@@ -389,48 +401,71 @@ async fn run(pool: PgPool) {
             .as_array()
             .expect("templates")
             .len(),
-        3
+        2
     );
-    catalog_snapshot(&app, &pool, token).await;
+    retired_templates_are_hidden_and_preserved(&app, &pool, token, owner).await;
 }
 
-async fn catalog_snapshot(app: &Router, pool: &PgPool, token: &str) {
-    let catalog = call(
-        app,
-        "GET",
-        "/api/catalog/items?page_size=2",
-        None,
-        Some(token),
-    )
-    .await;
-    assert_eq!(catalog.0, StatusCode::OK);
-    let items = catalog.1["items"].as_array().expect("catalog items");
-    assert!(items.len() >= 2);
-    let mut body = input("目录物品", "wager", 1);
-    body["wager_item_id"] = items[0]["id"].clone();
-    body["wager_item_name"] = json!("伪造名称");
-    let selected = create(app, token, body.clone()).await;
-    assert_eq!(selected["wager_item_name"], items[0]["name"]);
-    let path = format!(
-        "/api/order-templates/{}",
-        selected["id"].as_str().expect("template")
-    );
-    sqlx::query("UPDATE order_templates SET wager_item_id='retired-item',wager_item_name='下单时的物品名' WHERE id=$1")
-        .bind(Uuid::parse_str(selected["id"].as_str().expect("id")).expect("UUID")).execute(pool).await.expect("retired catalog fixture");
-    body["wager_item_id"] = json!("retired-item");
-    body["name"] = json!("只改模板名");
-    let retained = call(app, "PATCH", &path, Some(body.clone()), Some(token)).await;
-    assert_eq!(retained.0, StatusCode::OK);
-    assert_eq!(retained.1["wager_item_name"], "下单时的物品名");
-    body["wager_item_id"] = items[1]["id"].clone();
-    let changed = call(app, "PATCH", &path, Some(body.clone()), Some(token)).await;
-    assert_eq!(changed.0, StatusCode::OK);
-    assert_eq!(changed.1["wager_item_name"], items[1]["name"]);
-    body["wager_item_id"] = json!("not-a-known-item");
+async fn retired_templates_are_hidden_and_preserved(
+    app: &Router,
+    pool: &PgPool,
+    token: &str,
+    owner: Uuid,
+) {
     assert_eq!(
-        call(app, "PATCH", &path, Some(body), Some(token)).await.0,
-        StatusCode::UNPROCESSABLE_ENTITY
+        call(app, "GET", "/api/catalog/items", None, Some(token))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
     );
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO order_templates(id,user_id,name,title,kind,target_quantity,wager_item_id,wager_item_name,wager_expected,wager_condition) VALUES($1,$2,'历史模板','历史订单','wager',1,'retired-item','历史名称','not_obtained','extracted')")
+        .bind(id).bind(owner).execute(pool).await.expect("released template fixture");
+    let before: Value = sqlx::query_scalar("SELECT to_jsonb(t) FROM order_templates t WHERE id=$1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .expect("raw historical template");
+    let list = call(app, "GET", "/api/order-templates", None, Some(token)).await;
+    assert_eq!(list.0, StatusCode::OK);
+    assert!(
+        list.1["items"]
+            .as_array()
+            .expect("visible templates")
+            .iter()
+            .all(|item| item["kind"] != "wager")
+    );
+    let path = format!("/api/order-templates/{id}");
+    for (method, body) in [
+        ("PATCH", Some(input("不能改成小时", "hourly", 60))),
+        ("DELETE", None),
+    ] {
+        let result = call(app, method, &path, body, Some(token)).await;
+        assert_eq!(result.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(result.1["error"]["code"], "ORDER_TYPE_UNSUPPORTED");
+    }
+    let after: Value = sqlx::query_scalar("SELECT to_jsonb(t) FROM order_templates t WHERE id=$1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .expect("unchanged historical template");
+    assert_eq!(after, before);
+    let current = revision(pool, owner).await;
+    let snapshot = load_snapshot(pool, owner, current)
+        .await
+        .expect("private archive")
+        .expect("owner");
+    let historical = snapshot["order_templates"]
+        .as_array()
+        .expect("templates")
+        .iter()
+        .find(|item| item["id"] == id.to_string())
+        .expect("retired template remains archived");
+    assert_eq!(historical["kind"], "wager");
+    assert_eq!(historical["wager_item_id"], "retired-item");
+    assert_eq!(historical["wager_item_name"], "历史名称");
+    assert_eq!(historical["wager_expected"], "not_obtained");
+    assert_eq!(historical["wager_condition"], "extracted");
 }
 
 async fn upgrade(pool: &PgPool) {

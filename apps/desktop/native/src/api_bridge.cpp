@@ -140,14 +140,11 @@ void Choice(const Json& value, const char* key, std::initializer_list<const char
 void OrderBody(const Json& value, bool is_template = false) {
   Object(value);
   StringField(value, "title", 120); StringField(value, "note", 2000);
-  Choice(value, "kind", {"hourly", "escort", "single_round", "wager"});
+  Choice(value, "kind", {"hourly", "escort", "single_round"});
   NumberField(value, "target_quantity", 1); NumberField(value, "failure_default_quantity", 0);
   Choice(value, "failure_trigger", {"failed", "failed_below_standard", "below_standard"}, true);
   Choice(value, "failure_mode", {"manual", "fixed", "shortfall"}, true);
   NumberField(value, "failure_standard_quantity", 0, true);
-  StringField(value, "wager_item_id", 80, true, true); StringField(value, "wager_item_name", 160, true);
-  Choice(value, "wager_condition", {"appearance", "extracted"}, true);
-  Choice(value, "wager_expected", {"obtained", "not_obtained"}, true);
   if (is_template) StringField(value, "name", 80);
 }
 void BossBody(const Json& value) {
@@ -158,18 +155,18 @@ void MatchBody(const Json& value) {
   Object(value); StringField(value, "player_name", 80); StringField(value, "note", 1000);
   Choice(value, "outcome", {"success", "failed", "unknown"}); BooleanField(value, "confirmed");
   NumberField(value, "amount", 0, false, true); NumberField(value, "fake_amount", 0, true, true);
-  NumberField(value, "failure_extra_amount", 0, true); BooleanField(value, "item_obtained", true, true);
+  NumberField(value, "failure_extra_amount", 0, true);
   StringField(value, "played_at", 128, false, true);
   if (value.contains("order_id")) static_cast<void>(Uuid(value["order_id"]));
 }
 void EntryBody(const Json& value) {
-  Object(value); Choice(value, "kind", {"progress", "failure", "adjustment", "item_result"});
+  Object(value); Choice(value, "kind", {"progress", "failure", "adjustment"});
   NumberField(value, "quantity", -kMaxQuantity); StringField(value, "note", 1000);
   StringField(value, "occurred_at", 128, false, true);
   if (!value.contains("idempotency_key")) Invalid();
   static_cast<void>(Uuid(value["idempotency_key"]));
   NumberField(value, "amount", 0, true, true); NumberField(value, "fake_amount", 0, true, true);
-  NumberField(value, "failure_extra_amount", 0, true); BooleanField(value, "item_obtained", true, true);
+  NumberField(value, "failure_extra_amount", 0, true);
   Choice(value, "outcome", {"success", "failed"}, true);
 }
 
@@ -544,11 +541,6 @@ struct ApiBridge::Impl {
     if (method == "createOrderTemplate") { Arguments(args, 1, 1); OrderBody(first, true); return Request("/order-templates", L"POST", &first); }
     if (method == "updateOrderTemplate") { Arguments(args, 2, 2); const auto id = Uuid(first); OrderBody(second, true); return Request("/order-templates/" + id, L"PATCH", &second); }
     if (method == "deleteOrderTemplate") { Arguments(args, 1, 1); return Request("/order-templates/" + Uuid(first), L"DELETE"); }
-    if (method == "listCatalog") {
-      Arguments(args, 0, 1); const Json query = Missing(first) ? Json::object() : first; Object(query);
-      const auto search = query.contains("q") ? Text(query["q"], 120) : std::string{}, category = query.contains("category") ? Text(query["category"], 80) : std::string{};
-      return Request("/catalog/items?q=" + Encode(search) + "&category=" + Encode(category) + "&" + Pages(query.value("page", Json()), query.value("page_size", Json()), 40));
-    }
     if (method == "listLedgerEntries") { Arguments(args, 1, 3); return Request("/orders/" + Uuid(first) + "/entries?" + Pages(second, Arg(args, 2), 20)); }
     if (method == "addLedgerEntry") { Arguments(args, 2, 2); const auto id = Uuid(first); EntryBody(second); return Request("/orders/" + id + "/entries", L"POST", &second); }
     if (method == "deleteLedgerEntry") { Arguments(args, 2, 2); return Request("/orders/" + Uuid(first) + "/entries/" + Uuid(second), L"DELETE"); }

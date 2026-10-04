@@ -57,7 +57,6 @@ test('all desktop methods use matching RPC names and JSON arguments', async () =
     ['createOrderTemplate', () => bridge.createOrderTemplate(template), [template]],
     ['updateOrderTemplate', () => bridge.updateOrderTemplate('template', template), ['template', template]],
     ['deleteOrderTemplate', () => bridge.deleteOrderTemplate('template'), ['template']],
-    ['listCatalog', () => bridge.listCatalog(), [{}]],
     ['listLedgerEntries', () => bridge.listLedgerEntries('order'), ['order', 1, 20]],
     ['addLedgerEntry', () => bridge.addLedgerEntry('order', entry), ['order', entry]],
     ['deleteLedgerEntry', () => bridge.deleteLedgerEntry('order', 'entry'), ['order', 'entry']],

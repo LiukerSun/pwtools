@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Alert, Button, Collapse, Loader, Modal, NumberInput, Pagination, SegmentedControl, Select, Textarea, TextInput } from '@mantine/core';
+import { Alert, Button, Collapse, Loader, Modal, NumberInput, Select, Textarea, TextInput } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { Check, ChevronDown, Pencil, Settings2, Trash2 } from 'lucide-react';
-import type { Boss, CatalogResponse, FailureMode, FailureTrigger, OrderInput, OrderKind, OrderTemplate, ServiceOrder, WagerCondition, WagerExpected } from '../shared/contracts';
+import type { Boss, FailureMode, FailureTrigger, OrderInput, OrderKind, OrderTemplate, ServiceOrder } from '../shared/contracts';
 import { api, errorInfo } from './api';
 import { MAX_QUANTITY, failureSummary, modeLabels, orderInput, orderLabels, quantityText, triggerLabels } from './orderPresentation';
 
@@ -18,13 +18,13 @@ interface OrderSetupProps {
   onNavigationStateChange?: (state: NavigationState) => void;
 }
 
-const kinds: OrderKind[] = ['single_round', 'escort', 'hourly', 'wager'];
-const descriptions: Record<OrderKind, string> = { single_round: '单场达标，不累加', escort: '多场累计带出', hourly: '累计陪玩时长', wager: '核对一场物品' };
-const defaults = (kind: OrderKind): OrderInput => ({ title: '', kind, target_quantity: kind === 'wager' ? 1 : 0, failure_default_quantity: 0, failure_trigger: 'failed', failure_standard_quantity: 0, failure_mode: 'manual', wager_item_id: null, wager_item_name: '', wager_expected: 'obtained', wager_condition: 'appearance', note: '' });
+const kinds: OrderKind[] = ['single_round', 'escort', 'hourly'];
+const descriptions: Record<OrderKind, string> = { single_round: '单场达标，不累加', escort: '多场累计带出', hourly: '累计陪玩时长' };
+const defaults = (kind: OrderKind): OrderInput => ({ title: '', kind, target_quantity: 0, failure_default_quantity: 0, failure_trigger: 'failed', failure_standard_quantity: 0, failure_mode: 'manual', note: '' });
 const numeric = (value: string | number) => typeof value === 'number' ? value : Number(value.replaceAll(',', '')) || 0;
 
 function suggestedTitle(input: OrderInput): string {
-  return input.kind === 'wager' ? `对赌 · ${input.wager_item_name || '物品结果'}` : `${orderLabels[input.kind]} · ${input.target_quantity > 0 ? quantityText(input.target_quantity, input.kind) : '本次约定'}`;
+  return `${orderLabels[input.kind]} · ${input.target_quantity > 0 ? quantityText(input.target_quantity, input.kind) : '本次约定'}`;
 }
 
 function validation(input: OrderInput): string | null {
@@ -35,7 +35,6 @@ function validation(input: OrderInput): string | null {
     const standard = input.failure_standard_quantity ?? 0;
     if (!Number.isSafeInteger(standard) || standard < 0 || standard > MAX_QUANTITY) return '净值标准须为整数，不能小于 0。';
   }
-  if (input.kind === 'wager' && !input.wager_item_name?.trim()) return '请选择或填写物品。';
   return null;
 }
 
@@ -44,8 +43,6 @@ function normalized(input: OrderInput): OrderInput {
   copy.title = copy.title.trim() || suggestedTitle(copy);
   copy.note = copy.note.trim();
   if (copy.kind !== 'escort') Object.assign(copy, { failure_trigger: 'failed', failure_mode: 'manual', failure_standard_quantity: 0, failure_default_quantity: 0 });
-  if (copy.kind !== 'wager') Object.assign(copy, { wager_item_id: null, wager_item_name: '', wager_expected: 'obtained', wager_condition: 'appearance' });
-  else { copy.target_quantity = 1; copy.wager_item_name = copy.wager_item_name?.trim() || ''; }
   return copy;
 }
 
@@ -146,16 +143,13 @@ export default function OrderSetup({ boss, order, template, saveAsTemplate, onCl
             {isTemplate && <TextInput label="模板名称" required maxLength={80} value={templateName} disabled={busy} onChange={(event) => setTemplateName(event.currentTarget.value)} autoFocus />}
             {locked && <Alert color="blue" title="约定已锁定">已有记录，可改名称、备注{input.kind === 'escort' && input.failure_mode !== 'shortfall' ? '和后续追加金额' : ''}。</Alert>}
             {(order || isTemplate) && <fieldset className="ledger-kind-options" aria-label="订单类型" disabled={busy || locked}><legend>订单类型</legend>{kinds.map((kind) => <label key={kind} className={input.kind === kind ? 'selected' : ''}><input type="radio" aria-label={orderLabels[kind]} name="edit-order-kind" value={kind} checked={input.kind === kind} onChange={() => { if (kind !== input.kind) guard(() => { setInput({ ...defaults(kind), title: input.title, note: input.note }); setError(''); }); }} /><span><strong>{orderLabels[kind]}</strong><small>{descriptions[kind]}</small></span></label>)}</fieldset>}
-            {input.kind === 'hourly' ? <fieldset className="ledger-time-fields"><legend>约定陪玩时长 <span>*</span></legend><div className="ledger-form-two"><NumberInput label="小时" aria-label="约定陪玩时长小时" min={0} max={150_000_000_000} allowDecimal={false} hideControls disabled={busy || locked} value={Math.floor(input.target_quantity / 60) || ''} onChange={(value) => patch({ target_quantity: numeric(value) * 60 + input.target_quantity % 60 })} /><NumberInput label="分钟" aria-label="约定陪玩时长分钟" min={0} max={59} allowDecimal={false} hideControls disabled={busy || locked} value={input.target_quantity % 60} onChange={(value) => patch({ target_quantity: Math.floor(input.target_quantity / 60) * 60 + numeric(value) })} /></div></fieldset> : input.kind === 'wager' ? <>
-              <CatalogPicker itemId={input.wager_item_id || null} itemName={input.wager_item_name || ''} disabled={busy || locked} onError={onError} onSelect={(id, name) => patch({ wager_item_id: id, wager_item_name: name })} />
-              <div className="ledger-form-two"><Select label="对赌判断依据" value={input.wager_condition || 'appearance'} allowDeselect={false} data={[{ value: 'appearance', label: '本场物品是否出现' }, { value: 'extracted', label: '本场物品是否成功带出' }]} disabled={busy || locked} onChange={(value) => { if (value) patch({ wager_condition: value as WagerCondition }); }} /><Select label="我方获胜条件" value={input.wager_expected || 'obtained'} allowDeselect={false} data={[{ value: 'obtained', label: input.wager_condition === 'extracted' ? '成功带出物品' : '物品出现' }, { value: 'not_obtained', label: input.wager_condition === 'extracted' ? '未成功带出物品' : '物品未出现' }]} disabled={busy || locked} onChange={(value) => { if (value) patch({ wager_expected: value as WagerExpected }); }} /></div>
-            </> : <>
+            {input.kind === 'hourly' ? <fieldset className="ledger-time-fields"><legend>约定陪玩时长 <span>*</span></legend><div className="ledger-form-two"><NumberInput label="小时" aria-label="约定陪玩时长小时" min={0} max={150_000_000_000} allowDecimal={false} hideControls disabled={busy || locked} value={Math.floor(input.target_quantity / 60) || ''} onChange={(value) => patch({ target_quantity: numeric(value) * 60 + input.target_quantity % 60 })} /><NumberInput label="分钟" aria-label="约定陪玩时长分钟" min={0} max={59} allowDecimal={false} hideControls disabled={busy || locked} value={input.target_quantity % 60} onChange={(value) => patch({ target_quantity: Math.floor(input.target_quantity / 60) * 60 + numeric(value) })} /></div></fieldset> : <>
               {!isTemplate && !order && !boss?.game_name && <Alert color="orange">请先填写老板的截图昵称。</Alert>}
               <NumberInput label={input.kind === 'single_round' ? '单场净带出目标（哈夫币）' : '约定带出金额（哈夫币）'} required min={0} max={MAX_QUANTITY} allowDecimal={false} thousandSeparator="," hideControls disabled={busy || locked} value={input.target_quantity || ''} onChange={(value) => patch({ target_quantity: numeric(value) })} />
               <div className="ledger-amount-presets" aria-label="约定金额快捷填写">{[1, 3, 5, 10].map((amount) => <button type="button" key={amount} disabled={busy || locked} onClick={() => patch({ target_quantity: amount * 1_000_000 })}>{amount * 100} 万</button>)}</div>
             </>}
             <TextInput label="订单名称" placeholder={suggestedTitle(input)} maxLength={120} value={input.title} disabled={busy} onChange={(event) => patch({ title: event.currentTarget.value })} />
-            {(input.kind === 'escort' || input.kind === 'wager') && <section className="ledger-setup-summary" aria-label="本次订单约定"><strong>{input.kind === 'escort' ? failureSummary(input) : '赢、输都会结单。'}</strong></section>}
+            {input.kind === 'escort' && <section className="ledger-setup-summary" aria-label="本次订单约定"><strong>{failureSummary(input)}</strong></section>}
             <button type="button" className="ledger-advanced-toggle" aria-label={`高级约定与备注${locked ? ' · 部分已锁定' : ''}`} aria-expanded={advanced} aria-controls="order-advanced-fields" onClick={() => setAdvanced((value) => !value)}><ChevronDown size={14} />更多设置</button>
             <Collapse expanded={advanced}><div className="ledger-advanced-fields" id="order-advanced-fields">
               {input.kind === 'escort' && <>
@@ -204,34 +198,9 @@ function TemplateManager({ onClose, onError, onNavigationStateChange }: { onClos
   };
   return <>
     <Modal opened onClose={onClose} title="管理个人模板" size="md" centered closeOnEscape={!busy && !editing && !deleting} closeOnClickOutside={!busy && !editing && !deleting} withCloseButton={!busy && !editing && !deleting}>
-      <div className="ledger-template-manager"><p className="ledger-rule-copy">修改或删除模板不影响已有订单。</p>{error && !deleting && <Alert color="red">{error}</Alert>}{loading ? <div className="ledger-loading" role="status"><Loader size="xs" />加载模板…</div> : items.length ? <div className="ledger-template-list">{items.map((item) => <article aria-label={`${item.name}个人模板`} key={item.id}><div><strong>{item.name}</strong><span>{orderLabels[item.kind]} · {item.kind === 'wager' ? item.wager_item_name : quantityText(item.target_quantity, item.kind)}</span></div><Button size="xs" variant="subtle" aria-label={`编辑${item.name}模板`} leftSection={<Pencil size={13} />} onClick={() => { setEditing(item); setEditorState({ dirty: false, busy: false }); }}>编辑</Button><button type="button" className="ledger-entry-action delete" aria-label={`删除${item.name}模板`} onClick={() => { setDeleting(item); setError(''); }}><Trash2 size={14} /></button></article>)}</div> : <p className="ledger-template-empty">暂无模板。可在订单的“更多”菜单中保存。</p>}<div className="ledger-confirm-actions"><Button variant="default" disabled={busy || !!editing} onClick={onClose}>完成</Button></div></div>
+      <div className="ledger-template-manager"><p className="ledger-rule-copy">修改或删除模板不影响已有订单。</p>{error && !deleting && <Alert color="red">{error}</Alert>}{loading ? <div className="ledger-loading" role="status"><Loader size="xs" />加载模板…</div> : items.length ? <div className="ledger-template-list">{items.map((item) => <article aria-label={`${item.name}个人模板`} key={item.id}><div><strong>{item.name}</strong><span>{orderLabels[item.kind]} · {quantityText(item.target_quantity, item.kind)}</span></div><Button size="xs" variant="subtle" aria-label={`编辑${item.name}模板`} leftSection={<Pencil size={13} />} onClick={() => { setEditing(item); setEditorState({ dirty: false, busy: false }); }}>编辑</Button><button type="button" className="ledger-entry-action delete" aria-label={`删除${item.name}模板`} onClick={() => { setDeleting(item); setError(''); }}><Trash2 size={14} /></button></article>)}</div> : <p className="ledger-template-empty">暂无模板。可在订单的“更多”菜单中保存。</p>}<div className="ledger-confirm-actions"><Button variant="default" disabled={busy || !!editing} onClick={onClose}>完成</Button></div></div>
     </Modal>
     {editing && <OrderSetup template={editing} onError={onError} onClose={() => { setEditing(null); setEditorState({ dirty: false, busy: false }); }} onSaved={() => { setEditing(null); setEditorState({ dirty: false, busy: false }); setRefresh((value) => value + 1); }} onNavigationStateChange={setEditorState} />}
     <Modal opened={deleting !== null} onClose={() => { if (!busy) setDeleting(null); }} title="删除个人模板？" centered size="sm" closeOnEscape={!busy} closeOnClickOutside={!busy} withCloseButton={!busy}><div className="ledger-confirm-copy"><p>删除「{deleting?.name}」？已有订单不变。</p>{error && <Alert color="red" title="删除未完成">{error}</Alert>}<div className="ledger-confirm-actions"><Button variant="default" disabled={busy} onClick={() => setDeleting(null)}>取消</Button><Button color="red" loading={busy} onClick={() => void remove()}>删除模板</Button></div></div></Modal>
   </>;
-}
-
-function CatalogPicker({ itemId, itemName, disabled, onSelect, onError }: { itemId: string | null; itemName: string; disabled: boolean; onSelect: (id: string | null, name: string) => void; onError: (error: unknown) => boolean }) {
-  const [mode, setMode] = useState(itemId || !itemName ? 'catalog' : 'custom');
-  const [query, setQuery] = useState('');
-  const [category, setCategory] = useState('all');
-  const [page, setPage] = useState(1);
-  const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    if (disabled || mode !== 'catalog') return;
-    let alive = true; setLoading(true); setError('');
-    const timer = window.setTimeout(() => {
-      void api.listCatalog({ q: query.trim(), category: category === 'all' ? undefined : category, page, page_size: 20 }).then((data) => { if (alive) setCatalog(data); }).catch((failure: unknown) => { if (alive && !onError(failure)) setError(errorInfo(failure).message); }).finally(() => { if (alive) setLoading(false); });
-    }, 220);
-    return () => { alive = false; clearTimeout(timer); };
-  }, [query, category, page, mode, disabled, onError]);
-  if (disabled) return <TextInput label="对赌物品" value={itemName} readOnly />;
-  return <section className="ledger-catalog-picker" aria-label="选择对赌物品"><SegmentedControl fullWidth value={mode} onChange={(value) => { setMode(value); onSelect(null, ''); }} data={[{ value: 'catalog', label: '从物品目录选择' }, { value: 'custom', label: '手动填写物品' }]} />{mode === 'custom' ? <TextInput label="自定义物品名称" required maxLength={160} value={itemName} placeholder="填写准确名称" onChange={(event) => onSelect(null, event.currentTarget.value)} /> : <>
-    <div className="ledger-form-two"><TextInput label="搜索对赌物品" placeholder="物品名或别名" value={query} onChange={(event) => { setQuery(event.currentTarget.value); setPage(1); }} /><Select label="物品分类" value={category} allowDeselect={false} data={[{ value: 'all', label: '全部分类' }, ...(catalog?.categories || []).map((item) => ({ value: item.id, label: item.name }))]} onChange={(value) => { if (value) { setCategory(value); setPage(1); } }} /></div>
-    {itemName && <p className="ledger-catalog-selected"><Check size={13} />已选：{itemName}</p>}
-    {error ? <Alert color="orange" title="物品加载失败">{error} 可手动填写。</Alert> : loading ? <div className="ledger-loading" role="status"><Loader size="xs" /><span>加载物品…</span></div> : catalog?.items.length ? <div className="ledger-catalog-items">{catalog.items.map((item) => <button type="button" key={item.id} aria-pressed={itemId === item.id} onClick={() => onSelect(item.id, item.name)}><strong>{item.name}</strong><small>{item.category}{item.subcategory ? ` / ${item.subcategory}` : ''}</small>{itemId === item.id && <Check size={14} />}</button>)}</div> : <p className="ledger-rule-copy">未找到物品，可手动填写。</p>}
-    {catalog && <div className="ledger-catalog-footer"><span>{catalog.total} 件物品</span>{catalog.total > 20 && <Pagination size="xs" total={Math.ceil(catalog.total / 20)} value={page} onChange={setPage} disabled={loading} />}</div>}
-  </>}</section>;
 }

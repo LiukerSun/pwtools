@@ -19,22 +19,21 @@ function emptyOrder(kind: OrderKind): ServiceOrder {
     id: orderId, boss_id: bossId, boss_name: '未开局老板', boss_game_name: '未开局老板',
     title: '尚未开局订单', kind, target_quantity: quantity, failure_default_quantity: 0,
     failure_trigger: 'failed', failure_standard_quantity: 0, failure_mode: 'manual',
-    wager_item_id: null, wager_item_name: '', wager_expected: 'obtained', wager_condition: 'appearance',
-    note: '', configuration_locked: false, best_round_quantity: 0, settlement_result: null,
+    note: '', configuration_locked: false, best_round_quantity: 0,
     completed_quantity: 0, failure_quantity: 0, adjustment_quantity: 0, total_quantity: quantity,
     remaining_quantity: quantity, excess_quantity: 0, status: 'active', record_count: 0,
     created_at: '2026-10-04T02:01:00Z', updated_at: timestamp,
   };
 }
 
-async function openMockLedger(page: Page, kind: OrderKind, options: { drafts?: MatchRecord[]; failDraftsOnce?: boolean } = {}) {
+async function openMockLedger(page: Page, kind: OrderKind, options: { drafts?: MatchRecord[]; failDraftsOnce?: boolean; retiredOrder?: boolean } = {}) {
   const order = emptyOrder(kind);
   const following = { ...order, id: followingId, title: '后续订单', created_at: timestamp };
   const boss: Boss = {
     id: bossId, display_name: '未开局老板', game_id: 'empty-history', game_name: '未开局老板', notes: '',
     active_order_count: 2, remaining_minutes: kind === 'hourly' ? 240 : 0,
     remaining_amount: kind === 'escort' ? 2000000 : 0,
-    pending_single_round_count: 0, pending_wager_count: 0, created_at: timestamp, updated_at: timestamp,
+    pending_single_round_count: 0, created_at: timestamp, updated_at: timestamp,
   };
   const errors: string[] = [];
   const unexpectedRequests: string[] = [];
@@ -60,7 +59,8 @@ async function openMockLedger(page: Page, kind: OrderKind, options: { drafts?: M
     });
     if (pathname === '/api/bosses') return fulfill({ items: [boss] });
     if (pathname === `/api/bosses/${bossId}`) return fulfill(boss);
-    if (pathname === '/api/orders') return fulfill({ items: [order, following] });
+    if (pathname === '/api/orders') return fulfill({ items: [order, following, ...(options.retiredOrder ? [{ ...order, id: '44444444-4444-4444-8444-444444444444', kind: 'wager', title: '旧类型历史订单' }] : [])] });
+    if (pathname === '/api/order-templates') return fulfill({ items: options.retiredOrder ? [{ ...order, id: '55555555-5555-4555-8555-555555555555', kind: 'wager', name: '旧类型个人模板' }] : [] });
     if (pathname === `/api/orders/${orderId}/entries` || pathname === '/api/matches') {
       historyRequests.add(pathname);
       if (historyRequests.size === expectedHistoryRequests) historyRequested();
@@ -97,6 +97,21 @@ async function waitAnimationFrames(page: Page, duration: number) {
     requestAnimationFrame(tick);
   }), duration);
 }
+
+test('旧服务器返回的已移除订单和模板不再显示或进入新建流程', async ({ page }) => {
+  const ledger = await openMockLedger(page, 'hourly', { retiredOrder: true });
+  await expect(page.getByRole('region', { name: '进行中订单', exact: true }).getByRole('article')).toHaveCount(2);
+  await expect(page.getByRole('article', { name: '旧类型历史订单订单', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '新建订单', exact: true }).click();
+  const form = page.getByRole('dialog', { name: '新建订单', exact: true });
+  await expect(form.getByRole('radio', { name: /^使用.*模板$/ })).toHaveCount(3);
+  await expect(form.getByRole('radio', { name: '使用对赌单模板', exact: true })).toHaveCount(0);
+  await expect(form.getByLabel('个人模板', { exact: true })).toHaveCount(0);
+  await expect(form.getByText('物品目录', { exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  expect(ledger.errors).toEqual([]);
+  expect(ledger.unexpectedRequests).toEqual([]);
+});
 
 for (const kind of ['hourly', 'escort'] as const) {
   for (const timing of responseTimings) {
@@ -161,7 +176,7 @@ test('护航订单展开后显示已有待确认截图和继续填写入口', as
     image_sha256: 'a'.repeat(64), image_width: 1, image_height: 1, image_size: 68,
     players: [], raw_text: '', warnings: [], ocr_status: 'completed', player_name: '未开局老板',
     outcome: 'unknown', amount: null, fake_amount: null, net_amount: null, credited_amount: null,
-    item_obtained: null, failure_extra_amount: 0, confirmed: false, played_at: null, note: '',
+ failure_extra_amount: 0, confirmed: false, played_at: null, note: '',
     created_at: timestamp, updated_at: timestamp,
   };
   const ledger = await openMockLedger(page, 'escort', { drafts: [draft] });

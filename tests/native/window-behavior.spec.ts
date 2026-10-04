@@ -237,7 +237,7 @@ async function startWindowFixture() {
     get hasPendingSave() { return Boolean(pendingSave); },
     releaseSave() {
       if (!pendingSave) throw new Error('没有在途测试保存');
-      const boss: Boss = { ...pendingSave.body, id: '22222222-2222-4222-8222-222222222222', active_order_count: 0, remaining_minutes: 0, remaining_amount: 0, pending_single_round_count: 0, pending_wager_count: 0, created_at: timestamp, updated_at: timestamp };
+      const boss: Boss = { ...pendingSave.body, id: '22222222-2222-4222-8222-222222222222', active_order_count: 0, remaining_minutes: 0, remaining_amount: 0, pending_single_round_count: 0, created_at: timestamp, updated_at: timestamp };
       bosses.push(boss);
       respond(pendingSave.response, 201, boss);
       pendingSave = undefined;

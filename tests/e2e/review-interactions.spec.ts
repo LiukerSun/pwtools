@@ -17,7 +17,7 @@ test('订单内识别重试失败、关闭保护、草稿恢复及删除失败�
   });
   const records: MatchRecord[] = ['识别待恢复.png', '空白截图.png'].map((original_name, index) => ({
     id: randomUUID(), order_id: order.id, failure_extra_amount: 0, fake_amount: null,
-    net_amount: null, credited_amount: null, item_obtained: null, boss_id: boss.id,
+    net_amount: null, credited_amount: null, boss_id: boss.id,
     boss_player_name: boss.game_name, original_name, image_content_type: 'image/png',
     image_sha256: 'a'.repeat(64), image_width: 1, image_height: 1, image_size: 68,
     players: [], raw_text: '', warnings: index === 0 ? ['识别服务繁忙，原图已保存，请稍后重新识别。'] : [],
@@ -48,7 +48,7 @@ test('订单内识别重试失败、关闭保护、草稿恢复及删除失败�
       const items: LedgerEntry[] = records.filter(record => record.confirmed).map(record => ({
         id: record.id, order_id: order.id, kind: 'progress', quantity: record.amount || 0,
         amount: record.amount, fake_amount: record.fake_amount, net_amount: record.net_amount,
-        credited_amount: record.credited_amount, item_obtained: null,
+        credited_amount: record.credited_amount,
         outcome: record.outcome === 'unknown' ? null : record.outcome,
         failure_extra_amount: record.failure_extra_amount, occurred_at: record.played_at || record.created_at,
         note: record.note, source: 'screenshot', match_id: record.id,

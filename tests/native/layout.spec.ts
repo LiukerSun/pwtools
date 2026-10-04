@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import { NativeApplication } from './native-helpers';
 
-test('原生客户端四类订单、模板、中文日期与深浅主题布局', async () => {
+test('原生客户端三类订单、模板、中文日期与深浅主题布局', async () => {
   test.setTimeout(150_000);
   const directory = await mkdtemp(join(tmpdir(), 'pwtools-native-layout-'));
   let app: NativeApplication | undefined;
@@ -19,19 +19,18 @@ test('原生客户端四类订单、模板、中文日期与深浅主题布局',
       const api = window.pwtools!;
       await api.register({ email: `native-layout-${id}@example.test`, password: `Test-${id}!` });
       const boss = await api.createBoss({ display_name: '小桃老板', game_id: 'boss-001', game_name: '小桃知晚', notes: '晚上 22:00 后上线。' });
-      const create = (title: string, kind: 'hourly' | 'escort' | 'single_round' | 'wager', target: number, extra = {}) => api.createOrder(boss.id, { title, kind, target_quantity: target, failure_default_quantity: 0, note: '', ...extra });
+      const create = (title: string, kind: 'hourly' | 'escort' | 'single_round', target: number, extra = {}) => api.createOrder(boss.id, { title, kind, target_quantity: target, failure_default_quantity: 0, note: '', ...extra });
       const hourly = await create('晚间陪玩', 'hourly', 180);
       const escort = await create('航天基地护航', 'escort', 5000000, { failure_trigger: 'failed_below_standard', failure_standard_quantity: 1000000, failure_mode: 'manual', failure_default_quantity: 500000 });
       const single = await create('单场带出 100 万', 'single_round', 1000000);
-      const wager = await create('非洲之心对赌', 'wager', 1, { wager_item_name: '非洲之心', wager_item_id: null, wager_condition: 'appearance', wager_expected: 'obtained' });
       const template = await api.createOrderTemplate({ name: '晚间护航', title: '航天基地护航', kind: 'escort', target_quantity: 5000000, failure_default_quantity: 500000, failure_trigger: 'failed_below_standard', failure_standard_quantity: 1000000, failure_mode: 'manual', note: '按原图核对假账。' });
       await api.createBoss({ display_name: '团团老板', game_id: 'boss-002', game_name: '团团吃大饼', notes: '周日上线。' });
-      return { hourly, escort, single, wager, template };
+      return { hourly, escort, single, template };
     }, randomUUID());
     await page.reload();
     await page.getByRole('button', { name: '查看小桃老板订单', exact: true }).click();
     const order = (title: string) => page.getByRole('article', { name: `${title}订单`, exact: true });
-    await expect(page.getByRole('region', { name: '进行中订单', exact: true }).getByRole('article')).toHaveCount(4);
+    await expect(page.getByRole('region', { name: '进行中订单', exact: true }).getByRole('article')).toHaveCount(3);
     await mkdir('.artifacts', { recursive: true });
     await page.screenshot({ path: '.artifacts/native-orders-dark.png' });
     await order('晚间陪玩').getByRole('button', { name: '记一场', exact: true }).click();
@@ -67,10 +66,9 @@ test('原生客户端四类订单、模板、中文日期与深浅主题布局',
       const { id: _id, created_at: _created, updated_at: _updated, ...defaults } = original;
       const updated = await api.updateOrderTemplate(id, { ...defaults, name: '晚间护航新版', failure_default_quantity: 600000 });
       await api.deleteOrderTemplate(id);
-      return { changed: updated.failure_default_quantity, templates: await api.listOrderTemplates(), catalog: await api.listCatalog({ q: '非洲之心', page_size: 5 }) };
+      return { changed: updated.failure_default_quantity, templates: await api.listOrderTemplates() };
     }, context.template.id);
     expect(changed.changed).toBe(600000); expect(changed.templates.items).toHaveLength(0);
-    expect(changed.catalog.items.length).toBeGreaterThan(0);
 
     await page.getByRole('navigation').getByRole('button', { name: '设置', exact: true }).click();
     await page.locator('label').filter({ hasText: '浅色' }).click();
