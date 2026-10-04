@@ -166,6 +166,15 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .navigation-guard-modal p, .window-close-modal p { color: var(--muted); font-size: 13px; line-height: 1.8; }
 .navigation-guard-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; }
 .window-close-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; margin-top: 20px; }
+.settings-hotkey { display: grid; gap: 15px; }
+.settings-hotkey > p, .screenshot-import > p { color: var(--muted); font-size: 13px; line-height: 1.8; }
+.settings-hotkey-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 9px; }
+.settings-hotkey-actions > span { margin-right: auto; color: var(--subtle); font-size: 12px; }
+.screenshot-import { display: grid; gap: 18px; }
+.screenshot-import-loading { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; min-height: 52px; }
+.screenshot-import > .screenshot-import-source { color: var(--subtle); font-size: 12px; }
+.screenshot-import-preview { display: block; width: 100%; max-height: 170px; object-fit: contain; border: 1px solid var(--border); border-radius: 7px; background: var(--input); }
+.screenshot-import-actions { display: flex; justify-content: flex-end; gap: 9px; }
 .mantine-Alert-root { border-radius: 11px; }
 .mantine-Alert-title, .mantine-Alert-message { color: var(--text); font-size: 13px; }
 @media (max-width: 1120px) {

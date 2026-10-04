@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Button, Collapse, Loader, Menu, Modal, NumberInput, SegmentedControl, Textarea, TextInput } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { ArrowLeft, BookOpen, Check, ChevronDown, ChevronRight, Clock3, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Trash2, UsersRound } from 'lucide-react';
-import type { Boss, BossInput, LedgerEntry, LedgerEntryKind, ServiceOrder } from '../shared/contracts';
+import { ArrowLeft, BookOpen, Check, ChevronDown, ChevronRight, Clock3, FileImage, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Trash2, UsersRound } from 'lucide-react';
+import type { Boss, BossInput, LedgerEntry, LedgerEntryKind, MatchUploadInput, ServiceOrder } from '../shared/contracts';
 import { api, errorInfo } from './api';
 import OrderSetup from './OrderSetup';
 import RoundEntry from './RoundEntry';
 import LedgerHistory from './LedgerHistory';
+import ScreenshotImport from './ScreenshotImport';
 import { MAX_QUANTITY, failureSummary, minutesText, orderLabels, orderStateText, orderSummary, quantityText } from './orderPresentation';
 import './ledger.css';
 
@@ -16,12 +17,15 @@ interface BossLedgerProps {
   initialBossId?: string;
   initialOrderId?: string;
   onNavigationStateChange?: (state: NavigationState) => void;
+  importRequest?: number;
+  onRequestImport?: () => void;
+  onImportFlowChange?: (opened: boolean) => void;
 }
 type FormContext = { type: 'boss-create' } | { type: 'boss-edit'; boss: Boss } | { type: 'adjustment'; order: ServiceOrder };
 type OrderEditor = { boss: Boss; order?: never; saveAsTemplate?: never } | { boss?: never; order: ServiceOrder; saveAsTemplate?: boolean };
 interface FormValues extends BossInput { quantity: number; note: string; occurred_at: string }
 type Quantities = Record<'hourly' | 'escort', number | null>;
-type EntryTarget = { order: ServiceOrder; matchId?: string };
+type EntryTarget = { order: ServiceOrder; matchId?: string; initialImage?: MatchUploadInput; imported?: boolean };
 type Deletion = { type: 'manual'; order: ServiceOrder; entry: LedgerEntry } | { type: 'screenshot'; order: ServiceOrder; matchId: string; label: string; confirmed: boolean };
 const entryLabels: Record<LedgerEntryKind, string> = { progress: '完成一场', failure: '失败追加', adjustment: '调整约定' };
 const cleanState: NavigationState = { dirty: false, busy: false };
@@ -46,7 +50,7 @@ function sumOrders(items: ServiceOrder[], field: 'completed_quantity' | 'remaini
   return { hourly: sums.hourly === null ? null : Number(sums.hourly), escort: sums.escort === null ? null : Number(sums.escort) };
 }
 
-export default function BossLedger({ onError, initialBossId, initialOrderId, onNavigationStateChange }: BossLedgerProps) {
+export default function BossLedger({ onError, initialBossId, initialOrderId, onNavigationStateChange, importRequest = 0, onRequestImport, onImportFlowChange }: BossLedgerProps) {
   const mounted = useRef(true);
   const [bosses, setBosses] = useState<Boss[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(initialBossId || null);
@@ -74,6 +78,8 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
   const [orderEditorState, setOrderEditorState] = useState<NavigationState>(cleanState);
   const [entryTarget, setEntryTarget] = useState<EntryTarget | null>(null);
   const [entryState, setEntryState] = useState<NavigationState>(cleanState);
+  const [importOpened, setImportOpened] = useState(false);
+  const [importState, setImportState] = useState<NavigationState>(cleanState);
   const modeRef = useRef<HTMLDivElement>(null);
   const overviewScroll = useRef(0);
   const orderNodes = useRef(new Map<string, HTMLElement>());
@@ -82,12 +88,15 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
   const [deletion, setDeletion] = useState<Deletion | null>(null);
   const [deleteError, setDeleteError] = useState('');
   const dirty = Boolean(form && JSON.stringify(values) !== initialValues.current);
-  const navigationBusy = busy || orderEditorState.busy || entryState.busy;
+  const navigationBusy = busy || orderEditorState.busy || entryState.busy || importState.busy;
   const navigationDirty = dirty || orderEditorState.dirty || entryState.dirty;
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useLayoutEffect(() => { onNavigationStateChange?.({ dirty: navigationDirty, busy: navigationBusy }); }, [navigationDirty, navigationBusy, onNavigationStateChange]);
   useLayoutEffect(() => () => onNavigationStateChange?.(cleanState), [onNavigationStateChange]);
+  useEffect(() => { if (importRequest) setImportOpened(true); }, [importRequest]);
+  useLayoutEffect(() => { onImportFlowChange?.(importOpened || Boolean(entryTarget?.imported)); }, [importOpened, entryTarget?.imported, onImportFlowChange]);
+  useLayoutEffect(() => () => onImportFlowChange?.(false), [onImportFlowChange]);
   useEffect(() => {
     setSelectedId(initialBossId || null); setExpandedOrderId(null); setCompletedOpen(false);
     pendingAnchor.current = initialOrderId ? { id: initialOrderId, focus: true } : null;
@@ -220,7 +229,7 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
   }
 
   return <div className="boss-ledger">
-    {!selectedId && <div className="ledger-overview"><div><BookOpen size={17} /><span>{listLoading && bosses.length === 0 ? '加载中…' : <><strong>{bosses.length}</strong> 位老板，<strong>{allOrders.filter((order) => order.status === 'active').length}</strong> 笔进行中订单</>}</span></div><div className="ledger-overview-actions"><Button variant="default" size="xs" aria-label="刷新老板账本" leftSection={<RefreshCw size={14} />} disabled={navigationBusy || listLoading} onClick={refreshLedger}>刷新</Button><Button size="xs" leftSection={<Plus size={15} />} disabled={navigationBusy} onClick={() => openForm({ type: 'boss-create' })}>添加老板</Button></div></div>}
+    {!selectedId && <div className="ledger-overview"><div><BookOpen size={17} /><span>{listLoading && bosses.length === 0 ? '加载中…' : <><strong>{bosses.length}</strong> 位老板，<strong>{allOrders.filter((order) => order.status === 'active').length}</strong> 笔进行中订单</>}</span></div><div className="ledger-overview-actions">{onRequestImport && <Button variant="default" size="xs" leftSection={<FileImage size={14} />} disabled={navigationBusy} onClick={onRequestImport}>导入战绩</Button>}<Button variant="default" size="xs" aria-label="刷新老板账本" leftSection={<RefreshCw size={14} />} disabled={navigationBusy || listLoading} onClick={refreshLedger}>刷新</Button><Button size="xs" leftSection={<Plus size={15} />} disabled={navigationBusy} onClick={() => openForm({ type: 'boss-create' })}>添加老板</Button></div></div>}
     {listError && <Alert color="red" title="老板列表未加载">{listError}</Alert>}
     <div className="ledger-mode-content" ref={modeRef} key={selectedId || 'overview'}>
       {!selectedId ? <section className="ledger-all-bosses" aria-label="所有老板总览" aria-busy={listLoading}>
@@ -232,7 +241,7 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
         })}</tbody></table> : <div className="ledger-list-empty"><Search size={25} /><strong>{listError ? '老板数据暂时未加载' : '没有符合条件的老板'}</strong>{!listError && <button onClick={() => { setSearch(''); setFilter('all'); }}>查看全部老板</button>}</div>}
 
       </section> : <section className="ledger-detail" aria-label="老板详情与订单" aria-busy={detailLoading}>
-        <div className="ledger-detail-navigation"><Button variant="subtle" size="xs" leftSection={<ArrowLeft size={14} />} disabled={navigationBusy} onClick={() => { pendingAnchor.current = null; setSelectedId(null); setExpandedOrderId(null); setCompletedOpen(false); }}>返回所有老板</Button><Button variant="subtle" size="xs" aria-label="刷新老板订单" leftSection={<RefreshCw size={13} />} disabled={navigationBusy || detailLoading} onClick={refreshLedger}>刷新</Button></div>
+        <div className="ledger-detail-navigation">{onRequestImport && <Button variant="default" size="xs" leftSection={<FileImage size={14} />} disabled={navigationBusy} onClick={onRequestImport}>导入战绩</Button>}<Button variant="subtle" size="xs" leftSection={<ArrowLeft size={14} />} disabled={navigationBusy} onClick={() => { pendingAnchor.current = null; setSelectedId(null); setExpandedOrderId(null); setCompletedOpen(false); }}>返回所有老板</Button><Button variant="subtle" size="xs" aria-label="刷新老板订单" leftSection={<RefreshCw size={13} />} disabled={navigationBusy || detailLoading} onClick={refreshLedger}>刷新</Button></div>
         {!currentBoss && detailLoading ? <div className="ledger-loading ledger-detail-loading" role="status"><Loader size="sm" /><span>加载中…</span></div> : <>
           {detailError && <Alert color="red" title="老板订单未加载">{detailError}<Button variant="subtle" color="red" size="xs" onClick={refreshLedger}>重新加载</Button></Alert>}
           {currentBoss && <>
@@ -247,7 +256,8 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
       </section>}
     </div>
 
-    {entryTarget && <RoundEntry order={entryTarget.order} matchId={entryTarget.matchId} onError={onError} onNavigationStateChange={setEntryState} onClose={() => { captureOrder(entryTarget.order.id); setEntryTarget(null); setEntryState(cleanState); refreshLedger(); }} onSaved={(id) => { captureOrder(id); setEntryTarget(null); setEntryState(cleanState); refreshLedger(); }} />}
+    {importOpened && <ScreenshotImport onError={onError} onNavigationStateChange={setImportState} onClose={() => { setImportOpened(false); setImportState(cleanState); }} onSelect={(order, image) => { setSelectedId(order.boss_id); pendingAnchor.current = { id: order.id, focus: true }; setEntryState(cleanState); setEntryTarget({ order, ...(image ? { initialImage: image } : {}), imported: true }); setImportOpened(false); setImportState(cleanState); }} />}
+    {entryTarget && <RoundEntry order={entryTarget.order} matchId={entryTarget.matchId} initialImage={entryTarget.initialImage} onError={onError} onNavigationStateChange={setEntryState} onClose={() => { captureOrder(entryTarget.order.id); setEntryTarget(null); setEntryState(cleanState); refreshLedger(); }} onSaved={(id) => { captureOrder(id); setEntryTarget(null); setEntryState(cleanState); refreshLedger(); }} />}
     {orderEditor && <OrderSetup boss={orderEditor.boss} order={orderEditor.order} saveAsTemplate={orderEditor.saveAsTemplate} onError={onError} onNavigationStateChange={setOrderEditorState} onClose={() => { setOrderEditor(null); setOrderEditorState(cleanState); }} onSaved={(saved) => { if (saved) pendingAnchor.current = { id: saved.id, focus: true }; setOrderEditor(null); setOrderEditorState(cleanState); if (saved) refreshLedger(); }} />}
     <Modal opened={form !== null} onClose={closeForm} title={form?.type === 'boss-create' ? '添加老板' : form?.type === 'boss-edit' ? '编辑老板资料' : '调整订单约定'} centered size="md" classNames={{ content: 'ledger-form-modal-content', header: 'ledger-form-modal-header', body: 'ledger-form-modal-body' }} closeOnEscape={!busy} closeOnClickOutside={!busy} withCloseButton={!busy}>
       {form && <form className="ledger-form" onSubmit={submitForm}><div className="ledger-form-fields">{formError && <Alert color="red" title="尚未保存">{formError}</Alert>}{form.type === 'adjustment' ? <><div className="ledger-form-context"><span><strong>{form.order.boss_name}</strong> / {form.order.title}</span></div><NumberInput label={form.order.kind === 'hourly' ? '调整时长（分钟）' : '调整金额（哈夫币）'} description="正数增加，负数减少；总约定须 ≥ 0。" required min={-MAX_QUANTITY} max={MAX_QUANTITY} allowDecimal={false} thousandSeparator="," hideControls value={values.quantity} disabled={busy} onChange={(value) => patchValues({ quantity: typeof value === 'number' ? value : Number(value.replaceAll(',', '')) || 0 })} autoFocus /><TextInput label="调整时间" description="北京时间" type="datetime-local" value={values.occurred_at} disabled={busy} onChange={(event) => patchValues({ occurred_at: event.currentTarget.value })} /><Textarea label="调整原因" required maxLength={1000} minRows={2} value={values.note} disabled={busy} onChange={(event) => patchValues({ note: event.currentTarget.value })} /></> : <><TextInput label="老板称呼" required maxLength={80} value={values.display_name} disabled={busy} onChange={(event) => patchValues({ display_name: event.currentTarget.value })} autoFocus /><div className="ledger-form-two"><TextInput label="游戏 ID" maxLength={80} value={values.game_id} disabled={busy} onChange={(event) => patchValues({ game_id: event.currentTarget.value })} /><TextInput label="截图内昵称" placeholder="截图中的队员名" maxLength={80} value={values.game_name} disabled={busy} onChange={(event) => patchValues({ game_name: event.currentTarget.value })} /></div><Textarea label="老板备注" minRows={3} maxLength={2000} value={values.notes} disabled={busy} onChange={(event) => patchValues({ notes: event.currentTarget.value })} /></>}</div><div className="ledger-modal-actions"><span>{dirty ? '未保存' : ''}</span><Button type="button" variant="default" disabled={busy} onClick={closeForm}>取消</Button><Button type="submit" loading={busy} leftSection={<Check size={14} />}>保存</Button></div></form>}

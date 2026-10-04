@@ -5,13 +5,15 @@ import { once } from 'node:events';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
+import type { ImportHotkey } from '../../apps/desktop/src/shared/contracts';
 
 const execFileAsync = promisify(execFile);
 
 export interface NativeWindowState {
   left: number; top: number; width: number; height: number;
   workLeft: number; workTop: number; workWidth: number; workHeight: number;
-  iconic: boolean; visible: boolean; maximized: boolean; toolWindow: boolean; owner: number;
+  iconic: boolean; visible: boolean; maximized: boolean; toolWindow: boolean; appWindow: boolean; owner: number;
+  restoreToMaximized: boolean; showCommand: number;
   trayIconRegistered: boolean;
 }
 
@@ -71,8 +73,8 @@ export class NativeApplication {
   async setSize(width: number, height: number): Promise<void> { await nativeCommand(this.page, 'test:window-size', [width, height]); }
   async windowState(): Promise<NativeWindowState> { return inspectCapturedWindow(this.process, 'inspect'); }
   async restoreWindow(): Promise<void> { await inspectCapturedWindow(this.process, 'restore'); }
-  async restoreFromTray(): Promise<void> { await inspectCapturedWindow(this.process, 'tray-restore'); }
-  async requestTrayExit(): Promise<void> { await inspectCapturedWindow(this.process, 'tray-exit'); }
+  async requestExplicitExit(): Promise<void> { await inspectCapturedWindow(this.process, 'explicit-exit'); }
+  async sendRegisteredHotkey(shortcut: ImportHotkey): Promise<void> { await sendCapturedHotkey(this.process, shortcut); }
 
   async activateExistingInstance(): Promise<number | null> {
     // A duplicate launch uses only this captured test executable and profile.
@@ -103,7 +105,7 @@ export class NativeApplication {
   }
 }
 
-async function inspectCapturedWindow(child: ChildProcess, action: 'inspect' | 'restore' | 'tray-restore' | 'tray-exit'): Promise<NativeWindowState> {
+async function inspectCapturedWindow(child: ChildProcess, action: 'inspect' | 'restore' | 'explicit-exit'): Promise<NativeWindowState> {
   if (process.platform !== 'win32' || !child.pid || child.exitCode !== null) throw new Error('测试原生窗口进程不存在');
   // Enumerate only the captured child PID and expected application class. Never
   // inspect, restore, or close a normal user profile or another application's HWND.
@@ -117,11 +119,14 @@ public static class PWToolsCapturedWindow {
   public delegate bool EnumProc(IntPtr window, IntPtr data);
   [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct MonitorInfo { public uint Size; public Rect Monitor, Work; public uint Flags; }
+  [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
+  [StructLayout(LayoutKind.Sequential)] public struct WindowPlacement { public uint Size, Flags, ShowCommand; public Point MinPosition, MaxPosition; public Rect NormalPosition; }
   [StructLayout(LayoutKind.Sequential)] public struct NotifyIconIdentifier { public uint Size; public IntPtr Window; public uint Id; public Guid Guid; }
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr window, StringBuilder name, int size);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
+  [DllImport("user32.dll")] public static extern bool GetWindowPlacement(IntPtr window, ref WindowPlacement placement);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
   [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr window);
@@ -129,7 +134,6 @@ public static class PWToolsCapturedWindow {
   [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
   [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
   [DllImport("shell32.dll")] public static extern int Shell_NotifyIconGetRect(ref NotifyIconIdentifier identifier, out Rect rect);
   [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
@@ -149,35 +153,86 @@ $targetProcess = [uint32]${child.pid}
   return $true
 }, [IntPtr]::Zero) | Out-Null
 if ($script:capturedWindow -eq [IntPtr]::Zero) { throw 'Captured application window not found' }
-${action === 'restore' ? '[void][PWToolsCapturedWindow]::ShowWindow($script:capturedWindow, 9)' : ''}
+${action === 'restore' ? "if (-not [PWToolsCapturedWindow]::PostMessage($script:capturedWindow, 0x112, [UIntPtr]::new(0xF120), [IntPtr]::Zero)) { throw 'Captured taskbar restore command failed' }" : ''}
 $trayIdentifier = [PWToolsCapturedWindow+NotifyIconIdentifier]::new()
 $trayIdentifier.Size = [System.Runtime.InteropServices.Marshal]::SizeOf($trayIdentifier)
 $trayIdentifier.Window = $script:capturedWindow
 $trayIdentifier.Id = 1
 $trayBounds = [PWToolsCapturedWindow+Rect]::new()
 $trayRegistered = [PWToolsCapturedWindow]::Shell_NotifyIconGetRect([ref]$trayIdentifier, [ref]$trayBounds) -eq 0
-${action === 'tray-restore' || action === 'tray-exit' ? "if (-not $trayRegistered) { throw 'Captured application tray icon not registered' }" : ''}
 $bounds = [PWToolsCapturedWindow+Rect]::new()
 if (-not [PWToolsCapturedWindow]::GetWindowRect($script:capturedWindow, [ref]$bounds)) { throw 'Window bounds unavailable' }
 $monitor = [PWToolsCapturedWindow+MonitorInfo]::new()
 $monitor.Size = [System.Runtime.InteropServices.Marshal]::SizeOf($monitor)
 if (-not [PWToolsCapturedWindow]::GetMonitorInfo([PWToolsCapturedWindow]::MonitorFromWindow($script:capturedWindow, 2), [ref]$monitor)) { throw 'Monitor bounds unavailable' }
 $extendedStyle = [PWToolsCapturedWindow]::GetWindowLongPtr($script:capturedWindow, -20).ToInt64()
+$placement = [PWToolsCapturedWindow+WindowPlacement]::new()
+$placement.Size = [System.Runtime.InteropServices.Marshal]::SizeOf($placement)
+if (-not [PWToolsCapturedWindow]::GetWindowPlacement($script:capturedWindow, [ref]$placement)) { throw 'Captured window placement unavailable' }
 $result = [ordered]@{
   left = $bounds.Left; top = $bounds.Top; width = $bounds.Right - $bounds.Left; height = $bounds.Bottom - $bounds.Top
   workLeft = $monitor.Work.Left; workTop = $monitor.Work.Top; workWidth = $monitor.Work.Right - $monitor.Work.Left; workHeight = $monitor.Work.Bottom - $monitor.Work.Top
   iconic = [PWToolsCapturedWindow]::IsIconic($script:capturedWindow); visible = [PWToolsCapturedWindow]::IsWindowVisible($script:capturedWindow)
   maximized = [PWToolsCapturedWindow]::IsZoomed($script:capturedWindow)
-  toolWindow = ($extendedStyle -band 0x80) -ne 0; owner = [PWToolsCapturedWindow]::GetWindow($script:capturedWindow, 4).ToInt64()
+  restoreToMaximized = ($placement.Flags -band 2) -ne 0; showCommand = $placement.ShowCommand
+  toolWindow = ($extendedStyle -band 0x80) -ne 0; appWindow = ($extendedStyle -band 0x40000) -ne 0; owner = [PWToolsCapturedWindow]::GetWindow($script:capturedWindow, 4).ToInt64()
   trayIconRegistered = $trayRegistered
 }
-${action === 'tray-restore' ? "if (-not [PWToolsCapturedWindow]::PostMessage($script:capturedWindow, 0x8003, [UIntPtr]::Zero, [IntPtr]::new((1 -shl 16) -bor 0x203))) { throw 'Tray restore callback failed' }" : ''}
-${action === 'tray-exit' ? "if (-not [PWToolsCapturedWindow]::PostMessage($script:capturedWindow, 0x111, [UIntPtr]::new(0x8002), [IntPtr]::Zero)) { throw 'Tray exit command failed' }" : ''}
+${action === 'explicit-exit' ? "if (-not [PWToolsCapturedWindow]::PostMessage($script:capturedWindow, 0x111, [UIntPtr]::new(0x8002), [IntPtr]::Zero)) { throw 'Captured application exit command failed' }" : ''}
 $result | ConvertTo-Json -Compress
 `;
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   const { stdout } = await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { windowsHide: true, timeout: 15_000, maxBuffer: 128 * 1024 });
   return JSON.parse(stdout.trim()) as NativeWindowState;
+}
+
+async function sendCapturedHotkey(child: ChildProcess, shortcut: ImportHotkey): Promise<void> {
+  if (process.platform !== 'win32' || !child.pid || child.exitCode !== null) throw new Error('测试原生窗口进程不存在');
+  // These rare combinations are registered only by isolated test profiles. This
+  // helper never sends a default user shortcut, changes focus or writes clipboard.
+  if (!/^F(?:8|9|10|11)$/.test(shortcut.code) || !shortcut.ctrl || !shortcut.alt || !shortcut.shift || shortcut.win) {
+    throw new Error('全局输入只允许独立测试实例持有的 Ctrl+Alt+Shift+F8–F11');
+  }
+  const key = 0x70 + Number(shortcut.code.slice(1)) - 1;
+  const script = `
+$ErrorActionPreference = 'Stop'
+if (-not (Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue)) { throw 'Captured test process exited' }
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class PWToolsTestHotkey {
+  [StructLayout(LayoutKind.Sequential)] public struct KeyboardInput { public ushort Key, Scan; public uint Flags, Time; public UIntPtr Extra; }
+  [StructLayout(LayoutKind.Sequential)] public struct MouseInput { public int X, Y; public uint Data, Flags, Time; public UIntPtr Extra; }
+  [StructLayout(LayoutKind.Explicit)] public struct InputData { [FieldOffset(0)] public KeyboardInput Keyboard; [FieldOffset(0)] public MouseInput Mouse; }
+  [StructLayout(LayoutKind.Sequential)] public struct Input { public uint Type; public InputData Data; }
+  [DllImport("user32.dll", SetLastError=true)] public static extern uint SendInput(uint count, Input[] inputs, int size);
+  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
+  private static bool ModifiersReleased() {
+    foreach (int modifier in new int[] { 0x11, 0x12, 0x10, 0x5B, 0x5C }) {
+      if ((GetAsyncKeyState(modifier) & 0x8000) != 0) return false;
+    }
+    return true;
+  }
+  public static void Press(ushort key) {
+    for (int attempt = 0; !ModifiersReleased() && attempt < 10; attempt++) System.Threading.Thread.Sleep(50);
+    if (!ModifiersReleased()) throw new InvalidOperationException("User modifier key is held; test shortcut input was not sent");
+    ushort[] keys = { 0x11, 0x12, 0x10, key };
+    Input[] inputs = new Input[keys.Length * 2];
+    for (int index = 0; index < keys.Length; index++) {
+      inputs[index].Type = 1; inputs[index].Data.Keyboard.Key = keys[index];
+      inputs[keys.Length + index].Type = 1;
+      inputs[keys.Length + index].Data.Keyboard.Key = keys[keys.Length - index - 1];
+      inputs[keys.Length + index].Data.Keyboard.Flags = 2;
+    }
+    if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(Input))) != inputs.Length) {
+      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
+  }
+}
+'@
+[PWToolsTestHotkey]::Press([uint16]${key})
+`;
+  await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 15_000, maxBuffer: 128 * 1024 });
 }
 
 async function stopCapturedProcess(child: ChildProcess): Promise<void> {

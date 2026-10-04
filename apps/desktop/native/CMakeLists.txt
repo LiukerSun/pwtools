@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(PWTools VERSION 0.9.7 LANGUAGES CXX RC)
+project(PWTools VERSION 0.9.8 LANGUAGES CXX RC)
 
 if(NOT WIN32 OR NOT MSVC)
   message(FATAL_ERROR "PWTools requires Windows and the MSVC C++ build tools.")
@@ -26,7 +26,7 @@ string(REPLACE "\\" "\\\\" PWTOOLS_API_URL_ESCAPED "${PWTOOLS_API_URL}")
 string(REPLACE "\"" "\\\"" PWTOOLS_API_URL_ESCAPED "${PWTOOLS_API_URL_ESCAPED}")
 configure_file(resources/config.hpp.in generated/config.hpp @ONLY)
 
-add_executable(PWTools WIN32 src/main.cpp src/api_bridge.cpp resources/app.rc)
+add_executable(PWTools WIN32 src/main.cpp src/api_bridge.cpp src/clipboard_image.cpp resources/app.rc)
 target_compile_features(PWTools PRIVATE cxx_std_20)
 set_property(TARGET PWTools PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_include_directories(PWTools PRIVATE
@@ -41,7 +41,7 @@ target_link_options(PWTools PRIVATE /MANIFEST:NO /DYNAMICBASE /HIGHENTROPYVA /gu
   "$<$<CONFIG:Release>:/LTCG;/OPT:REF;/OPT:ICF>")
 target_link_libraries(PWTools PRIVATE
   "${WEBVIEW2_SDK}/build/native/x64/WebView2LoaderStatic.lib"
-  winhttp crypt32 bcrypt shlwapi ole32 oleaut32 shell32 user32 gdi32 dwmapi comctl32 version)
+  winhttp crypt32 bcrypt shlwapi ole32 oleaut32 shell32 user32 gdi32 dwmapi comctl32 version windowscodecs)
 
 set(PWTOOLS_DEPLOY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../release/native-win-x64" CACHE PATH "Native distribution directory")
 set_target_properties(PWTools PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PWTOOLS_DEPLOY_DIR}")
@@ -64,4 +64,17 @@ if(BUILD_TESTING)
   endforeach()
   add_test(NAME api_bridge_fixtures COMMAND api_bridge_test)
   set_tests_properties(api_bridge_fixtures PROPERTIES TIMEOUT 60)
+  add_executable(clipboard_image_test EXCLUDE_FROM_ALL tests/clipboard_image_test.cpp src/clipboard_image.cpp)
+  target_compile_features(clipboard_image_test PRIVATE cxx_std_20)
+  set_property(TARGET clipboard_image_test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  target_include_directories(clipboard_image_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${NLOHMANN_INCLUDE}")
+  target_compile_definitions(clipboard_image_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(clipboard_image_test PRIVATE /W4 /utf-8 /EHsc /permissive-)
+  target_link_libraries(clipboard_image_test PRIVATE ole32 windowscodecs user32 gdi32)
+  set_target_properties(clipboard_image_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+  foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+    set_target_properties(clipboard_image_test PROPERTIES "RUNTIME_OUTPUT_DIRECTORY_${config}" "${CMAKE_CURRENT_BINARY_DIR}/tests")
+  endforeach()
+  add_test(NAME clipboard_image_fixtures COMMAND clipboard_image_test)
+  set_tests_properties(clipboard_image_fixtures PROPERTIES TIMEOUT 60)
 endif()

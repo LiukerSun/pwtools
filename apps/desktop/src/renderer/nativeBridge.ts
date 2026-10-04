@@ -64,8 +64,10 @@ export function createNativeBridge(webview: NativeWebView): {
   const pending = new Map<string, PendingRequest>();
   const closeHandlers = new Set<() => void>();
   const exitHandlers = new Set<() => void>();
+  const importHandlers = new Set<() => void>();
   let closeRequestedBeforeSubscription = false;
   let exitRequestedBeforeSubscription = false;
+  let importRequestedBeforeSubscription = false;
   let disposed = false;
 
   const invoke = <T>(method: string, args: unknown[] = []): Promise<T> => {
@@ -100,6 +102,11 @@ export function createNativeBridge(webview: NativeWebView): {
       for (const handler of [...exitHandlers]) handler();
       return;
     }
+    if (message.event === 'import-requested') {
+      if (importHandlers.size === 0) importRequestedBeforeSubscription = true;
+      for (const handler of [...importHandlers]) handler();
+      return;
+    }
     if (typeof message.id !== 'string') return;
     const request = pending.get(message.id);
     if (!request) return;
@@ -123,6 +130,15 @@ export function createNativeBridge(webview: NativeWebView): {
     me: () => invoke('me'),
     logout: () => invoke('logout'),
     windowControl: action => invoke('windowControl', [action]),
+    setImportHotkey: shortcut => invoke('setImportHotkey', [shortcut]),
+    readClipboardImage: async () => {
+      const value = await invoke('readClipboardImage');
+      if (value === null) return null;
+      if (!isObject(value) || typeof value.name !== 'string') {
+        throw new NativeBridgeError('IMAGE_INTEGRITY_ERROR', '剪贴板截图内容无效，请重新复制截图。');
+      }
+      return { name: value.name, ...imageFromNative(value) };
+    },
     appInfo: () => invoke('appInfo'),
     onCloseRequested: handler => {
       closeHandlers.add(handler);
@@ -139,6 +155,14 @@ export function createNativeBridge(webview: NativeWebView): {
         queueMicrotask(() => { if (exitHandlers.has(handler)) handler(); });
       }
       return () => { exitHandlers.delete(handler); };
+    },
+    onImportRequested: handler => {
+      importHandlers.add(handler);
+      if (importRequestedBeforeSubscription) {
+        importRequestedBeforeSubscription = false;
+        queueMicrotask(() => { if (!disposed && importHandlers.has(handler)) handler(); });
+      }
+      return () => { importHandlers.delete(handler); };
     },
     uploadMatch: input => {
       const { data, ...metadata } = input;
@@ -184,6 +208,7 @@ export function createNativeBridge(webview: NativeWebView): {
       pending.clear();
       closeHandlers.clear();
       exitHandlers.clear();
+      importHandlers.clear();
     },
   };
 }

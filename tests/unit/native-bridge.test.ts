@@ -35,7 +35,9 @@ test('all desktop methods use matching RPC names and JSON arguments', async () =
     ['me', () => bridge.me(), []],
     ['logout', () => bridge.logout(), []],
     ['windowControl', () => bridge.windowControl('close'), ['close']],
-    ['windowControl', () => bridge.windowControl('hide-to-tray'), ['hide-to-tray']],
+    ['windowControl', () => bridge.windowControl('minimize'), ['minimize']],
+    ['setImportHotkey', () => bridge.setImportHotkey(null), [null]],
+    ['setImportHotkey', () => bridge.setImportHotkey({ code: 'KeyI', ctrl: true, alt: true, shift: false, win: false }), [{ code: 'KeyI', ctrl: true, alt: true, shift: false, win: false }]],
     ['appInfo', () => bridge.appInfo(), []],
     ['listMatches', () => bridge.listMatches(undefined, undefined, undefined, false), [1, 20, null, false]],
     ['matchStats', () => bridge.matchStats(), [null]],
@@ -186,7 +188,7 @@ test('close notifications are advisory, queue before subscription, and unsubscri
   } finally { native.dispose(); }
 });
 
-test('tray exit notifications queue independently and leave exit guards in charge', async () => {
+test('explicit exit notifications queue independently and leave exit guards in charge', async () => {
   const webview = new FakeWebView();
   const native = createNativeBridge(webview);
   let closes = 0;
@@ -195,7 +197,7 @@ test('tray exit notifications queue independently and leave exit guards in charg
     webview.receive({ event: 'exit-requested' });
     const unsubscribeClose = native.bridge.onCloseRequested!(() => { closes += 1; });
     await Promise.resolve();
-    assert.equal(closes, 0, 'tray exit must not use the close-to-tray preference');
+    assert.equal(closes, 0, 'explicit exit must not use the minimize preference');
     const unsubscribeExit = native.bridge.onExitRequested!(() => { exits += 1; });
     await Promise.resolve();
     assert.equal(exits, 1);
@@ -245,4 +247,49 @@ test('disposal rejects outstanding operations and removes message listeners', as
   await assert.rejects(native.bridge.health(), { code: 'NETWORK_ERROR' });
   assert.equal(webview.requests.length, 1);
   native.dispose();
+});
+
+test('global import notifications coalesce before subscription and do not bypass app guards', async () => {
+  const webview = new FakeWebView();
+  const native = createNativeBridge(webview);
+  let imports = 0;
+  try {
+    webview.receive({ event: 'import-requested' });
+    webview.receive({ event: 'import-requested' });
+    const unsubscribe = native.bridge.onImportRequested!(() => { imports += 1; });
+    await Promise.resolve();
+    assert.equal(imports, 1);
+    webview.receive({ event: 'import-requested' });
+    assert.equal(imports, 2);
+    assert.equal(webview.requests.length, 0, 'only the app may choose an order and start uploading');
+    unsubscribe();
+    webview.receive({ event: 'import-requested' });
+    const cancel = native.bridge.onImportRequested!(() => { imports += 1; });
+    cancel();
+    await Promise.resolve();
+    assert.equal(imports, 2);
+    webview.receive({ event: 'import-requested' });
+    native.bridge.onImportRequested!(() => { imports += 1; });
+    native.dispose();
+    await Promise.resolve();
+    assert.equal(imports, 2);
+  } finally { native.dispose(); }
+});
+
+test('clipboard images preserve bytes and empty or malformed results remain distinct', async () => {
+  const webview = new FakeWebView();
+  const native = createNativeBridge(webview);
+  try {
+    const empty = native.bridge.readClipboardImage();
+    assert.equal(webview.requests[0].method, 'readClipboardImage');
+    assert.deepEqual(webview.requests[0].args, []);
+    webview.reply(0, null);
+    assert.equal(await empty, null);
+    const image = native.bridge.readClipboardImage();
+    webview.reply(1, { name: 'clipboard.png', content_type: 'image/png', data_base64: 'AAECA/8=' });
+    assert.deepEqual(await image, { name: 'clipboard.png', content_type: 'image/png', data: Uint8Array.of(0, 1, 2, 3, 255) });
+    const malformed = native.bridge.readClipboardImage();
+    webview.reply(2, { name: 'broken.png', content_type: 'image/png', data_base64: '?' });
+    await assert.rejects(malformed, { code: 'IMAGE_INTEGRITY_ERROR' });
+  } finally { native.dispose(); }
 });

@@ -61,7 +61,7 @@ test('打包 WebView2 内粘贴截图上传原图并显示识别和预览', asyn
       }[], images: [] as string[] };
       (window as Window & { clipboardRequests?: typeof state }).clipboardRequests = state;
       for (const method of Object.keys(bridge)) {
-        if (method === 'windowControl' || method === 'onCloseRequested') continue;
+        if (['windowControl', 'onCloseRequested', 'onExitRequested', 'onImportRequested', 'setImportHotkey'].includes(method)) continue;
         (bridge as unknown as Record<string, unknown>)[method] = async () => {
           state.unexpected.push(method);
           throw new Error(`未配置的原生测试请求：${method}`);

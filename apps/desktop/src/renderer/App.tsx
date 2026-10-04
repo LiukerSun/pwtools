@@ -3,9 +3,10 @@ import { Alert, Button, createTheme, InputWrapper, Loader, MantineProvider, Menu
 import { useForm } from '@mantine/form';
 import { Notifications, notifications } from '@mantine/notifications';
 import { BookOpen, ChevronDown, LogOut, Mail, Maximize2, Minus, Moon, PanelLeftClose, PanelLeftOpen, Settings2, Sun, X } from 'lucide-react';
-import type { AppInfo, User } from '../shared/contracts';
+import type { AppInfo, ImportHotkey, User } from '../shared/contracts';
 import { api, errorInfo, isDesktop, isSessionError } from './api';
 import BossLedger from './BossLedger';
+import ImportShortcut, { initialImportHotkey, storeImportHotkey } from './ImportShortcut';
 
 type PageId = 'dashboard' | 'settings';
 type ThemeMode = 'dark' | 'light';
@@ -63,6 +64,25 @@ export default function App() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [connection, setConnection] = useState<Connection>('checking');
   const [restoreError, setRestoreError] = useState('');
+  const [importHotkey, setImportHotkey] = useState<ImportHotkey | null>(initialImportHotkey);
+  const [hotkeyError, setHotkeyError] = useState('');
+  const [hotkeyBusy, setHotkeyBusy] = useState(false);
+  const [importRequest, setImportRequest] = useState(0);
+  const userRef = useRef(user);
+  userRef.current = user;
+  const hotkeyRegistration = useRef(0);
+  const hotkeyQueue = useRef<Promise<void>>(Promise.resolve());
+  const hotkeySavingRef = useRef(false);
+  const hotkeyEditingRef = useRef(false);
+  const hotkeyStartupStarted = useRef(false);
+  const importHandledRef = useRef(0);
+  const registerHotkey = useCallback((shortcut: ImportHotkey | null) => {
+    const operation = hotkeyQueue.current.then(() => api.setImportHotkey(shortcut));
+    hotkeyQueue.current = operation.catch(() => {});
+    return operation;
+  }, []);
+  const reportHotkeyEditing = useCallback((editing: boolean) => { hotkeyEditingRef.current = editing; }, []);
+  const reportImportHandled = useCallback((request: number) => { importHandledRef.current = Math.max(importHandledRef.current, request); }, []);
   const checkingRef = useRef(false);
   const workspaceCloseRef = useRef<(() => void) | null>(null);
   const registerWindowClose = useCallback((handler: (() => void) | null) => { workspaceCloseRef.current = handler; }, []);
@@ -74,8 +94,8 @@ export default function App() {
   }, []);
   const applyCloseBehavior = useCallback((behavior: CloseBehavior) => {
     if (behavior === 'exit') { requestWindowExit(); return; }
-    void api.windowControl('hide-to-tray').catch((error: unknown) => {
-      notifications.show({ title: '收起未完成', message: errorInfo(error).message, color: 'red' });
+    void api.windowControl('minimize').catch((error: unknown) => {
+      notifications.show({ title: '最小化未完成', message: errorInfo(error).message, color: 'red' });
     });
   }, [requestWindowExit]);
   const updateCloseBehavior = useCallback((behavior: CloseBehavior) => {
@@ -95,6 +115,42 @@ export default function App() {
 
   useEffect(() => api.onCloseRequested?.(requestWindowClose), [requestWindowClose]);
   useEffect(() => api.onExitRequested?.(requestWindowExit), [requestWindowExit]);
+  useEffect(() => api.onImportRequested?.(() => {
+    if (hotkeyEditingRef.current || hotkeySavingRef.current) return;
+    setImportRequest(value => value + 1);
+    if (!userRef.current) notifications.show({ title: '请先登录', message: '登录后继续选择订单导入战绩', color: 'blue' });
+  }), []);
+  useEffect(() => {
+    if (!isDesktop || hotkeyStartupStarted.current) return;
+    hotkeyStartupStarted.current = true;
+    const registration = ++hotkeyRegistration.current;
+    void registerHotkey(importHotkey).catch((error: unknown) => {
+      if (registration !== hotkeyRegistration.current) return;
+      const message = errorInfo(error).message;
+      setHotkeyError(message);
+      notifications.show({ title: '快捷导入未启用', message: `${message} 请在设置中更改快捷键。`, color: 'orange', autoClose: 6000 });
+    });
+    // Register the saved machine preference once, including while signed out.
+    // Settings changes register explicitly before updating the preference.
+  }, []);
+  const updateImportHotkey = useCallback(async (shortcut: ImportHotkey | null): Promise<boolean> => {
+    if (hotkeySavingRef.current) return false;
+    hotkeySavingRef.current = true;
+    const registration = ++hotkeyRegistration.current;
+    setHotkeyBusy(true); setHotkeyError('');
+    try {
+      await registerHotkey(shortcut);
+      if (registration !== hotkeyRegistration.current) return false;
+      setImportHotkey(shortcut);
+      try { storeImportHotkey(shortcut); }
+      catch { notifications.show({ title: '快捷键仅本次生效', message: '无法保存本机偏好，下次启动需重新设置。', color: 'orange' }); }
+      notifications.show({ message: shortcut ? '导入快捷键已保存' : '导入快捷键已禁用', color: 'teal' });
+      return true;
+    } catch (error: unknown) {
+      if (registration === hotkeyRegistration.current) setHotkeyError(errorInfo(error).message);
+      return false;
+    } finally { hotkeySavingRef.current = false; if (registration === hotkeyRegistration.current) setHotkeyBusy(false); }
+  }, [registerHotkey]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -137,11 +193,11 @@ export default function App() {
     <Notifications position="top-right" autoClose={2400} limit={2} containerWidth={360} />
     <div className="app-root">
       <TitleBar onClose={requestWindowClose} onExit={requestWindowExit} />
-      {restoring ? <div className="restore-screen"><BrandMark /><Loader size="sm" /></div> : user ? <Workspace key={user.id} user={user} onSignedOut={() => setUser(null)} onError={handleError} theme={theme} onThemeChange={setTheme} appInfo={appInfo} onCloseHandlerChange={registerWindowClose} closeBehavior={closeBehavior ?? 'minimize'} onCloseBehaviorChange={updateCloseBehavior} /> : <AuthScreen onAuthenticated={authenticated} connection={connection} restoreError={restoreError} />}
+      {restoring ? <div className="restore-screen"><BrandMark /><Loader size="sm" /></div> : user ? <Workspace key={user.id} user={user} onSignedOut={() => setUser(null)} onError={handleError} theme={theme} onThemeChange={setTheme} appInfo={appInfo} onCloseHandlerChange={registerWindowClose} closeBehavior={closeBehavior ?? 'minimize'} onCloseBehaviorChange={updateCloseBehavior} importRequest={importRequest > importHandledRef.current ? importRequest : 0} onImportHandled={reportImportHandled} importHotkey={importHotkey} hotkeyError={hotkeyError} hotkeyBusy={hotkeyBusy} onImportHotkeyChange={updateImportHotkey} onHotkeyEditingChange={reportHotkeyEditing} /> : <AuthScreen onAuthenticated={authenticated} connection={connection} restoreError={restoreError} />}
     </div>
     {isDesktop && <Modal classNames={{ content: 'window-close-modal' }} opened={closeDialogOpened} onClose={() => setCloseDialogOpened(false)} title="关闭窗口" centered size="sm" zIndex={450}>
-      <p>收起后继续运行，仅在右下角系统托盘显示。双击图标恢复窗口，也可右键退出。可在设置中更改关闭方式。</p>
-      <div className="window-close-actions"><Button variant="default" onClick={() => chooseCloseBehavior('exit')}>退出应用</Button><Button onClick={() => chooseCloseBehavior('minimize')}>收起到系统托盘</Button></div>
+      <p>最小化后继续在后台运行，保留任务栏图标。点击任务栏图标恢复窗口。可在设置中更改关闭方式。</p>
+      <div className="window-close-actions"><Button variant="default" onClick={() => chooseCloseBehavior('exit')}>退出应用</Button><Button onClick={() => chooseCloseBehavior('minimize')}>最小化到任务栏</Button></div>
     </Modal>}
   </MantineProvider>;
 }
@@ -223,12 +279,23 @@ interface WorkspaceProps {
   onCloseHandlerChange: (handler: (() => void) | null) => void;
   closeBehavior: CloseBehavior;
   onCloseBehaviorChange: (behavior: CloseBehavior) => void;
+  importRequest: number;
+  onImportHandled: (request: number) => void;
+  importHotkey: ImportHotkey | null;
+  hotkeyError: string;
+  hotkeyBusy: boolean;
+  onImportHotkeyChange: (shortcut: ImportHotkey | null) => Promise<boolean>;
+  onHotkeyEditingChange: (editing: boolean) => void;
 }
 
-function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, onCloseHandlerChange, closeBehavior, onCloseBehaviorChange }: WorkspaceProps) {
+function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, onCloseHandlerChange, closeBehavior, onCloseBehaviorChange, importRequest, onImportHandled, importHotkey, hotkeyError, hotkeyBusy, onImportHotkeyChange, onHotkeyEditingChange }: WorkspaceProps) {
   const [page, setPage] = useState<PageId>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed);
   const [ledgerVisit, setLedgerVisit] = useState(0);
+  const [ledgerImportRequest, setLedgerImportRequest] = useState(0);
+  const importFlowRef = useRef(false);
+  const seenImportRequest = useRef(0);
+  const reportImportFlow = useCallback((opened: boolean) => { importFlowRef.current = opened; if (opened) setLedgerImportRequest(0); }, []);
   const ledgerNavigationRef = useRef({ dirty: false, busy: false });
   const pageRef = useRef(page);
   pageRef.current = page;
@@ -239,6 +306,25 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
   const [signingOut, setSigningOut] = useState(false);
   const signingOutRef = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
+  const requestImport = useCallback(() => {
+    const navigation = pageRef.current === 'dashboard' ? ledgerNavigationRef.current : { dirty: false, busy: false };
+    if (navigation.busy || signingOutRef.current) { notifications.show({ message: '请等待保存或识别完成', color: 'orange' }); return; }
+    if (importFlowRef.current) { notifications.show({ message: '请继续完成当前战绩导入', color: 'blue' }); return; }
+    const open = () => {
+      importFlowRef.current = false;
+      setLedgerVisit(value => value + 1);
+      setLedgerImportRequest(value => value + 1);
+      setPage('dashboard');
+    };
+    if (navigation.dirty) { setPendingClose(false); setPendingNavigation(() => open); return; }
+    open();
+  }, []);
+  useEffect(() => {
+    if (!importRequest || seenImportRequest.current === importRequest) return;
+    seenImportRequest.current = importRequest;
+    onImportHandled(importRequest);
+    requestImport();
+  }, [importRequest, onImportHandled, requestImport]);
   const completeWindowClose = useCallback(() => {
     allowCloseRef.current = true;
     void api.windowControl('close').catch((error: unknown) => {
@@ -317,8 +403,8 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
       <main className="page-main" ref={mainRef}>
         <div className="page-heading"><h1 tabIndex={-1}>{currentPage.label}</h1></div>
         <div className="page-transition" key={page}>
-          {page === 'dashboard' && <BossLedger key={ledgerVisit} onError={onError} onNavigationStateChange={reportLedgerNavigation} />}
-          {page === 'settings' && <Settings theme={theme} onThemeChange={onThemeChange} appInfo={appInfo} onLogout={() => runNavigation(() => void logout())} signingOut={signingOut} email={user.email} closeBehavior={closeBehavior} onCloseBehaviorChange={onCloseBehaviorChange} />}
+          {page === 'dashboard' && <BossLedger key={ledgerVisit} onError={onError} onNavigationStateChange={reportLedgerNavigation} importRequest={ledgerImportRequest} onRequestImport={requestImport} onImportFlowChange={reportImportFlow} />}
+          {page === 'settings' && <Settings theme={theme} onThemeChange={onThemeChange} appInfo={appInfo} onLogout={() => runNavigation(() => void logout())} signingOut={signingOut} email={user.email} closeBehavior={closeBehavior} onCloseBehaviorChange={onCloseBehaviorChange} importHotkey={importHotkey} hotkeyError={hotkeyError} hotkeyBusy={hotkeyBusy} onImportHotkeyChange={onImportHotkeyChange} onHotkeyEditingChange={onHotkeyEditingChange} />}
         </div>
       </main>
     </div>
@@ -338,10 +424,11 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
   </div>;
 }
 
-function Settings({ theme, onThemeChange, appInfo, onLogout, signingOut, email, closeBehavior, onCloseBehaviorChange }: { theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void; appInfo: AppInfo | null; onLogout: () => void; signingOut: boolean; email: string; closeBehavior: CloseBehavior; onCloseBehaviorChange: (behavior: CloseBehavior) => void }) {
+function Settings({ theme, onThemeChange, appInfo, onLogout, signingOut, email, closeBehavior, onCloseBehaviorChange, importHotkey, hotkeyError, hotkeyBusy, onImportHotkeyChange, onHotkeyEditingChange }: { theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void; appInfo: AppInfo | null; onLogout: () => void; signingOut: boolean; email: string; closeBehavior: CloseBehavior; onCloseBehaviorChange: (behavior: CloseBehavior) => void; importHotkey: ImportHotkey | null; hotkeyError: string; hotkeyBusy: boolean; onImportHotkeyChange: (shortcut: ImportHotkey | null) => Promise<boolean>; onHotkeyEditingChange: (editing: boolean) => void }) {
   return <div className="settings-layout">
     <section className="panel settings-section"><div className="section-heading"><h2>外观</h2></div><div className="settings-row"><strong>主题</strong><SegmentedControl value={theme} onChange={(value) => onThemeChange(value as ThemeMode)} data={[{ value: 'dark', label: <span className="theme-label"><Moon size={14} /> 深色</span> }, { value: 'light', label: <span className="theme-label"><Sun size={14} /> 浅色</span> }]} /></div></section>
-    {isDesktop && <section className="panel settings-section"><div className="section-heading"><h2>窗口</h2></div><div className="settings-row"><Switch classNames={{ root: 'settings-close-switch', body: 'settings-close-switch-body', labelWrapper: 'settings-close-switch-label', label: 'settings-close-switch-title', description: 'settings-close-switch-description' }} label="关闭窗口时收起到系统托盘" description="启用后，应用继续运行；双击托盘图标恢复窗口，右键可退出。关闭此选项后，点击关闭窗口会退出应用。" labelPosition="left" checked={closeBehavior === 'minimize'} onChange={(event) => onCloseBehaviorChange(event.currentTarget.checked ? 'minimize' : 'exit')} /></div></section>}
+    {isDesktop && <section className="panel settings-section"><div className="section-heading"><h2>窗口</h2></div><div className="settings-row"><Switch classNames={{ root: 'settings-close-switch', body: 'settings-close-switch-body', labelWrapper: 'settings-close-switch-label', label: 'settings-close-switch-title', description: 'settings-close-switch-description' }} label="关闭窗口时最小化到任务栏" description="启用后，应用继续运行并保留任务栏图标，点击图标恢复窗口。关闭此选项后，点击关闭窗口会退出应用。" labelPosition="left" checked={closeBehavior === 'minimize'} onChange={(event) => onCloseBehaviorChange(event.currentTarget.checked ? 'minimize' : 'exit')} /></div></section>}
+    {isDesktop && <ImportShortcut shortcut={importHotkey} error={hotkeyError} busy={hotkeyBusy} onSave={onImportHotkeyChange} onEditingChange={onHotkeyEditingChange} />}
     <section className="panel settings-section"><div className="section-heading"><h2>账号</h2></div><div className="settings-row"><div><strong className="settings-email">{email}</strong>{!appInfo?.persistentSession && <p>关闭后需重新登录</p>}</div><Button variant="default" color="red" leftSection={<LogOut size={15} />} loading={signingOut} onClick={onLogout}>退出登录</Button></div></section>
     <p className="settings-version">PWTools {appInfo && appInfo.version !== '浏览器预览' ? `v${appInfo.version}` : ''}</p>
   </div>;

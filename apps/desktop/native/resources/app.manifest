@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity version="0.9.7.0" processorArchitecture="amd64" name="PWTools.Desktop" type="win32"/>
+  <assemblyIdentity version="0.9.8.0" processorArchitecture="amd64" name="PWTools.Desktop" type="win32"/>
   <description>PWTools 私人老板与订单账本</description>
   <dependency>
     <dependentAssembly>

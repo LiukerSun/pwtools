@@ -88,6 +88,8 @@ const browserBridge: DesktopBridge = {
     : Promise.reject(new ClientError('UNAUTHORIZED', '请先登录。')),
   logout: async () => { await request('/auth/logout', { method: 'POST' }); browserToken = null; },
   windowControl: async () => {},
+  setImportHotkey: async () => { throw new ClientError('DESKTOP_ONLY', '全局快捷键仅在桌面应用中可用。'); },
+  readClipboardImage: async () => null,
   appInfo: async () => ({ version: '浏览器预览', apiUrl: browserApiUrl, persistentSession: false }),
   uploadMatch: async (input) => {
     const response = await send('/matches', {

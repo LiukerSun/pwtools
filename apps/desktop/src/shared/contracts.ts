@@ -49,6 +49,7 @@ export interface MatchRecord {
 }
 export type MatchUpdateInput = Pick<MatchRecord, 'player_name' | 'outcome' | 'amount' | 'confirmed' | 'played_at' | 'note'> & { failure_extra_amount?: number; fake_amount?: number | null; order_id?: string };
 export interface MatchUploadInput { name: string; content_type: string; data: Uint8Array; order_id?: string }
+export interface ImportHotkey { code: string; ctrl: boolean; alt: boolean; shift: boolean; win: boolean }
 export interface MatchUploadResponse { record: MatchRecord; duplicate: boolean }
 export interface MatchImage { content_type: string; data: Uint8Array }
 export interface MatchListResponse { items: MatchRecord[]; total: number; page: number; page_size: number }
@@ -151,10 +152,13 @@ export interface DesktopBridge {
   login(input: LoginInput): Promise<User>;
   me(): Promise<User>;
   logout(): Promise<void>;
-  windowControl(action: 'minimize' | 'maximize' | 'hide-to-tray' | 'close'): Promise<void>;
+  windowControl(action: 'minimize' | 'maximize' | 'close'): Promise<void>;
+  setImportHotkey(shortcut: ImportHotkey | null): Promise<void>;
+  readClipboardImage(): Promise<MatchUploadInput | null>;
   appInfo(): Promise<AppInfo>;
   onCloseRequested?(handler: () => void): () => void;
   onExitRequested?(handler: () => void): () => void;
+  onImportRequested?(handler: () => void): () => void;
   uploadMatch(input: MatchUploadInput): Promise<MatchUploadResponse>;
   listMatches(page?: number, pageSize?: number, orderId?: string, confirmed?: boolean): Promise<MatchListResponse>;
   matchStats(orderId?: string): Promise<MatchStats>;

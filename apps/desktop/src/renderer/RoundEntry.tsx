@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent } fro
 import { Alert, Button, Loader, Modal, NumberInput, SegmentedControl, Select, Textarea } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { Check, ChevronDown, Clock3, FileImage, Maximize2, ScanLine, Upload } from 'lucide-react';
-import type { LedgerEntryInput, MatchOutcome, MatchRecord, MatchUpdateInput, ServiceOrder } from '../shared/contracts';
+import type { LedgerEntryInput, MatchOutcome, MatchRecord, MatchUpdateInput, MatchUploadInput, ServiceOrder } from '../shared/contracts';
 import { api, errorInfo } from './api';
 import { amountFormat, automaticExtra, MAX_QUANTITY, orderSummary, ruleTriggered } from './orderPresentation';
 import DateTimeField from './DateTimeField';
@@ -28,6 +28,7 @@ const uncertainFailure = (code: string) => /TIMEOUT|NETWORK|UNKNOWN|API_ERROR|IN
 interface RoundEntryProps {
   order: ServiceOrder;
   matchId?: string;
+  initialImage?: MatchUploadInput;
   onClose: () => void;
   onSaved: (orderId: string) => void;
   onError: (error: unknown) => boolean;
@@ -85,7 +86,7 @@ export function RoundResultFields({ order, draft, record, disabled, errors, onCh
   </div>;
 }
 
-export default function RoundEntry({ order, matchId, onClose, onSaved, onError, onNavigationStateChange }: RoundEntryProps) {
+export default function RoundEntry({ order, matchId, initialImage, onClose, onSaved, onError, onNavigationStateChange }: RoundEntryProps) {
   const [mode, setMode] = useState(order.kind === 'hourly' ? 'manual' : 'screenshot');
   const [draft, setDraft] = useState<RoundDraft>(initialDraft);
   const [record, setRecord] = useState<MatchRecord | null>(null);
@@ -111,6 +112,7 @@ export default function RoundEntry({ order, matchId, onClose, onSaved, onError, 
   const actionRef = useRef<Action>(null);
   const idempotencyKey = useRef(crypto.randomUUID());
   const pendingSave = useRef<PendingSave | null>(null);
+  const initialImageConsumed = useRef(false);
   const busy = loading || action !== null;
   const saving = action === 'save';
   const nicknameReady = Boolean(order.boss_game_name.trim());
@@ -210,6 +212,12 @@ export default function RoundEntry({ order, matchId, onClose, onSaved, onError, 
       if (result.duplicate) notifications.show({ message: result.record.confirmed ? '此场已入账，可继续校对' : '此图已上传，可继续填写', color: 'blue' });
     });
   };
+
+  useEffect(() => {
+    if (!initialImage || initialImageConsumed.current) return;
+    initialImageConsumed.current = true;
+    upload(new File([new Uint8Array(initialImage.data).buffer], initialImage.name, { type: initialImage.content_type }));
+  }, [initialImage]);
 
   const pasteScreenshot = (event: ClipboardEvent<HTMLDivElement>) => {
     if (mode !== 'screenshot' || order.kind === 'hourly' || record || matchId || discardOpen || imageOpen || datePickerOpen) return;
