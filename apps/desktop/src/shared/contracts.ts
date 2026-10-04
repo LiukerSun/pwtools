@@ -152,8 +152,9 @@ export interface DesktopBridge {
   login(input: LoginInput): Promise<User>;
   me(): Promise<User>;
   logout(): Promise<void>;
-  windowControl(action: 'minimize' | 'maximize' | 'close'): Promise<void>;
+  windowControl(action: 'minimize' | 'maximize' | 'restore' | 'close'): Promise<void>;
   setImportHotkey(shortcut: ImportHotkey | null): Promise<void>;
+  captureScreen(): Promise<MatchUploadInput | null>;
   readClipboardImage(): Promise<MatchUploadInput | null>;
   appInfo(): Promise<AppInfo>;
   onCloseRequested?(handler: () => void): () => void;

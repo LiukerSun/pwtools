@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include "api_bridge.hpp"
 #include "clipboard_image.hpp"
+#include "screen_capture.hpp"
 #include "config.hpp"
 #include <algorithm>
 #include <atomic>
@@ -160,6 +161,7 @@ class Host {
   std::wstring profileWindowProperty;
   fs::path dataDir;
   fs::path rendererDir;
+  std::unique_ptr<pwtools::ScreenCapture> screenCapture;
 
   void Resize() {
     if (!controller) return;
@@ -226,9 +228,32 @@ class Host {
   }
 
   void ImportRequested() {
-    RestoreWindow();
+    // The renderer checks unsaved work/login first, then hides this window and
+    // starts selection. Raising it here would cover the game being captured.
     if (!ready || !view) { pendingImport = true; return; }
     Post({{"event", "import-requested"}});
+  }
+
+  void CaptureScreen(const std::string& id) {
+    if (!ready || !environment) throw pwtools::ApiFailure("CAPTURE_UNAVAILABLE", "截图界面尚未就绪，请稍后重试。");
+    if (!screenCapture) {
+      screenCapture = std::make_unique<pwtools::ScreenCapture>(window, environment.Get(), rendererDir,
+          debug && Environment(L"PWTOOLS_E2E_CAPTURE_PATTERN") == L"1", [this] { RestoreWindow(); });
+    }
+    screenCapture->Start([this, id](pwtools::ScreenCaptureResult result) {
+      if (!IsWindow(window) || !view) return;
+      try {
+        if (!result.errorCode.empty()) {
+          Post({{"id", id}, {"ok", false}, {"error", {{"code", result.errorCode}, {"message", result.errorMessage}}}});
+          return;
+        }
+        json data = nullptr;
+        if (result.png) data = {{"name", "capture.png"}, {"content_type", "image/png"}, {"data_base64", ImageBase64(*result.png)}};
+        Post({{"id", id}, {"ok", true}, {"data", std::move(data)}});
+      } catch (...) {
+        Post({{"id", id}, {"ok", false}, {"error", {{"code", "CAPTURE_FAILED"}, {"message", "截图图片未能读取，请重新框选。"}}}});
+      }
+    });
   }
 
   void Message(ICoreWebView2WebMessageReceivedEventArgs* event) {
@@ -258,6 +283,7 @@ class Host {
         if (args.size() != 1 || !args[0].is_string()) throw pwtools::ApiFailure("INVALID_INPUT", "窗口操作不正确。");
         const auto action = args[0].get<std::string>();
         if (action == "minimize") MinimizeWindow();
+        else if (action == "restore") RestoreWindow();
         else if (action == "maximize") ShowWindow(window, IsZoomed(window) ? SW_RESTORE : SW_MAXIMIZE);
         else if (action == "close") { forceClose = true; PostMessageW(window, ForceCloseMessage, 0, 0); }
         else throw pwtools::ApiFailure("INVALID_INPUT", "窗口操作不正确。");
@@ -276,6 +302,26 @@ class Host {
         json data = nullptr;
         if (image) data = {{"name", "clipboard.png"}, {"content_type", "image/png"}, {"data_base64", ImageBase64(*image)}};
         Post({{"id", id}, {"ok", true}, {"data", data}});
+        return;
+      }
+      if (method == "captureScreen") {
+        if (!args.empty()) throw pwtools::ApiFailure("INVALID_INPUT", "截图参数不正确。");
+        CaptureScreen(id);
+        return; // The selection completes or cancels through its own UI callback.
+      }
+      if (debug && method == "test:capture-state") {
+        if (!args.empty()) throw pwtools::ApiFailure("INVALID_INPUT", "截图测试参数不正确。");
+        RECT bounds{};
+        if (screenCapture) bounds = screenCapture->DesktopBounds();
+        Post({{"id", id}, {"ok", true}, {"data", {
+          {"active", screenCapture && screenCapture->Active()},
+          {"overlay", std::to_string(reinterpret_cast<uintptr_t>(screenCapture ? screenCapture->Overlay() : nullptr))},
+          {"bounds", {{"left", bounds.left}, {"top", bounds.top}, {"right", bounds.right}, {"bottom", bounds.bottom}}},
+          {"originalIconic", screenCapture && screenCapture->OriginalIconic()},
+          {"pattern", screenCapture && screenCapture->TestPattern()},
+          {"shown", screenCapture && screenCapture->Shown()}, {"ready", screenCapture && screenCapture->Ready()},
+          {"parentWindowVisible", IsWindowVisible(window) != FALSE}, {"parentWindowIconic", IsIconic(window) != FALSE}
+        }}});
         return;
       }
       if (method == "windowDrag") {
@@ -513,6 +559,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
       return 0;
     }
     case WM_DESTROY:
+      if (host->screenCapture) host->screenCapture->Cancel();
       if (host->importHotkeyId) UnregisterHotKey(window, host->importHotkeyId);
       if (!host->profileWindowProperty.empty()) RemovePropW(window, host->profileWindowProperty.c_str());
       if (host->controller) host->controller->Close();

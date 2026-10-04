@@ -1,0 +1,72 @@
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #101318;
+  color: #fff;
+  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+
+.capture-overlay {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+
+.capture-overlay .screenshots-button[title="保存截图"] {
+  display: none;
+}
+
+.capture-overlay[data-capture-state="finishing"] .screenshots {
+  pointer-events: none;
+}
+
+.capture-hint,
+.capture-error {
+  position: fixed;
+  z-index: 20;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 48px);
+  padding: 9px 15px;
+  border-radius: 7px;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+  pointer-events: none;
+}
+
+.capture-hint {
+  top: 18px;
+  background: rgb(15 20 29 / 88%);
+  box-shadow: 0 2px 12px rgb(0 0 0 / 20%);
+}
+
+.capture-error {
+  top: 65px;
+  background: #802d31;
+}
+
+.capture-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
+
+.capture-loading button {
+  padding: 9px 18px;
+  border: 1px solid #737e90;
+  border-radius: 5px;
+  background: #202938;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}

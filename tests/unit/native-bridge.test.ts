@@ -36,6 +36,7 @@ test('all desktop methods use matching RPC names and JSON arguments', async () =
     ['logout', () => bridge.logout(), []],
     ['windowControl', () => bridge.windowControl('close'), ['close']],
     ['windowControl', () => bridge.windowControl('minimize'), ['minimize']],
+    ['windowControl', () => bridge.windowControl('restore'), ['restore']],
     ['setImportHotkey', () => bridge.setImportHotkey(null), [null]],
     ['setImportHotkey', () => bridge.setImportHotkey({ code: 'KeyI', ctrl: true, alt: true, shift: false, win: false }), [{ code: 'KeyI', ctrl: true, alt: true, shift: false, win: false }]],
     ['appInfo', () => bridge.appInfo(), []],
@@ -291,5 +292,29 @@ test('clipboard images preserve bytes and empty or malformed results remain dist
     const malformed = native.bridge.readClipboardImage();
     webview.reply(2, { name: 'broken.png', content_type: 'image/png', data_base64: '?' });
     await assert.rejects(malformed, { code: 'IMAGE_INTEGRITY_ERROR' });
+  } finally { native.dispose(); }
+});
+
+test('screen selection cancellation stays distinct from PNG bytes and capture errors', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const webview = new FakeWebView();
+  const native = createNativeBridge(webview);
+  try {
+    const cancelled = native.bridge.captureScreen();
+    assert.equal(webview.requests[0].method, 'captureScreen');
+    assert.deepEqual(webview.requests[0].args, []);
+    context.mock.timers.tick(25_000);
+    webview.reply(0, null);
+    assert.equal(await cancelled, null, 'a user can take longer than an ordinary RPC timeout to select a region');
+    const image = native.bridge.captureScreen();
+    webview.reply(1, { name: 'capture.png', content_type: 'image/png', data_base64: 'AAECA/8=' });
+    assert.deepEqual(await image, { name: 'capture.png', content_type: 'image/png', data: Uint8Array.of(0, 1, 2, 3, 255) });
+    const malformed = native.bridge.captureScreen();
+    webview.reply(2, { content_type: 'image/png', data_base64: '?' });
+    await assert.rejects(malformed, { code: 'IMAGE_INTEGRITY_ERROR' });
+    const denied = native.bridge.captureScreen();
+    webview.receive({ id: webview.requests[3].id, ok: false, error: { code: 'BUSY', message: '正在截图' } });
+    await assert.rejects(denied, { code: 'BUSY' });
+    assert.equal(webview.requests.some(request => request.method === 'readClipboardImage' || request.method === 'uploadMatch'), false);
   } finally { native.dispose(); }
 });

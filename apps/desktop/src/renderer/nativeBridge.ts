@@ -30,6 +30,7 @@ interface PendingRequest {
 
 const ordinaryTimeout = 20_000;
 const ocrTimeout = 110_000;
+const screenCaptureTimeout = 310_000;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -55,7 +56,7 @@ function imageFromNative(value: unknown): MatchImage {
   }
 }
 
-/** The host owns HTTP, session credentials, and clipboard permissions. */
+/** The host owns HTTP, session credentials, and native image acquisition. */
 export function createNativeBridge(webview: NativeWebView): {
   bridge: DesktopBridge;
   dragWindow: () => Promise<void>;
@@ -77,7 +78,7 @@ export function createNativeBridge(webview: NativeWebView): {
       const timer = setTimeout(() => {
         if (!pending.delete(id)) return;
         reject(new NativeBridgeError('TIMEOUT', '操作超时，请确认保存结果后重试。'));
-      }, method === 'uploadMatch' || method === 'recognizeMatch' ? ocrTimeout : ordinaryTimeout);
+      }, method === 'captureScreen' ? screenCaptureTimeout : method === 'uploadMatch' || method === 'recognizeMatch' ? ocrTimeout : ordinaryTimeout);
       pending.set(id, { resolve: value => resolve(value as T), reject, timer });
       try {
         webview.postMessage({ id, method, args });
@@ -131,6 +132,14 @@ export function createNativeBridge(webview: NativeWebView): {
     logout: () => invoke('logout'),
     windowControl: action => invoke('windowControl', [action]),
     setImportHotkey: shortcut => invoke('setImportHotkey', [shortcut]),
+    captureScreen: async () => {
+      const value = await invoke('captureScreen');
+      if (value === null) return null;
+      if (!isObject(value) || typeof value.name !== 'string') {
+        throw new NativeBridgeError('IMAGE_INTEGRITY_ERROR', '截图内容无效，请重新截图。');
+      }
+      return { name: value.name, ...imageFromNative(value) };
+    },
     readClipboardImage: async () => {
       const value = await invoke('readClipboardImage');
       if (value === null) return null;

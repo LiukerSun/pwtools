@@ -1,6 +1,6 @@
 {
   "name": "@pwtools/desktop",
-  "version": "0.9.9",
+  "version": "0.9.10",
   "private": true,
   "description": "PWTools 私人老板与订单账本",
   "author": "PWTools",
@@ -22,7 +22,8 @@
     "dayjs": "1.11.23",
     "lucide-react": "^0.468.0",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "react-screenshots": "0.6.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

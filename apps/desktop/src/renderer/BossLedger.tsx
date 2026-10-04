@@ -18,6 +18,8 @@ interface BossLedgerProps {
   initialOrderId?: string;
   onNavigationStateChange?: (state: NavigationState) => void;
   importRequest?: number;
+  initialImportImage?: MatchUploadInput | null;
+  importBusy?: boolean;
   onRequestImport?: () => void;
   onImportFlowChange?: (opened: boolean) => void;
 }
@@ -50,7 +52,7 @@ function sumOrders(items: ServiceOrder[], field: 'completed_quantity' | 'remaini
   return { hourly: sums.hourly === null ? null : Number(sums.hourly), escort: sums.escort === null ? null : Number(sums.escort) };
 }
 
-export default function BossLedger({ onError, initialBossId, initialOrderId, onNavigationStateChange, importRequest = 0, onRequestImport, onImportFlowChange }: BossLedgerProps) {
+export default function BossLedger({ onError, initialBossId, initialOrderId, onNavigationStateChange, importRequest = 0, initialImportImage, importBusy = false, onRequestImport, onImportFlowChange }: BossLedgerProps) {
   const mounted = useRef(true);
   const [bosses, setBosses] = useState<Boss[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(initialBossId || null);
@@ -78,7 +80,8 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
   const [orderEditorState, setOrderEditorState] = useState<NavigationState>(cleanState);
   const [entryTarget, setEntryTarget] = useState<EntryTarget | null>(null);
   const [entryState, setEntryState] = useState<NavigationState>(cleanState);
-  const [importOpened, setImportOpened] = useState(false);
+  const [importOpened, setImportOpened] = useState(Boolean(importRequest));
+  const [importImage, setImportImage] = useState<MatchUploadInput | null>(initialImportImage ?? null);
   const [importState, setImportState] = useState<NavigationState>(cleanState);
   const modeRef = useRef<HTMLDivElement>(null);
   const overviewScroll = useRef(0);
@@ -88,7 +91,7 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
   const [deletion, setDeletion] = useState<Deletion | null>(null);
   const [deleteError, setDeleteError] = useState('');
   const dirty = Boolean(form && JSON.stringify(values) !== initialValues.current);
-  const navigationBusy = busy || orderEditorState.busy || entryState.busy || importState.busy;
+  const navigationBusy = busy || importBusy || orderEditorState.busy || entryState.busy || importState.busy;
   const navigationDirty = dirty || orderEditorState.dirty || entryState.dirty;
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -256,7 +259,7 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
       </section>}
     </div>
 
-    {importOpened && <ScreenshotImport onError={onError} onNavigationStateChange={setImportState} onClose={() => { setImportOpened(false); setImportState(cleanState); }} onSelect={(order, image) => { setSelectedId(order.boss_id); pendingAnchor.current = { id: order.id, focus: true }; setEntryState(cleanState); setEntryTarget({ order, ...(image ? { initialImage: image } : {}), imported: true }); setImportOpened(false); setImportState(cleanState); }} />}
+    {importOpened && <ScreenshotImport image={importImage} onError={onError} onNavigationStateChange={setImportState} onClose={() => { setImportOpened(false); setImportImage(null); setImportState(cleanState); }} onSelect={(order, image) => { setSelectedId(order.boss_id); pendingAnchor.current = { id: order.id, focus: true }; setEntryState(cleanState); setEntryTarget({ order, ...(image ? { initialImage: image } : {}), imported: true }); setImportOpened(false); setImportImage(null); setImportState(cleanState); }} />}
     {entryTarget && <RoundEntry order={entryTarget.order} matchId={entryTarget.matchId} initialImage={entryTarget.initialImage} onError={onError} onNavigationStateChange={setEntryState} onClose={() => { captureOrder(entryTarget.order.id); setEntryTarget(null); setEntryState(cleanState); refreshLedger(); }} onSaved={(id) => { captureOrder(id); setEntryTarget(null); setEntryState(cleanState); refreshLedger(); }} />}
     {orderEditor && <OrderSetup boss={orderEditor.boss} order={orderEditor.order} saveAsTemplate={orderEditor.saveAsTemplate} onError={onError} onNavigationStateChange={setOrderEditorState} onClose={() => { setOrderEditor(null); setOrderEditorState(cleanState); }} onSaved={(saved) => { if (saved) pendingAnchor.current = { id: saved.id, focus: true }; setOrderEditor(null); setOrderEditorState(cleanState); if (saved) refreshLedger(); }} />}
     <Modal opened={form !== null} onClose={closeForm} title={form?.type === 'boss-create' ? '添加老板' : form?.type === 'boss-edit' ? '编辑老板资料' : '调整订单约定'} centered size="md" classNames={{ content: 'ledger-form-modal-content', header: 'ledger-form-modal-header', body: 'ledger-form-modal-body' }} closeOnEscape={!busy} closeOnClickOutside={!busy} withCloseButton={!busy}>

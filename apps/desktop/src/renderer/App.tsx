@@ -3,7 +3,7 @@ import { Alert, Button, createTheme, InputWrapper, Loader, MantineProvider, Menu
 import { useForm } from '@mantine/form';
 import { Notifications, notifications } from '@mantine/notifications';
 import { BookOpen, ChevronDown, LogOut, Mail, Maximize2, Minus, Moon, PanelLeftClose, PanelLeftOpen, Settings2, Sun, X } from 'lucide-react';
-import type { AppInfo, ImportHotkey, User } from '../shared/contracts';
+import type { AppInfo, ImportHotkey, MatchUploadInput, User } from '../shared/contracts';
 import { api, errorInfo, isDesktop, isSessionError } from './api';
 import BossLedger from './BossLedger';
 import ImportShortcut, { initialImportHotkey, storeImportHotkey } from './ImportShortcut';
@@ -118,7 +118,10 @@ export default function App() {
   useEffect(() => api.onImportRequested?.(() => {
     if (hotkeyEditingRef.current || hotkeySavingRef.current) return;
     setImportRequest(value => value + 1);
-    if (!userRef.current) notifications.show({ title: '请先登录', message: '登录后继续选择订单导入战绩', color: 'blue' });
+    if (!userRef.current) {
+      void api.windowControl('restore').catch(() => {});
+      notifications.show({ title: '请先登录', message: '登录后继续截图并选择订单导入战绩', color: 'blue' });
+    }
   }), []);
   useEffect(() => {
     if (!isDesktop || hotkeyStartupStarted.current) return;
@@ -293,32 +296,66 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed);
   const [ledgerVisit, setLedgerVisit] = useState(0);
   const [ledgerImportRequest, setLedgerImportRequest] = useState(0);
+  const [ledgerImportImage, setLedgerImportImage] = useState<MatchUploadInput | null>(null);
+  const [capturing, setCapturing] = useState(false);
+  const captureBusyRef = useRef(false);
+  const mountedRef = useRef(true);
   const importFlowRef = useRef(false);
   const seenImportRequest = useRef(0);
-  const reportImportFlow = useCallback((opened: boolean) => { importFlowRef.current = opened; if (opened) setLedgerImportRequest(0); }, []);
+  const reportImportFlow = useCallback((opened: boolean) => {
+    importFlowRef.current = opened;
+    if (opened) { setLedgerImportRequest(0); setLedgerImportImage(null); }
+  }, []);
   const ledgerNavigationRef = useRef({ dirty: false, busy: false });
   const pageRef = useRef(page);
   pageRef.current = page;
   const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
   const [pendingClose, setPendingClose] = useState(false);
+  const pendingCaptureRef = useRef(false);
   const allowCloseRef = useRef(false);
   const reportLedgerNavigation = useCallback((state: { dirty: boolean; busy: boolean }) => { ledgerNavigationRef.current = state; }, []);
   const [signingOut, setSigningOut] = useState(false);
   const signingOutRef = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
-  const requestImport = useCallback(() => {
-    const navigation = pageRef.current === 'dashboard' ? ledgerNavigationRef.current : { dirty: false, busy: false };
-    if (navigation.busy || signingOutRef.current) { notifications.show({ message: '请等待保存或识别完成', color: 'orange' }); return; }
-    if (importFlowRef.current) { notifications.show({ message: '请继续完成当前战绩导入', color: 'blue' }); return; }
-    const open = () => {
-      importFlowRef.current = false;
-      setLedgerVisit(value => value + 1);
-      setLedgerImportRequest(value => value + 1);
-      setPage('dashboard');
-    };
-    if (navigation.dirty) { setPendingClose(false); setPendingNavigation(() => open); return; }
-    open();
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  const restoreForImport = useCallback(() => {
+    if (isDesktop) void api.windowControl('restore').catch((error: unknown) => {
+      notifications.show({ title: '窗口未恢复', message: errorInfo(error).message, color: 'red' });
+    });
   }, []);
+  const requestImport = useCallback(() => {
+    // An active selection owns the screen; another hotkey must not restore
+    // the main window over it or start a second capture.
+    if (captureBusyRef.current) return;
+    const navigation = pageRef.current === 'dashboard' ? ledgerNavigationRef.current : { dirty: false, busy: false };
+    if (navigation.busy || signingOutRef.current) { restoreForImport(); notifications.show({ message: '请等待保存或识别完成', color: 'orange' }); return; }
+    if (importFlowRef.current) { restoreForImport(); notifications.show({ message: '请继续完成当前战绩导入', color: 'blue' }); return; }
+    const capture = async () => {
+      if (captureBusyRef.current) return;
+      captureBusyRef.current = true;
+      setCapturing(true);
+      try {
+        const image = isDesktop ? await api.captureScreen() : null;
+        if (!mountedRef.current || (isDesktop && !image)) return;
+        // Keep the current draft until a selection succeeds, including when
+        // the user cancels after accepting the draft guard.
+        importFlowRef.current = true;
+        setLedgerImportImage(image);
+        setLedgerVisit(value => value + 1);
+        setLedgerImportRequest(value => value + 1);
+        setPage('dashboard');
+      } catch (error: unknown) {
+        if (!mountedRef.current) return;
+        restoreForImport();
+        notifications.show({ title: '截图未完成', message: errorInfo(error).message, color: 'red' });
+      } finally {
+        captureBusyRef.current = false;
+        if (mountedRef.current) setCapturing(false);
+      }
+    };
+    if (navigation.dirty) { restoreForImport(); pendingCaptureRef.current = true; setPendingClose(false); setPendingNavigation(() => () => void capture()); return; }
+    void capture();
+  }, [restoreForImport]);
   useEffect(() => {
     if (!importRequest || seenImportRequest.current === importRequest) return;
     seenImportRequest.current = importRequest;
@@ -334,11 +371,12 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
   }, []);
   const requestWindowClose = useCallback(() => {
     const state = pageRef.current === 'dashboard' ? ledgerNavigationRef.current : { dirty: false, busy: false };
-    if (state.busy || signingOutRef.current) {
+    if (state.busy || captureBusyRef.current || signingOutRef.current) {
       notifications.show({ title: '当前操作尚未完成', message: '请等待保存结果', color: 'orange' });
       return;
     }
     if (state.dirty) {
+      pendingCaptureRef.current = false;
       setPendingClose(true);
       setPendingNavigation(() => completeWindowClose);
       return;
@@ -359,7 +397,7 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
     const protectWindow = (event: BeforeUnloadEvent) => {
       if (allowCloseRef.current) return;
       const state = pageRef.current === 'dashboard' ? ledgerNavigationRef.current : { dirty: false, busy: false };
-      if (!state.dirty && !state.busy && !signingOutRef.current) return;
+      if (!state.dirty && !state.busy && !captureBusyRef.current && !signingOutRef.current) return;
       event.preventDefault();
       event.returnValue = 'pending';
       requestWindowClose();
@@ -370,11 +408,11 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
   const currentPage = pages.find(item => item.id === page)!;
   const runNavigation = (action: () => void) => {
     const currentNavigation = page === 'dashboard' ? ledgerNavigationRef.current : { dirty: false, busy: false };
-    if (currentNavigation.busy) {
+    if (currentNavigation.busy || captureBusyRef.current) {
       notifications.show({ message: '请等待保存或识别完成', color: 'orange' });
       return;
     }
-    if (currentNavigation.dirty) { setPendingClose(false); setPendingNavigation(() => action); return; }
+    if (currentNavigation.dirty) { pendingCaptureRef.current = false; setPendingClose(false); setPendingNavigation(() => action); return; }
     action();
   };
   const navigatePage = (nextPage: PageId) => runNavigation(() => {
@@ -403,21 +441,25 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
       <main className="page-main" ref={mainRef}>
         <div className="page-heading"><h1 tabIndex={-1}>{currentPage.label}</h1></div>
         <div className="page-transition" key={page}>
-          {page === 'dashboard' && <BossLedger key={ledgerVisit} onError={onError} onNavigationStateChange={reportLedgerNavigation} importRequest={ledgerImportRequest} onRequestImport={requestImport} onImportFlowChange={reportImportFlow} />}
+          {page === 'dashboard' && <BossLedger key={ledgerVisit} onError={onError} onNavigationStateChange={reportLedgerNavigation} importRequest={ledgerImportRequest} initialImportImage={ledgerImportImage} importBusy={capturing} onRequestImport={requestImport} onImportFlowChange={reportImportFlow} />}
           {page === 'settings' && <Settings theme={theme} onThemeChange={onThemeChange} appInfo={appInfo} onLogout={() => runNavigation(() => void logout())} signingOut={signingOut} email={user.email} closeBehavior={closeBehavior} onCloseBehaviorChange={onCloseBehaviorChange} importHotkey={importHotkey} hotkeyError={hotkeyError} hotkeyBusy={hotkeyBusy} onImportHotkeyChange={onImportHotkeyChange} onHotkeyEditingChange={onHotkeyEditingChange} />}
         </div>
       </main>
     </div>
-    <Modal classNames={{ content: 'navigation-guard-modal' }} opened={pendingNavigation !== null} onClose={() => setPendingNavigation(null)} title="尚有未保存修改" centered size="sm" zIndex={400}>
+    <Modal classNames={{ content: 'navigation-guard-modal' }} opened={pendingNavigation !== null} onClose={() => { pendingCaptureRef.current = false; setPendingNavigation(null); }} title="尚有未保存修改" centered size="sm" zIndex={400}>
       <p>离开将丢弃未保存内容。</p>
-      <div className="navigation-guard-actions"><Button variant="default" onClick={() => setPendingNavigation(null)}>继续填写</Button><Button onClick={() => {
-        if (ledgerNavigationRef.current.busy || signingOutRef.current) {
+      <div className="navigation-guard-actions"><Button variant="default" onClick={() => { pendingCaptureRef.current = false; setPendingNavigation(null); }}>继续填写</Button><Button onClick={() => {
+        if (ledgerNavigationRef.current.busy || captureBusyRef.current || signingOutRef.current) {
           notifications.show({ message: '请等待保存结果', color: 'orange' });
           return;
         }
         const action = pendingNavigation;
         setPendingNavigation(null);
-        reportLedgerNavigation({ dirty: false, busy: false });
+        // A capture may resolve as canceled before React renders its busy
+        // state. Preserve the draft guard until a successful capture remounts
+        // the ledger rather than clearing it just for opening the selector.
+        if (!pendingCaptureRef.current) reportLedgerNavigation({ dirty: false, busy: false });
+        pendingCaptureRef.current = false;
         action?.();
       }}>放弃修改并{pendingClose ? '关闭' : '切换'}</Button></div>
     </Modal>

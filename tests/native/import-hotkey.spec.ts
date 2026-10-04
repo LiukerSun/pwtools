@@ -32,7 +32,7 @@ async function importCount(app: NativeApplication) {
   return app.page.evaluate(() => (window as Window & { hotkeyEvents?: { count: number } }).hotkeyEvents?.count);
 }
 
-test('真实全局快捷键从最小化恢复任务栏窗口并且每次仅触发一次导入事件', async ({}, testInfo) => {
+test('原生快捷键通知路径从最小化恢复任务栏窗口并且每次仅触发一次导入事件', async ({}, testInfo) => {
   const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
   let app: NativeApplication | undefined;
   try {
@@ -46,7 +46,7 @@ test('真实全局快捷键从最小化恢复任务栏窗口并且每次仅触�
     const maximized = await app.windowState();
     await app.page.evaluate(() => window.pwtools!.windowControl('minimize'));
     await expect.poll(async () => (await app!.windowState()).iconic).toBe(true);
-    await app.sendRegisteredHotkey(PRIMARY);
+    await app.notifyRegisteredHotkey(PRIMARY);
     await expect.poll(() => importCount(app!)).toBe(1);
     await expect.poll(async () => (await app!.windowState()).iconic).toBe(false);
     const restored = await app.windowState();
@@ -58,10 +58,10 @@ test('真实全局快捷键从最小化恢复任务栏窗口并且每次仅触�
     expect(restored.maximized).toBe(true);
     expect({ left: restored.left, top: restored.top, width: restored.width, height: restored.height }).toEqual({ left: maximized.left, top: maximized.top, width: maximized.width, height: maximized.height });
     await expect(app.page.getByText('请先登录', { exact: true })).toBeVisible();
-    await app.sendRegisteredHotkey(PRIMARY);
+    await app.notifyRegisteredHotkey(PRIMARY);
     await expect.poll(() => importCount(app!)).toBe(2);
     await nativeCommand(app.page, 'setImportHotkey', [null]);
-    await testInfo.attach('registered-hotkey-recovery', { body: JSON.stringify({ events: 2, shortcut: PRIMARY, maximized, restored, processId: app.process.pid }), contentType: 'application/json' });
+    await testInfo.attach('registered-hotkey-recovery', { body: JSON.stringify({ events: 2, shortcut: PRIMARY, trigger: 'captured PID WM_HOTKEY test notification; no global keyboard input', maximized, restored, processId: app.process.pid }), contentType: 'application/json' });
   } finally {
     await app?.close().catch(() => {});
     await cleanupDirectory(directory);
@@ -86,21 +86,21 @@ test('快捷键冲突保留原绑定，禁用与退出均释放测试快捷键',
     await expect(nativeCommand(second.page, 'setImportHotkey', [PRIMARY])).rejects.toThrow('HOTKEY_CONFLICT');
     await expect(nativeCommand(second.page, 'setImportHotkey', [{ ...SECONDARY, ctrl: false, alt: false, shift: true }])).rejects.toThrow('INVALID_INPUT');
     await expect(nativeCommand(second.page, 'setImportHotkey', [shortcut('F12')])).rejects.toThrow('INVALID_INPUT');
-    await second.sendRegisteredHotkey(SECONDARY);
+    await second.notifyRegisteredHotkey(SECONDARY);
     await expect.poll(() => importCount(second!)).toBe(1);
-    await first.sendRegisteredHotkey(PRIMARY);
+    await first.notifyRegisteredHotkey(PRIMARY);
     await expect.poll(() => importCount(first!)).toBe(1);
     expect(await importCount(second)).toBe(1);
 
     await nativeCommand(first.page, 'setImportHotkey', [null]);
     await nativeCommand(second.page, 'setImportHotkey', [PRIMARY]);
-    await second.sendRegisteredHotkey(PRIMARY);
+    await second.notifyRegisteredHotkey(PRIMARY);
     await expect.poll(() => importCount(second!)).toBe(2);
     expect(await importCount(first)).toBe(1);
 
     await second.close();
     await nativeCommand(first.page, 'setImportHotkey', [PRIMARY]);
-    await first.sendRegisteredHotkey(PRIMARY);
+    await first.notifyRegisteredHotkey(PRIMARY);
     await expect.poll(() => importCount(first!)).toBe(2);
     await nativeCommand(first.page, 'setImportHotkey', [null]);
   } finally {
@@ -113,7 +113,7 @@ test('快捷键冲突保留原绑定，禁用与退出均释放测试快捷键',
 
 interface ImportFixtureState {
   unexpected: string[];
-  clipboardReads: number;
+  captureCalls: number;
   uploads: { name: string; order_id?: string; data: number[] }[];
   updates: { id: string; input: MatchUpdateInput }[];
 }
@@ -137,7 +137,7 @@ async function installImportFixture(app: NativeApplication) {
   const single = order(secondBoss, '乙单局订单', 'single_round');
   const record: MatchRecord = {
     id: randomUUID(), order_id: single.id, boss_id: secondBoss.id, boss_player_name: secondBoss.game_name,
-    original_name: 'clipboard.png', image_content_type: 'image/png', image_sha256: 'a'.repeat(64), image_width: 1, image_height: 1,
+    original_name: 'screenshot.png', image_content_type: 'image/png', image_sha256: 'a'.repeat(64), image_width: 1, image_height: 1,
     image_size: screenshot.length, players: [{ player_name: secondBoss.game_name, outcome: 'success', amount: 1867449, confidence: 0.98 }],
     raw_text: `${secondBoss.game_name} 撤离成功 1,867,449`, warnings: [], ocr_status: 'completed', player_name: secondBoss.game_name,
     outcome: 'success', amount: 1867449, fake_amount: null, net_amount: null, credited_amount: null, failure_extra_amount: 0,
@@ -145,7 +145,7 @@ async function installImportFixture(app: NativeApplication) {
   };
   await app.page.evaluate(({ bosses, orders, record, bytes, timestamp }) => {
     const bridge = window.pwtools!;
-    const state: ImportFixtureState = { unexpected: [], clipboardReads: 0, uploads: [], updates: [] };
+    const state: ImportFixtureState = { unexpected: [], captureCalls: 0, uploads: [], updates: [] };
     (window as Window & { importFixture?: typeof state }).importFixture = state;
     const preserve = new Set(['windowControl', 'setImportHotkey', 'onCloseRequested', 'onExitRequested', 'onImportRequested', 'appInfo']);
     for (const method of Object.keys(bridge)) {
@@ -162,7 +162,7 @@ async function installImportFixture(app: NativeApplication) {
       getOrder: async (id: string) => orders.find(item => item.id === id)!,
       listLedgerEntries: async () => ({ items: [], total: 0, page: 1, page_size: 8 }),
       listMatches: async () => ({ items: [], total: 0, page: 1, page_size: 8 }),
-      readClipboardImage: async () => { state.clipboardReads++; return { name: 'clipboard.png', content_type: 'image/png', data: new Uint8Array(bytes) }; },
+      captureScreen: async () => { state.captureCalls++; await bridge.windowControl('restore'); return { name: 'screenshot.png', content_type: 'image/png', data: new Uint8Array(bytes) }; },
       uploadMatch: async (input: MatchUploadInput) => { state.uploads.push({ name: input.name, order_id: input.order_id, data: Array.from(input.data) }); return { record, duplicate: false }; },
       matchImage: async () => ({ content_type: 'image/png', data: new Uint8Array(bytes) }),
       updateMatch: async (id: string, input: MatchUpdateInput) => { state.updates.push({ id, input }); return { ...record, ...input }; },
@@ -175,7 +175,7 @@ async function fixtureState(app: NativeApplication) {
   return app.page.evaluate(() => (window as Window & { importFixture?: ImportFixtureState }).importFixture!);
 }
 
-test('自定义快捷键持久化，从任务栏恢复后选择订单并只上传一次剪贴板截图', async ({}, testInfo) => {
+test('自定义快捷键持久化，后台截图后选择订单并只上传一次截图', async ({}, testInfo) => {
   test.setTimeout(150_000);
   const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
   let app: NativeApplication | undefined;
@@ -215,11 +215,14 @@ test('自定义快捷键持久化，从任务栏恢复后选择订单并只上�
     await captureImports(app);
     await app.page.evaluate(() => window.pwtools!.windowControl('minimize'));
     await expect.poll(async () => (await app!.windowState()).iconic).toBe(true);
-    await app.sendRegisteredHotkey(PRIMARY);
+    await app.notifyRegisteredHotkey(PRIMARY);
     await expect.poll(() => importCount(app!)).toBe(1);
     await expect.poll(async () => (await app!.windowState()).iconic).toBe(false);
     const picker = page.getByRole('dialog', { name: '导入战绩', exact: true });
     await expect(picker).toBeVisible();
+    await expect(picker.getByRole('img', { name: '待导入战绩截图', exact: true })).toHaveJSProperty('naturalWidth', 1);
+    expect((await fixtureState(app)).captureCalls).toBe(1);
+    expect((await fixtureState(app)).uploads).toEqual([]);
     await picker.getByLabel('目标订单', { exact: true }).click();
     await expect(page.getByRole('option', { name: /仅时长手工订单/ })).toHaveCount(0);
     await expect(page.getByRole('option', { name: `${fixture.firstBoss.display_name} / ${fixture.escort.title} · 护航单`, exact: true })).toBeVisible();
@@ -232,12 +235,12 @@ test('自定义快捷键持久化，从任务栏恢复后选择订单并只上�
     const importedImage = testInfo.outputPath('hotkey-order-import-native.png');
     await page.screenshot({ path: importedImage, animations: 'disabled' });
     await testInfo.attach('native-shortcut-order-import', { path: importedImage, contentType: 'image/png' });
-    await app.sendRegisteredHotkey(PRIMARY);
+    await app.notifyRegisteredHotkey(PRIMARY);
     await expect(round).toBeVisible();
     await expect(picker).toHaveCount(0);
     const uploaded = await fixtureState(app);
-    expect(uploaded.clipboardReads).toBe(1);
-    expect(uploaded.uploads).toEqual([{ name: 'clipboard.png', order_id: fixture.single.id, data: Array.from(screenshot) }]);
+    expect(uploaded.captureCalls).toBe(1);
+    expect(uploaded.uploads).toEqual([{ name: 'screenshot.png', order_id: fixture.single.id, data: Array.from(screenshot) }]);
     expect(uploaded.updates).toEqual([]);
     await round.getByRole('button', { name: '无假账，填 0', exact: true }).click();
     await round.getByRole('button', { name: '确认入账', exact: true }).click();
@@ -275,7 +278,7 @@ test('自定义快捷键持久化，从任务栏恢复后选择订单并只上�
   }
 });
 
-test('快捷导入保护已有草稿，空剪贴板可上传文件且识别中再次触发不重复上传', async () => {
+test('截图快捷键保护已有草稿，取消截图不打开导入且识别中不会重复截图或上传', async () => {
   test.setTimeout(120_000);
   const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
   let app: NativeApplication | undefined;
@@ -288,7 +291,7 @@ test('快捷导入保护已有草稿，空剪贴板可上传文件且识别中�
     const fixture = await installImportFixture(app);
     await page.evaluate(({ record, order }) => {
       const state = (window as Window & { importFixture?: ImportFixtureState }).importFixture!;
-      window.pwtools!.readClipboardImage = async () => { state.clipboardReads++; return null; };
+      window.pwtools!.captureScreen = async () => { state.captureCalls++; return null; };
       window.pwtools!.uploadMatch = (input: MatchUploadInput) => {
         state.uploads.push({ name: input.name, order_id: input.order_id, data: Array.from(input.data) });
         return new Promise(resolveUpload => {
@@ -304,32 +307,48 @@ test('快捷导入保护已有草稿，空剪贴板可上传文件且识别中�
     await page.getByRole('button', { name: '添加老板', exact: true }).click();
     const draft = page.getByRole('dialog', { name: '添加老板', exact: true });
     await draft.getByLabel(/^老板称呼/).fill('不能被快捷键覆盖的草稿');
-    await app.sendRegisteredHotkey(PRIMARY);
+    await app.notifyRegisteredHotkey(PRIMARY);
     const guard = page.getByRole('dialog', { name: '尚有未保存修改', exact: true });
     await expect(guard).toBeVisible();
-    expect((await fixtureState(app)).clipboardReads).toBe(0);
+    expect((await fixtureState(app)).captureCalls).toBe(0);
     await guard.getByRole('button', { name: '继续填写', exact: true }).click();
     await expect(draft.getByLabel(/^老板称呼/)).toHaveValue('不能被快捷键覆盖的草稿');
-    await app.sendRegisteredHotkey(PRIMARY);
+    await app.notifyRegisteredHotkey(PRIMARY);
     await expect(guard).toBeVisible();
     await guard.getByRole('button', { name: '放弃修改并切换', exact: true }).click();
-    await expect(draft).toHaveCount(0);
     const picker = page.getByRole('dialog', { name: '导入战绩', exact: true });
+    await expect.poll(async () => (await fixtureState(app!)).captureCalls).toBe(1);
+    await expect(picker).toHaveCount(0);
+    await expect(draft.getByLabel(/^老板称呼/)).toHaveValue('不能被快捷键覆盖的草稿');
+    expect((await fixtureState(app)).uploads).toEqual([]);
+    await page.evaluate(bytes => {
+      const bridge = window.pwtools!;
+      const state = (window as Window & { importFixture?: ImportFixtureState }).importFixture!;
+      bridge.captureScreen = async () => {
+        state.captureCalls++;
+        await bridge.windowControl('restore');
+        return { name: 'screenshot.png', content_type: 'image/png', data: new Uint8Array(bytes) };
+      };
+    }, Array.from(screenshot));
+    await app.notifyRegisteredHotkey(PRIMARY);
+    await expect(guard).toBeVisible();
+    await guard.getByRole('button', { name: '放弃修改并切换', exact: true }).click();
     await expect(picker).toBeVisible();
-    await expect(picker.getByText('剪贴板中暂无图片。选择订单后可上传文件或 Ctrl+V 粘贴截图。', { exact: true })).toBeVisible();
+    await expect(draft).toHaveCount(0);
+    await expect(picker.getByRole('img', { name: '待导入战绩截图', exact: true })).toHaveJSProperty('naturalWidth', 1);
+    expect((await fixtureState(app)).uploads).toEqual([]);
     await picker.getByLabel('目标订单', { exact: true }).click();
     await page.getByRole('option', { name: `${fixture.firstBoss.display_name} / ${fixture.escort.title} · 护航单`, exact: true }).click();
     await picker.getByRole('button', { name: '继续导入', exact: true }).click();
     const round = page.getByRole('dialog', { name: '记一场', exact: true });
     await expect(round).toBeVisible();
-    await round.locator('input[type="file"]').setInputFiles({ name: 'hotkey-fallback.png', mimeType: 'image/png', buffer: screenshot });
     await expect.poll(async () => (await fixtureState(app!)).uploads.length).toBe(1);
     await expect(round.getByRole('button', { name: '确认入账', exact: true })).toBeDisabled();
     await expect(round.getByRole('button', { name: '取消', exact: true })).toBeDisabled();
-    await app.sendRegisteredHotkey(PRIMARY);
+    await app.notifyRegisteredHotkey(PRIMARY);
     await expect(picker).toHaveCount(0);
-    expect((await fixtureState(app)).uploads).toEqual([{ name: 'hotkey-fallback.png', order_id: fixture.escort.id, data: Array.from(screenshot) }]);
-    expect((await fixtureState(app)).clipboardReads).toBe(1);
+    expect((await fixtureState(app)).uploads).toEqual([{ name: 'screenshot.png', order_id: fixture.escort.id, data: Array.from(screenshot) }]);
+    expect((await fixtureState(app)).captureCalls).toBe(2);
     await page.evaluate(() => (window as Window & { releaseHotkeyUpload?: () => void }).releaseHotkeyUpload!());
     await expect(round.getByLabel(/^带出金额/)).toHaveValue('1,867,449');
     await expect(round.getByLabel(/^带出金额/)).toBeEnabled();
@@ -342,7 +361,63 @@ test('快捷导入保护已有草稿，空剪贴板可上传文件且识别中�
   }
 });
 
-test('刚登录且订单尚未载入时，全局快捷键仍打开导入并等待订单', async ({}, testInfo) => {
+test('截图等待期间重复快捷键不会重拍，取消后可重试且截图错误会恢复提示', async () => {
+  test.setTimeout(120_000);
+  const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
+  let app: NativeApplication | undefined;
+  try {
+    app = await NativeApplication.launch(directory, UNREACHABLE_API);
+    const page = app.page;
+    await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+    await installImportFixture(app);
+    await page.evaluate(() => {
+      const state = (window as Window & { importFixture?: ImportFixtureState }).importFixture!;
+      window.pwtools!.captureScreen = () => {
+        state.captureCalls++;
+        return new Promise(resolveCapture => {
+          (window as Window & { cancelPendingCapture?: () => void }).cancelPendingCapture = () => resolveCapture(null);
+        });
+      };
+    });
+    await page.getByLabel(/^邮箱/).fill('hotkey-fixture@example.test');
+    await page.getByLabel(/^密码/).fill('Isolated-hotkey-password!');
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await nativeCommand(page, 'setImportHotkey', [PRIMARY]);
+    await page.evaluate(() => window.pwtools!.windowControl('minimize'));
+    await expect.poll(async () => (await app!.windowState()).iconic).toBe(true);
+    await app.notifyRegisteredHotkey(PRIMARY);
+    await expect.poll(async () => (await fixtureState(app!)).captureCalls).toBe(1);
+    await expect(page.getByRole('button', { name: '导入战绩', exact: true })).toBeDisabled();
+    await app.notifyRegisteredHotkey(PRIMARY);
+    expect((await fixtureState(app)).captureCalls).toBe(1);
+    expect((await app.windowState()).iconic).toBe(true);
+    await expect(page.getByRole('dialog', { name: '导入战绩', exact: true })).toHaveCount(0);
+    expect((await fixtureState(app)).uploads).toEqual([]);
+    await page.evaluate(() => (window as Window & { cancelPendingCapture?: () => void }).cancelPendingCapture!());
+    await expect(page.getByRole('button', { name: '导入战绩', exact: true })).toBeEnabled();
+    await expect(page.getByRole('dialog', { name: '导入战绩', exact: true })).toHaveCount(0);
+    expect((await app.windowState()).iconic).toBe(true);
+    await page.evaluate(() => {
+      const state = (window as Window & { importFixture?: ImportFixtureState }).importFixture!;
+      window.pwtools!.captureScreen = async () => { state.captureCalls++; throw { code: 'CAPTURE_FAILED', message: '隔离测试截图失败' }; };
+    });
+    await app.notifyRegisteredHotkey(PRIMARY);
+    await expect.poll(async () => (await fixtureState(app!)).captureCalls).toBe(2);
+    await expect.poll(async () => (await app!.windowState()).iconic).toBe(false);
+    await expect(page.getByText('截图未完成', { exact: true })).toBeVisible();
+    await expect(page.getByText('隔离测试截图失败', { exact: true })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: '导入战绩', exact: true })).toHaveCount(0);
+    expect((await fixtureState(app)).uploads).toEqual([]);
+    expect((await fixtureState(app)).unexpected).toEqual([]);
+  } finally {
+    if (app && !app.page.isClosed()) await app.page.evaluate(() => (window as Window & { cancelPendingCapture?: () => void }).cancelPendingCapture?.()).catch(() => {});
+    await app?.close().catch(() => {});
+    await cleanupDirectory(directory);
+  }
+});
+
+test('刚登录且订单尚未载入时，快捷键通知仍打开导入并等待订单', async ({}, testInfo) => {
   test.setTimeout(120_000);
   const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
   let app: NativeApplication | undefined;
@@ -384,13 +459,13 @@ test('刚登录且订单尚未载入时，全局快捷键仍打开导入并等�
     await page.getByRole('button', { name: '登录', exact: true }).click();
     await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
     // The account is signed in, while both real UI list promises remain blocked.
-    await app.sendRegisteredHotkey(PRIMARY);
+    await app.notifyRegisteredHotkey(PRIMARY);
     await expect.poll(() => importCount(app!)).toBe(1);
     const picker = page.getByRole('dialog', { name: '导入战绩', exact: true });
     await expect(picker).toBeVisible();
-    await expect(picker.getByText('读取订单和剪贴板…', { exact: true })).toBeVisible();
+    await expect(picker.getByText('读取订单…', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '账号菜单', exact: true })).toContainText('hotkey-fixture@example.test');
-    expect((await fixtureState(app)).clipboardReads).toBe(1);
+    expect((await fixtureState(app)).captureCalls).toBe(1);
     const delayed = await page.evaluate(() => (window as Window & { delayedImportLists?: { bossReads: number; orderReads: number; released: boolean } }).delayedImportLists!);
     expect(delayed.released).toBe(false);
     expect(delayed.orderReads).toBeGreaterThanOrEqual(2);
@@ -401,7 +476,7 @@ test('刚登录且订单尚未载入时，全局快捷键仍打开导入并等�
     const round = page.getByRole('dialog', { name: '记一场', exact: true });
     await expect(round.getByLabel(/^带出金额/)).toHaveValue('1,867,449');
     const saved = await fixtureState(app);
-    expect(saved.uploads).toEqual([{ name: 'clipboard.png', order_id: fixture.single.id, data: Array.from(screenshot) }]);
+    expect(saved.uploads).toEqual([{ name: 'screenshot.png', order_id: fixture.single.id, data: Array.from(screenshot) }]);
     expect(saved.unexpected).toEqual([]);
     expect(errors).toEqual([]);
     const evidencePath = testInfo.outputPath('first-login-hotkey-pending-lists.json');

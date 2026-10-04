@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { reactScreenshotsStyles } from './build/reactScreenshotsStyles';
 
 export default defineConfig({
   root: resolve('src/renderer'),
@@ -8,6 +9,7 @@ export default defineConfig({
   base: './',
   plugins: [
     react(),
+    reactScreenshotsStyles(),
     {
       name: 'native-content-security-policy',
       apply: 'build',
@@ -25,6 +27,6 @@ export default defineConfig({
   build: {
     outDir: resolve('out/renderer'),
     emptyOutDir: true,
-    rollupOptions: { input: resolve('src/renderer/index.html') },
+    rollupOptions: { input: { app: resolve('src/renderer/index.html'), capture: resolve('src/renderer/capture.html') } },
   },
 });

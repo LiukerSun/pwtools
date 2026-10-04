@@ -7,6 +7,11 @@ const desktop = join(repository, 'apps', 'desktop');
 const manifest = JSON.parse(readFileSync(join(desktop, 'package.json'), 'utf8'));
 const seen = new Set();
 const notices = [];
+// react-screenshots declares MIT but omits LICENSE from its published tarball.
+// Preserve the upstream notice with the distributed renderer.
+const licenseOverrides = new Map([
+  ['react-screenshots', join(desktop, 'build', 'third-party', 'react-screenshots-LICENSE.txt')],
+]);
 
 function locate(name, from) {
   let directory = from;
@@ -27,7 +32,9 @@ function visit(name, from) {
   seen.add(key);
   const directory = dirname(path);
   const licenseFiles = readdirSync(directory).filter((file) => /^(licen[cs]e|copying|notice)(\..*)?$/i.test(file));
-  const text = licenseFiles.map((file) => `${file}\n${readFileSync(join(directory, file), 'utf8')}`).join('\n\n');
+  const override = licenseOverrides.get(pkg.name);
+  const text = licenseFiles.map((file) => `${file}\n${readFileSync(join(directory, file), 'utf8')}`).join('\n\n')
+    || (override ? readFileSync(override, 'utf8') : '');
   notices.push(`${key}\nLicense: ${typeof pkg.license === 'string' ? pkg.license : JSON.stringify(pkg.license ?? 'unspecified')}\n${text || `Upstream package: https://www.npmjs.com/package/${pkg.name}`}`);
   for (const dependency of Object.keys(pkg.dependencies ?? {})) visit(dependency, directory);
 }
