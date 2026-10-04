@@ -10,6 +10,7 @@ import BossLedger from './BossLedger';
 type PageId = 'dashboard' | 'settings';
 type ThemeMode = 'dark' | 'light';
 type Connection = 'checking' | 'connected' | 'failed';
+// Keep the stored 'minimize' value compatible with earlier installations.
 type CloseBehavior = 'minimize' | 'exit';
 
 const uiTheme = createTheme({
@@ -73,8 +74,8 @@ export default function App() {
   }, []);
   const applyCloseBehavior = useCallback((behavior: CloseBehavior) => {
     if (behavior === 'exit') { requestWindowExit(); return; }
-    void api.windowControl('minimize').catch((error: unknown) => {
-      notifications.show({ title: '最小化未完成', message: errorInfo(error).message, color: 'red' });
+    void api.windowControl('hide-to-tray').catch((error: unknown) => {
+      notifications.show({ title: '收起未完成', message: errorInfo(error).message, color: 'red' });
     });
   }, [requestWindowExit]);
   const updateCloseBehavior = useCallback((behavior: CloseBehavior) => {
@@ -93,6 +94,7 @@ export default function App() {
   };
 
   useEffect(() => api.onCloseRequested?.(requestWindowClose), [requestWindowClose]);
+  useEffect(() => api.onExitRequested?.(requestWindowExit), [requestWindowExit]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -138,8 +140,8 @@ export default function App() {
       {restoring ? <div className="restore-screen"><BrandMark /><Loader size="sm" /></div> : user ? <Workspace key={user.id} user={user} onSignedOut={() => setUser(null)} onError={handleError} theme={theme} onThemeChange={setTheme} appInfo={appInfo} onCloseHandlerChange={registerWindowClose} closeBehavior={closeBehavior ?? 'minimize'} onCloseBehaviorChange={updateCloseBehavior} /> : <AuthScreen onAuthenticated={authenticated} connection={connection} restoreError={restoreError} />}
     </div>
     {isDesktop && <Modal classNames={{ content: 'window-close-modal' }} opened={closeDialogOpened} onClose={() => setCloseDialogOpened(false)} title="关闭窗口" centered size="sm" zIndex={450}>
-      <p>最小化后继续运行，仅保留任务栏图标。可在设置中更改关闭方式。</p>
-      <div className="window-close-actions"><Button variant="default" onClick={() => chooseCloseBehavior('exit')}>退出应用</Button><Button onClick={() => chooseCloseBehavior('minimize')}>最小化到任务栏</Button></div>
+      <p>收起后继续运行，仅在右下角系统托盘显示。双击图标恢复窗口，也可右键退出。可在设置中更改关闭方式。</p>
+      <div className="window-close-actions"><Button variant="default" onClick={() => chooseCloseBehavior('exit')}>退出应用</Button><Button onClick={() => chooseCloseBehavior('minimize')}>收起到系统托盘</Button></div>
     </Modal>}
   </MantineProvider>;
 }
@@ -339,7 +341,7 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
 function Settings({ theme, onThemeChange, appInfo, onLogout, signingOut, email, closeBehavior, onCloseBehaviorChange }: { theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void; appInfo: AppInfo | null; onLogout: () => void; signingOut: boolean; email: string; closeBehavior: CloseBehavior; onCloseBehaviorChange: (behavior: CloseBehavior) => void }) {
   return <div className="settings-layout">
     <section className="panel settings-section"><div className="section-heading"><h2>外观</h2></div><div className="settings-row"><strong>主题</strong><SegmentedControl value={theme} onChange={(value) => onThemeChange(value as ThemeMode)} data={[{ value: 'dark', label: <span className="theme-label"><Moon size={14} /> 深色</span> }, { value: 'light', label: <span className="theme-label"><Sun size={14} /> 浅色</span> }]} /></div></section>
-    {isDesktop && <section className="panel settings-section"><div className="section-heading"><h2>窗口</h2></div><div className="settings-row"><Switch classNames={{ root: 'settings-close-switch', body: 'settings-close-switch-body', labelWrapper: 'settings-close-switch-label', label: 'settings-close-switch-title', description: 'settings-close-switch-description' }} label="关闭窗口时最小化到任务栏" description="启用后，应用继续运行；关闭此选项会退出应用。" labelPosition="left" checked={closeBehavior === 'minimize'} onChange={(event) => onCloseBehaviorChange(event.currentTarget.checked ? 'minimize' : 'exit')} /></div></section>}
+    {isDesktop && <section className="panel settings-section"><div className="section-heading"><h2>窗口</h2></div><div className="settings-row"><Switch classNames={{ root: 'settings-close-switch', body: 'settings-close-switch-body', labelWrapper: 'settings-close-switch-label', label: 'settings-close-switch-title', description: 'settings-close-switch-description' }} label="关闭窗口时收起到系统托盘" description="启用后，应用继续运行；双击托盘图标恢复窗口，右键可退出。关闭此选项后，点击关闭窗口会退出应用。" labelPosition="left" checked={closeBehavior === 'minimize'} onChange={(event) => onCloseBehaviorChange(event.currentTarget.checked ? 'minimize' : 'exit')} /></div></section>}
     <section className="panel settings-section"><div className="section-heading"><h2>账号</h2></div><div className="settings-row"><div><strong className="settings-email">{email}</strong>{!appInfo?.persistentSession && <p>关闭后需重新登录</p>}</div><Button variant="default" color="red" leftSection={<LogOut size={15} />} loading={signingOut} onClick={onLogout}>退出登录</Button></div></section>
     <p className="settings-version">PWTools {appInfo && appInfo.version !== '浏览器预览' ? `v${appInfo.version}` : ''}</p>
   </div>;

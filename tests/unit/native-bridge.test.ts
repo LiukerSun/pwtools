@@ -35,6 +35,7 @@ test('all desktop methods use matching RPC names and JSON arguments', async () =
     ['me', () => bridge.me(), []],
     ['logout', () => bridge.logout(), []],
     ['windowControl', () => bridge.windowControl('close'), ['close']],
+    ['windowControl', () => bridge.windowControl('hide-to-tray'), ['hide-to-tray']],
     ['appInfo', () => bridge.appInfo(), []],
     ['listMatches', () => bridge.listMatches(undefined, undefined, undefined, false), [1, 20, null, false]],
     ['matchStats', () => bridge.matchStats(), [null]],
@@ -184,6 +185,54 @@ test('close notifications are advisory, queue before subscription, and unsubscri
     webview.receive({ event: 'close-requested' });
     assert.equal(requests, 2);
   } finally { native.dispose(); }
+});
+
+test('tray exit notifications queue independently and leave exit guards in charge', async () => {
+  const webview = new FakeWebView();
+  const native = createNativeBridge(webview);
+  let closes = 0;
+  let exits = 0;
+  try {
+    webview.receive({ event: 'exit-requested' });
+    const unsubscribeClose = native.bridge.onCloseRequested!(() => { closes += 1; });
+    await Promise.resolve();
+    assert.equal(closes, 0, 'tray exit must not use the close-to-tray preference');
+    const unsubscribeExit = native.bridge.onExitRequested!(() => { exits += 1; });
+    await Promise.resolve();
+    assert.equal(exits, 1);
+    webview.receive({ event: 'close-requested' });
+    assert.equal(closes, 1);
+    assert.equal(exits, 1);
+    webview.receive({ event: 'exit-requested' });
+    assert.equal(closes, 1);
+    assert.equal(exits, 2);
+    assert.equal(webview.requests.length, 0, 'exit guards must run before the bridge sends a close command');
+    unsubscribeExit();
+    unsubscribeExit();
+    webview.receive({ event: 'exit-requested' });
+    assert.equal(exits, 2);
+    webview.receive({ event: 'close-requested' });
+    assert.equal(closes, 2);
+    unsubscribeClose();
+  } finally { native.dispose(); }
+});
+
+test('queued exit notifications are cancelled by unsubscribe or disposal', async () => {
+  const webview = new FakeWebView();
+  const native = createNativeBridge(webview);
+  let exits = 0;
+  webview.receive({ event: 'exit-requested' });
+  const unsubscribe = native.bridge.onExitRequested!(() => { exits += 1; });
+  unsubscribe();
+  await Promise.resolve();
+  assert.equal(exits, 0);
+  webview.receive({ event: 'exit-requested' });
+  native.bridge.onExitRequested!(() => { exits += 1; });
+  native.dispose();
+  await Promise.resolve();
+  assert.equal(exits, 0);
+  webview.receive({ event: 'exit-requested' });
+  assert.equal(exits, 0);
 });
 
 test('disposal rejects outstanding operations and removes message listeners', async () => {

@@ -63,7 +63,9 @@ export function createNativeBridge(webview: NativeWebView): {
 } {
   const pending = new Map<string, PendingRequest>();
   const closeHandlers = new Set<() => void>();
+  const exitHandlers = new Set<() => void>();
   let closeRequestedBeforeSubscription = false;
+  let exitRequestedBeforeSubscription = false;
   let disposed = false;
 
   const invoke = <T>(method: string, args: unknown[] = []): Promise<T> => {
@@ -91,6 +93,11 @@ export function createNativeBridge(webview: NativeWebView): {
     if (message.event === 'close-requested') {
       if (closeHandlers.size === 0) closeRequestedBeforeSubscription = true;
       for (const handler of [...closeHandlers]) handler();
+      return;
+    }
+    if (message.event === 'exit-requested') {
+      if (exitHandlers.size === 0) exitRequestedBeforeSubscription = true;
+      for (const handler of [...exitHandlers]) handler();
       return;
     }
     if (typeof message.id !== 'string') return;
@@ -124,6 +131,14 @@ export function createNativeBridge(webview: NativeWebView): {
         queueMicrotask(() => { if (closeHandlers.has(handler)) handler(); });
       }
       return () => { closeHandlers.delete(handler); };
+    },
+    onExitRequested: handler => {
+      exitHandlers.add(handler);
+      if (exitRequestedBeforeSubscription) {
+        exitRequestedBeforeSubscription = false;
+        queueMicrotask(() => { if (exitHandlers.has(handler)) handler(); });
+      }
+      return () => { exitHandlers.delete(handler); };
     },
     uploadMatch: input => {
       const { data, ...metadata } = input;
@@ -169,6 +184,7 @@ export function createNativeBridge(webview: NativeWebView): {
       }
       pending.clear();
       closeHandlers.clear();
+      exitHandlers.clear();
     },
   };
 }

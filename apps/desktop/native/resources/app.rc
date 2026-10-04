@@ -4,8 +4,8 @@
 1 RT_MANIFEST "app.manifest"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,9,5,0
- PRODUCTVERSION 0,9,5,0
+ FILEVERSION 0,9,6,0
+ PRODUCTVERSION 0,9,6,0
  FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
  FILEFLAGS 0
  FILEOS VOS_NT_WINDOWS32
@@ -18,11 +18,11 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "PWTools\0"
       VALUE "FileDescription", "PWTools private ledger\0"
-      VALUE "FileVersion", "0.9.5\0"
+      VALUE "FileVersion", "0.9.6\0"
       VALUE "InternalName", "PWTools\0"
       VALUE "OriginalFilename", "PWTools.exe\0"
       VALUE "ProductName", "PWTools\0"
-      VALUE "ProductVersion", "0.9.5\0"
+      VALUE "ProductVersion", "0.9.6\0"
     END
   END
   BLOCK "VarFileInfo"

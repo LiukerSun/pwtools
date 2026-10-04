@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <dwmapi.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <wrl.h>
@@ -29,6 +30,11 @@ namespace fs = std::filesystem;
 namespace {
 constexpr UINT ReplyMessage = WM_APP + 1;
 constexpr UINT ForceCloseMessage = WM_APP + 2;
+constexpr UINT TrayMessage = WM_APP + 3;
+constexpr UINT TrayIconId = 1;
+constexpr UINT TrayOpenCommand = 0x8001;
+constexpr UINT TrayExitCommand = 0x8002;
+const UINT TaskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
 constexpr wchar_t WindowClass[] = L"PWToolsWebView2";
 constexpr wchar_t ProductionUrl[] = L"https://pwtools.local/index.html";
 constexpr wchar_t ContentSecurityPolicy[] = L"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; frame-src 'none'";
@@ -93,18 +99,34 @@ RECT CenteredWindowBounds(const RECT& workArea, UINT dpi) {
   return {left, top, left + width, top + height};
 }
 
+struct ProfileWindowSearch {
+  const wchar_t* property;
+  HWND window = nullptr;
+};
+
+BOOL CALLBACK FindProfileWindow(HWND window, LPARAM parameter) {
+  auto* search = reinterpret_cast<ProfileWindowSearch*>(parameter);
+  if (GetPropW(window, search->property) != reinterpret_cast<HANDLE>(1)) return TRUE;
+  search->window = window;
+  return FALSE;
+}
+
 class Host {
  public:
   HWND window = nullptr;
   bool forceClose = false;
   bool ready = false;
   bool debug = false;
+  bool trayHidden = false;
+  bool trayRegistered = false;
+  bool trayVersion4 = false;
   ComPtr<ICoreWebView2Environment> environment;
   ComPtr<ICoreWebView2Controller> controller;
   ComPtr<ICoreWebView2> view;
   std::shared_ptr<pwtools::ApiBridge> api;
   std::shared_ptr<std::atomic<unsigned>> requests = std::make_shared<std::atomic<unsigned>>(0);
   std::wstring pageUrl = ProductionUrl;
+  std::wstring profileWindowProperty;
   fs::path dataDir;
   fs::path rendererDir;
 
@@ -122,6 +144,75 @@ class Host {
   void CloseRequested() {
     if (forceClose || !ready || !view) { DestroyWindow(window); return; }
     Post({{"event", "close-requested"}});
+  }
+
+  NOTIFYICONDATAW TrayIcon() const {
+    NOTIFYICONDATAW icon{sizeof(NOTIFYICONDATAW)};
+    icon.hWnd = window;
+    icon.uID = TrayIconId;
+    icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+    icon.uCallbackMessage = TrayMessage;
+    icon.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
+    wcscpy_s(icon.szTip, L"PWTools");
+    return icon;
+  }
+
+  bool AddTrayIcon() {
+    if (trayRegistered) return true;
+    auto icon = TrayIcon();
+    if (!icon.hIcon || !Shell_NotifyIconW(NIM_ADD, &icon)) return false;
+    trayRegistered = true;
+    icon.uVersion = NOTIFYICON_VERSION_4;
+    trayVersion4 = Shell_NotifyIconW(NIM_SETVERSION, &icon) != FALSE;
+    return true;
+  }
+
+  void RemoveTrayIcon() {
+    if (!trayRegistered) return;
+    auto icon = TrayIcon();
+    Shell_NotifyIconW(NIM_DELETE, &icon);
+    trayRegistered = false;
+    trayVersion4 = false;
+  }
+
+  void HideToTray() {
+    if (trayHidden) return;
+    if (!AddTrayIcon()) throw pwtools::ApiFailure("TRAY_UNAVAILABLE", "无法显示系统托盘图标，窗口仍保持打开，请稍后重试。");
+    trayHidden = true;
+    ShowWindow(window, SW_HIDE);
+    if (controller) controller->put_IsVisible(FALSE);
+  }
+
+  void RestoreWindow() {
+    trayHidden = false;
+    // SW_SHOW preserves a maximized window; an ordinary minimized window
+    // uses its saved restore placement, including its previous maximized state.
+    ShowWindow(window, IsIconic(window) ? SW_RESTORE : SW_SHOW);
+    if (controller) controller->put_IsVisible(TRUE);
+    Resize();
+    RemoveTrayIcon();
+    SetForegroundWindow(window);
+  }
+
+  void ExitRequested() {
+    RestoreWindow();
+    if (forceClose || !ready || !view) { DestroyWindow(window); return; }
+    Post({{"event", "exit-requested"}});
+  }
+
+  void TrayMenu() {
+    HMENU menu = CreatePopupMenu();
+    if (!menu) { RestoreWindow(); return; }
+    AppendMenuW(menu, MF_STRING, TrayOpenCommand, L"打开 PWTools");
+    AppendMenuW(menu, MF_STRING, TrayExitCommand, L"退出应用");
+    SetMenuDefaultItem(menu, TrayOpenCommand, FALSE);
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    SetForegroundWindow(window);
+    const auto command = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD, cursor.x, cursor.y, 0, window, nullptr);
+    DestroyMenu(menu);
+    PostMessageW(window, WM_NULL, 0, 0);
+    if (command) SendMessageW(window, WM_COMMAND, command, 0);
   }
 
   void Message(ICoreWebView2WebMessageReceivedEventArgs* event) {
@@ -151,6 +242,7 @@ class Host {
         if (args.size() != 1 || !args[0].is_string()) throw pwtools::ApiFailure("INVALID_INPUT", "窗口操作不正确。");
         const auto action = args[0].get<std::string>();
         if (action == "minimize") ShowWindow(window, SW_MINIMIZE);
+        else if (action == "hide-to-tray") HideToTray();
         else if (action == "maximize") ShowWindow(window, IsZoomed(window) ? SW_RESTORE : SW_MAXIMIZE);
         else if (action == "close") { forceClose = true; PostMessageW(window, ForceCloseMessage, 0, 0); }
         else throw pwtools::ApiFailure("INVALID_INPUT", "窗口操作不正确。");
@@ -218,7 +310,7 @@ class Host {
     }
     ComPtr<ICoreWebView2Controller2> controller2;
     if (SUCCEEDED(controller.As(&controller2))) controller2->put_DefaultBackgroundColor({255, 13, 22, 33});
-    Check(controller->put_IsVisible(IsIconic(window) ? FALSE : TRUE));
+    Check(controller->put_IsVisible(trayHidden || IsIconic(window) ? FALSE : TRUE));
     EventRegistrationToken registration{};
     Check(view->add_ProcessFailed(Callback<ICoreWebView2ProcessFailedEventHandler>([this](ICoreWebView2*, ICoreWebView2ProcessFailedEventArgs* args) -> HRESULT {
       COREWEBVIEW2_PROCESS_FAILED_KIND kind{};
@@ -325,6 +417,14 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(host));
   }
   if (!host) return DefWindowProcW(window, message, wParam, lParam);
+  if (TaskbarCreatedMessage && message == TaskbarCreatedMessage) {
+    if (host->trayHidden) {
+      // Explorer owns the icons, so its restart invalidates our registration.
+      host->trayRegistered = false;
+      if (!host->AddTrayIcon()) host->RestoreWindow();
+    }
+    return 0;
+  }
   switch (message) {
     case WM_NCCALCSIZE: return 0;
     case WM_NCHITTEST: {
@@ -346,7 +446,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
       break;
     }
     case WM_SIZE:
-      if (host->controller) host->controller->put_IsVisible(wParam == SIZE_MINIMIZED ? FALSE : TRUE);
+      if (host->controller) host->controller->put_IsVisible(host->trayHidden || wParam == SIZE_MINIMIZED ? FALSE : TRUE);
       if (wParam != SIZE_MINIMIZED) host->Resize();
       return 0;
     case WM_DPICHANGED: {
@@ -369,6 +469,18 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
       return 0;
     }
     case WM_CLOSE: host->CloseRequested(); return 0;
+    case WM_COMMAND:
+      if (LOWORD(wParam) == TrayOpenCommand) { host->RestoreWindow(); return 0; }
+      if (LOWORD(wParam) == TrayExitCommand) { host->ExitRequested(); return 0; }
+      break;
+    case TrayMessage: {
+      const UINT notification = host->trayVersion4 ? LOWORD(lParam) : static_cast<UINT>(lParam);
+      const UINT iconId = host->trayVersion4 ? HIWORD(lParam) : static_cast<UINT>(wParam);
+      if (!host->trayHidden || iconId != TrayIconId) return 0;
+      if (notification == WM_LBUTTONDBLCLK || notification == NIN_SELECT || notification == NIN_KEYSELECT) host->RestoreWindow();
+      else if (notification == WM_CONTEXTMENU || (!host->trayVersion4 && notification == WM_RBUTTONUP)) host->TrayMenu();
+      return 0;
+    }
     case ForceCloseMessage: host->forceClose = true; DestroyWindow(window); return 0;
     case ReplyMessage: {
       std::unique_ptr<std::string> reply(reinterpret_cast<std::string*>(lParam));
@@ -376,6 +488,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
       return 0;
     }
     case WM_DESTROY:
+      host->RemoveTrayIcon();
+      if (!host->profileWindowProperty.empty()) RemovePropW(window, host->profileWindowProperty.c_str());
       if (host->controller) host->controller->Close();
       host->view.Reset(); host->controller.Reset(); host->environment.Reset();
       PostQuitMessage(0); return 0;
@@ -395,8 +509,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     const auto mutexName = L"Local\\PWToolsNative-" + std::to_wstring(std::hash<std::wstring>{}(data));
     mutex = CreateMutexW(nullptr, FALSE, mutexName.c_str());
     if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
-      HWND existing = FindWindowW(WindowClass, nullptr);
-      if (existing) { ShowWindow(existing, IsIconic(existing) ? SW_RESTORE : SW_SHOW); SetForegroundWindow(existing); }
+      ProfileWindowSearch search{mutexName.c_str()};
+      EnumWindows(FindProfileWindow, reinterpret_cast<LPARAM>(&search));
+      if (search.window) SendMessageW(search.window, WM_COMMAND, TrayOpenCommand, 0);
       CloseHandle(mutex); CoUninitialize(); return 0;
     }
     WNDCLASSEXW registration{sizeof(WNDCLASSEXW)};
@@ -418,6 +533,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     auto bounds = CenteredWindowBounds(monitor.rcWork, GetDpiForSystem());
     HWND window = CreateWindowExW(0, WindowClass, L"PWTools · 老板账本", WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, nullptr, nullptr, instance, &host);
     if (!window) throw std::runtime_error("window creation");
+    host.profileWindowProperty = mutexName;
+    if (!SetPropW(window, host.profileWindowProperty.c_str(), reinterpret_cast<HANDLE>(1))) {
+      DestroyWindow(window);
+      throw std::runtime_error("profile window registration");
+    }
     // Query this monitor's DPI after creation, while the window is still hidden.
     // Its first visible frame is centered and sized within the taskbar work area.
     bounds = CenteredWindowBounds(monitor.rcWork, GetDpiForWindow(window));

@@ -190,9 +190,10 @@ export interface DesktopBridge {
   login(input: LoginInput): Promise<User>;
   me(): Promise<User>;
   logout(): Promise<void>;
-  windowControl(action: 'minimize' | 'maximize' | 'close'): Promise<void>;
+  windowControl(action: 'minimize' | 'maximize' | 'hide-to-tray' | 'close'): Promise<void>;
   appInfo(): Promise<AppInfo>;
   onCloseRequested?(handler: () => void): () => void;
+  onExitRequested?(handler: () => void): () => void;
   uploadMatch(input: MatchUploadInput): Promise<MatchUploadResponse>;
   listMatches(page?: number, pageSize?: number, orderId?: string, confirmed?: boolean): Promise<MatchListResponse>;
   matchStats(orderId?: string): Promise<MatchStats>;
