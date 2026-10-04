@@ -29,6 +29,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .titlebar { height: 38px; display: flex; align-items: center; justify-content: space-between; background: var(--titlebar); border-bottom: 1px solid var(--border); -webkit-app-region: drag; user-select: none; }
 .titlebar-brand { padding-left: 17px; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
 .titlebar-brand > svg { color: var(--blue); }
+.titlebar-menu-button { align-self: stretch; padding-right: 12px; border: 0; background: transparent; -webkit-app-region: no-drag; transition: background var(--fast), color var(--fast); }
+.titlebar-menu-button:hover, .titlebar-menu-button[data-expanded] { background: var(--hover); color: var(--text); }
+.titlebar-menu-button > .titlebar-menu-chevron { color: var(--subtle); }
 .titlebar-divider { width: 1px; height: 12px; background: var(--border-strong); }
 .titlebar-subtitle { color: var(--subtle); }
 .preview-label { font-size: 12px; color: var(--subtle); margin-right: 16px; }
@@ -102,6 +105,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .settings-row strong { font-size: 14px; font-weight: 550; }
 .settings-row p { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.8; }
 .settings-email { overflow-wrap: anywhere; }
+.settings-close-switch { width: 100%; }
+.settings-close-switch-body { align-items: center; justify-content: space-between; gap: 18px; }
+.settings-close-switch-label { flex: 1; padding-right: 0; }
+.settings-close-switch-title { color: var(--text); font-size: 14px; font-weight: 550; }
+.settings-close-switch-description { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.8; }
 .settings-version { grid-column: 1 / -1; color: var(--subtle); font-size: 12px; }
 .theme-label { display: flex; align-items: center; justify-content: center; gap: 5px; }
 .auth-layout { min-height: calc(100dvh - 38px); display: grid; place-items: center; padding: 36px 24px; animation: auth-arrive 240ms var(--motion) both; }
@@ -155,8 +163,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .mantine-Modal-title { color: var(--text); font-weight: 600; }
 .mantine-Modal-close { color: var(--subtle); }
 .mantine-Modal-overlay { backdrop-filter: blur(5px); }
-.navigation-guard-modal p { color: var(--muted); font-size: 13px; line-height: 1.8; }
+.navigation-guard-modal p, .window-close-modal p { color: var(--muted); font-size: 13px; line-height: 1.8; }
 .navigation-guard-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; }
+.window-close-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; margin-top: 20px; }
 .mantine-Alert-root { border-radius: 11px; }
 .mantine-Alert-title, .mantine-Alert-message { color: var(--text); font-size: 13px; }
 @media (max-width: 1120px) {

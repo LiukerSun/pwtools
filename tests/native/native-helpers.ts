@@ -1,9 +1,18 @@
 import { chromium, type Browser, type Page } from '@playwright/test';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+export interface NativeWindowState {
+  left: number; top: number; width: number; height: number;
+  workLeft: number; workTop: number; workWidth: number; workHeight: number;
+  iconic: boolean; visible: boolean; toolWindow: boolean; owner: number;
+}
 
 async function availablePort(): Promise<number> {
   const server = createServer();
@@ -59,6 +68,8 @@ export class NativeApplication {
 
   async requestNativeClose(): Promise<void> { await nativeCommand(this.page, 'test:request-close', []); }
   async setSize(width: number, height: number): Promise<void> { await nativeCommand(this.page, 'test:window-size', [width, height]); }
+  async windowState(): Promise<NativeWindowState> { return inspectCapturedWindow(this.process, false); }
+  async restoreWindow(): Promise<void> { await inspectCapturedWindow(this.process, true); }
 
   async close(): Promise<void> {
     if (!this.page.isClosed()) await this.page.evaluate(() => { void window.pwtools?.windowControl('close'); }).catch(() => {});
@@ -67,6 +78,67 @@ export class NativeApplication {
     // Closing the CDP connection only happens after the app has exited.
     await this.browser.close().catch(() => {});
   }
+}
+
+async function inspectCapturedWindow(child: ChildProcess, restore: boolean): Promise<NativeWindowState> {
+  if (process.platform !== 'win32' || !child.pid || child.exitCode !== null) throw new Error('测试原生窗口进程不存在');
+  // Enumerate only the captured child PID and expected application class. Never
+  // inspect, restore, or close a normal user profile or another application's HWND.
+  const script = `
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class PWToolsCapturedWindow {
+  public delegate bool EnumProc(IntPtr window, IntPtr data);
+  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct MonitorInfo { public uint Size; public Rect Monitor, Work; public uint Flags; }
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr window, StringBuilder name, int size);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr window, uint command);
+  [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+  [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+}
+'@
+[void][PWToolsCapturedWindow]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
+$script:capturedWindow = [IntPtr]::Zero
+$targetProcess = [uint32]${child.pid}
+[PWToolsCapturedWindow]::EnumWindows({ param($window, $data)
+  $windowProcess = [uint32]0
+  [void][PWToolsCapturedWindow]::GetWindowThreadProcessId($window, [ref]$windowProcess)
+  if ($windowProcess -eq $targetProcess) {
+    $className = [System.Text.StringBuilder]::new(128)
+    [void][PWToolsCapturedWindow]::GetClassName($window, $className, $className.Capacity)
+    if ($className.ToString() -eq 'PWToolsWebView2') { $script:capturedWindow = $window; return $false }
+  }
+  return $true
+}, [IntPtr]::Zero) | Out-Null
+if ($script:capturedWindow -eq [IntPtr]::Zero) { throw 'Captured application window not found' }
+${restore ? '[void][PWToolsCapturedWindow]::ShowWindow($script:capturedWindow, 9)' : ''}
+$bounds = [PWToolsCapturedWindow+Rect]::new()
+if (-not [PWToolsCapturedWindow]::GetWindowRect($script:capturedWindow, [ref]$bounds)) { throw 'Window bounds unavailable' }
+$monitor = [PWToolsCapturedWindow+MonitorInfo]::new()
+$monitor.Size = [System.Runtime.InteropServices.Marshal]::SizeOf($monitor)
+if (-not [PWToolsCapturedWindow]::GetMonitorInfo([PWToolsCapturedWindow]::MonitorFromWindow($script:capturedWindow, 2), [ref]$monitor)) { throw 'Monitor bounds unavailable' }
+$extendedStyle = [PWToolsCapturedWindow]::GetWindowLongPtr($script:capturedWindow, -20).ToInt64()
+[ordered]@{
+  left = $bounds.Left; top = $bounds.Top; width = $bounds.Right - $bounds.Left; height = $bounds.Bottom - $bounds.Top
+  workLeft = $monitor.Work.Left; workTop = $monitor.Work.Top; workWidth = $monitor.Work.Right - $monitor.Work.Left; workHeight = $monitor.Work.Bottom - $monitor.Work.Top
+  iconic = [PWToolsCapturedWindow]::IsIconic($script:capturedWindow); visible = [PWToolsCapturedWindow]::IsWindowVisible($script:capturedWindow)
+  toolWindow = ($extendedStyle -band 0x80) -ne 0; owner = [PWToolsCapturedWindow]::GetWindow($script:capturedWindow, 4).ToInt64()
+} | ConvertTo-Json -Compress
+`;
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const { stdout } = await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { windowsHide: true, timeout: 15_000, maxBuffer: 128 * 1024 });
+  return JSON.parse(stdout.trim()) as NativeWindowState;
 }
 
 async function stopCapturedProcess(child: ChildProcess): Promise<void> {

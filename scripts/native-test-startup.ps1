@@ -6,7 +6,12 @@ Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class StartupWindowProbe {
+  [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
   [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct MonitorInfo { public int Size; public Rect Monitor, Work; public uint Flags; }
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+  [DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(Point point, uint flags);
+  [DllImport("user32.dll")] public static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
@@ -16,6 +21,14 @@ public static class StartupWindowProbe {
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wp, IntPtr lp);
 }
 '@
+function Measure-StartupPlacement([IntPtr]$Window, $WorkArea) {
+  $bounds = New-Object StartupWindowProbe+Rect
+  if (-not [StartupWindowProbe]::GetWindowRect($Window, [ref]$bounds)) { throw 'Could not measure startup window.' }
+  $offsetX = (($bounds.Left + $bounds.Right) - ($WorkArea.Left + $WorkArea.Right)) / 2
+  $offsetY = (($bounds.Top + $bounds.Bottom) - ($WorkArea.Top + $WorkArea.Bottom)) / 2
+  $inside = $bounds.Left -ge $WorkArea.Left -and $bounds.Top -ge $WorkArea.Top -and $bounds.Right -le $WorkArea.Right -and $bounds.Bottom -le $WorkArea.Bottom
+  [pscustomobject]@{ left = $bounds.Left; top = $bounds.Top; width = $bounds.Right - $bounds.Left; height = $bounds.Bottom - $bounds.Top; center_offset_x = $offsetX; center_offset_y = $offsetY; inside_work_area = $inside; passed = $inside -and [Math]::Abs($offsetX) -le 1 -and [Math]::Abs($offsetY) -le 1 }
+}
 $startupDpiContext = [StartupWindowProbe]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
 $startupRepo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if (-not $ExecutablePath) { $ExecutablePath = Join-Path $startupRepo 'apps/desktop/release/native-win-x64/PWTools.exe' }
@@ -36,6 +49,12 @@ try {
       [Environment]::SetEnvironmentVariable('PWTOOLS_API_URL', 'http://127.0.0.1:1/api', 'Process')
       [Environment]::SetEnvironmentVariable('PWTOOLS_DEBUG_PORT', $null, 'Process')
       [Environment]::SetEnvironmentVariable('PWTOOLS_DEV_URL', $null, 'Process')
+      $startupPointer = New-Object StartupWindowProbe+Point
+      [StartupWindowProbe]::GetCursorPos([ref]$startupPointer) | Out-Null
+      $startupMonitor = [StartupWindowProbe]::MonitorFromPoint($startupPointer, 2)
+      $startupMonitorInfo = New-Object StartupWindowProbe+MonitorInfo
+      $startupMonitorInfo.Size = [Runtime.InteropServices.Marshal]::SizeOf($startupMonitorInfo)
+      if (-not [StartupWindowProbe]::GetMonitorInfo($startupMonitor, [ref]$startupMonitorInfo)) { throw 'Could not measure startup monitor work area.' }
       $app = Start-Process -FilePath $ExecutablePath -WindowStyle Normal -PassThru
       $visible = $false
       for ($tick = 0; $tick -lt 75; $tick++) {
@@ -45,6 +64,11 @@ try {
         Start-Sleep -Milliseconds 200
       }
       if (-not $visible) { throw 'Startup window was not shown.' }
+      # Inspect the first visible frame before waiting for WebView2 navigation:
+      # centering after the window has appeared would still flash in a corner.
+      $startupPlacement = Measure-StartupPlacement $app.MainWindowHandle $startupMonitorInfo.Work
+      [pscustomobject]@{ attempt = $attempt; stage = 'first-visible-placement'; work_area = $startupMonitorInfo.Work; placement = $startupPlacement } | ConvertTo-Json -Depth 3 -Compress
+      if (-not $startupPlacement.passed) { $startupFailed = $true }
       # Do not resize, activate, invalidate, or connect CDP: each can mask the bug.
       Start-Sleep -Milliseconds 1500
       $startupWindow = $app.MainWindowHandle
@@ -61,6 +85,7 @@ try {
         if (-not $visible) { throw 'Startup or restored window is not visible.' }
         $rect = New-Object StartupWindowProbe+Rect
         [StartupWindowProbe]::GetWindowRect($app.MainWindowHandle, [ref]$rect) | Out-Null
+        $placement = Measure-StartupPlacement $startupWindow $startupMonitorInfo.Work
         $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
         $bitmap = New-Object Drawing.Bitmap($width, $height)
         $graphics = [Drawing.Graphics]::FromImage($bitmap)
@@ -93,8 +118,8 @@ try {
               if ($pixel.R -gt 200 -and $pixel.G -gt 200 -and $pixel.B -gt 200) { $whiteEdges++ }
             }
           }
-          $passed = ($dark / $samples -gt 0.5 -and $accent -gt 250 -and $whiteEdges / $edgeSamples -lt 0.05)
-          [pscustomobject]@{ attempt = $attempt; stage = $stage; visible = $visible; debug = $false; dark_fraction = [Math]::Round($dark / $samples, 3); accent_samples = $accent; white_edge_fraction = [Math]::Round($whiteEdges / $edgeSamples, 3); passed = $passed } | ConvertTo-Json -Compress
+          $passed = ($dark / $samples -gt 0.5 -and $accent -gt 250 -and $whiteEdges / $edgeSamples -lt 0.05 -and $placement.passed)
+          [pscustomobject]@{ attempt = $attempt; stage = $stage; visible = $visible; debug = $false; placement = $placement; dark_fraction = [Math]::Round($dark / $samples, 3); accent_samples = $accent; white_edge_fraction = [Math]::Round($whiteEdges / $edgeSamples, 3); passed = $passed } | ConvertTo-Json -Depth 3 -Compress
           if (-not $passed) { $startupFailed = $true }
         } finally { $graphics.Dispose(); $bitmap.Dispose() }
       }
@@ -116,4 +141,4 @@ try {
   foreach ($name in $startupOldEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $startupOldEnvironment[$name], 'Process') }
   if ($startupDpiContext -ne [IntPtr]::Zero) { [StartupWindowProbe]::SetThreadDpiAwarenessContext($startupDpiContext) | Out-Null }
 }
-if ($startupFailed) { throw 'Actual native window is blank or transparent.' }
+if ($startupFailed) { throw 'Actual native window is blank, transparent, outside the work area, or not centered.' }

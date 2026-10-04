@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { Alert, Button, createTheme, InputWrapper, Loader, MantineProvider, Menu, Modal, PasswordInput, SegmentedControl, Select, Textarea, TextInput, Tooltip } from '@mantine/core';
+import { Alert, Button, createTheme, InputWrapper, Loader, MantineProvider, Menu, Modal, PasswordInput, SegmentedControl, Select, Switch, Textarea, TextInput, Tooltip } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { Notifications, notifications } from '@mantine/notifications';
 import { BookOpen, ChevronDown, LogOut, Mail, Maximize2, Minus, Moon, PanelLeftClose, PanelLeftOpen, Settings2, Sun, X } from 'lucide-react';
@@ -10,6 +10,7 @@ import BossLedger from './BossLedger';
 type PageId = 'dashboard' | 'settings';
 type ThemeMode = 'dark' | 'light';
 type Connection = 'checking' | 'connected' | 'failed';
+type CloseBehavior = 'minimize' | 'exit';
 
 const uiTheme = createTheme({
   primaryColor: 'indigo',
@@ -45,8 +46,17 @@ function initialSidebarCollapsed(): boolean {
   catch { return false; }
 }
 
+function initialCloseBehavior(): CloseBehavior | null {
+  try {
+    const saved = localStorage.getItem('pwtools:close-behavior');
+    return saved === 'minimize' || saved === 'exit' ? saved : null;
+  } catch { return null; }
+}
+
 export default function App() {
   const [theme, setTheme] = useState<ThemeMode>(initialTheme);
+  const [closeBehavior, setCloseBehavior] = useState<CloseBehavior | null>(initialCloseBehavior);
+  const [closeDialogOpened, setCloseDialogOpened] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [restoring, setRestoring] = useState(true);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
@@ -55,12 +65,32 @@ export default function App() {
   const checkingRef = useRef(false);
   const workspaceCloseRef = useRef<(() => void) | null>(null);
   const registerWindowClose = useCallback((handler: (() => void) | null) => { workspaceCloseRef.current = handler; }, []);
-  const requestWindowClose = useCallback(() => {
+  const requestWindowExit = useCallback(() => {
     if (workspaceCloseRef.current) { workspaceCloseRef.current(); return; }
     void api.windowControl('close').catch((error: unknown) => {
       notifications.show({ title: '关闭未完成', message: errorInfo(error).message, color: 'red' });
     });
   }, []);
+  const applyCloseBehavior = useCallback((behavior: CloseBehavior) => {
+    if (behavior === 'exit') { requestWindowExit(); return; }
+    void api.windowControl('minimize').catch((error: unknown) => {
+      notifications.show({ title: '最小化未完成', message: errorInfo(error).message, color: 'red' });
+    });
+  }, [requestWindowExit]);
+  const updateCloseBehavior = useCallback((behavior: CloseBehavior) => {
+    setCloseBehavior(behavior);
+    try { localStorage.setItem('pwtools:close-behavior', behavior); }
+    catch { /* The selected close behavior still applies for this session. */ }
+  }, []);
+  const requestWindowClose = useCallback(() => {
+    if (closeBehavior === null) { setCloseDialogOpened(true); return; }
+    applyCloseBehavior(closeBehavior);
+  }, [applyCloseBehavior, closeBehavior]);
+  const chooseCloseBehavior = (behavior: CloseBehavior) => {
+    updateCloseBehavior(behavior);
+    setCloseDialogOpened(false);
+    applyCloseBehavior(behavior);
+  };
 
   useEffect(() => api.onCloseRequested?.(requestWindowClose), [requestWindowClose]);
 
@@ -104,9 +134,13 @@ export default function App() {
   return <MantineProvider theme={uiTheme} forceColorScheme={theme}>
     <Notifications position="top-right" autoClose={2400} limit={2} containerWidth={360} />
     <div className="app-root">
-      <TitleBar onClose={requestWindowClose} />
-      {restoring ? <div className="restore-screen"><BrandMark /><Loader size="sm" /></div> : user ? <Workspace key={user.id} user={user} onSignedOut={() => setUser(null)} onError={handleError} theme={theme} onThemeChange={setTheme} appInfo={appInfo} onCloseHandlerChange={registerWindowClose} /> : <AuthScreen onAuthenticated={authenticated} connection={connection} restoreError={restoreError} />}
+      <TitleBar onClose={requestWindowClose} onExit={requestWindowExit} />
+      {restoring ? <div className="restore-screen"><BrandMark /><Loader size="sm" /></div> : user ? <Workspace key={user.id} user={user} onSignedOut={() => setUser(null)} onError={handleError} theme={theme} onThemeChange={setTheme} appInfo={appInfo} onCloseHandlerChange={registerWindowClose} closeBehavior={closeBehavior ?? 'minimize'} onCloseBehaviorChange={updateCloseBehavior} /> : <AuthScreen onAuthenticated={authenticated} connection={connection} restoreError={restoreError} />}
     </div>
+    {isDesktop && <Modal classNames={{ content: 'window-close-modal' }} opened={closeDialogOpened} onClose={() => setCloseDialogOpened(false)} title="关闭窗口" centered size="sm" zIndex={450}>
+      <p>最小化后继续运行，仅保留任务栏图标。可在设置中更改关闭方式。</p>
+      <div className="window-close-actions"><Button variant="default" onClick={() => chooseCloseBehavior('exit')}>退出应用</Button><Button onClick={() => chooseCloseBehavior('minimize')}>最小化到任务栏</Button></div>
+    </Modal>}
   </MantineProvider>;
 }
 
@@ -114,9 +148,12 @@ function BrandMark({ small = false }: { small?: boolean }) {
   return <span className={`brand-mark ${small ? 'small' : ''}`}><BookOpen size={small ? 19 : 25} strokeWidth={1.8} /></span>;
 }
 
-function TitleBar({ onClose }: { onClose: () => void }) {
+function TitleBar({ onClose, onExit }: { onClose: () => void; onExit: () => void }) {
   return <div className="titlebar">
-    <div className="titlebar-brand"><BookOpen size={14} /><span>PWTools</span></div>
+    {isDesktop ? <Menu position="bottom-start" shadow="md" width={164} offset={7}>
+      <Menu.Target><button className="titlebar-brand titlebar-menu-button" aria-label="应用菜单"><BookOpen size={14} /><span>PWTools</span><ChevronDown className="titlebar-menu-chevron" size={12} /></button></Menu.Target>
+      <Menu.Dropdown><Menu.Item color="red" leftSection={<LogOut size={15} />} onClick={onExit}>退出应用</Menu.Item></Menu.Dropdown>
+    </Menu> : <div className="titlebar-brand"><BookOpen size={14} /><span>PWTools</span></div>}
     {isDesktop ? <div className="window-controls">
       <button aria-label="最小化窗口" onClick={() => void api.windowControl('minimize')}><Minus size={15} /></button>
       <button aria-label="最大化或还原窗口" onClick={() => void api.windowControl('maximize')}><Maximize2 size={13} /></button>
@@ -182,9 +219,11 @@ interface WorkspaceProps {
   onError: (error: unknown) => boolean; theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void;
   appInfo: AppInfo | null;
   onCloseHandlerChange: (handler: (() => void) | null) => void;
+  closeBehavior: CloseBehavior;
+  onCloseBehaviorChange: (behavior: CloseBehavior) => void;
 }
 
-function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, onCloseHandlerChange }: WorkspaceProps) {
+function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, onCloseHandlerChange, closeBehavior, onCloseBehaviorChange }: WorkspaceProps) {
   const [page, setPage] = useState<PageId>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed);
   const [ledgerVisit, setLedgerVisit] = useState(0);
@@ -277,7 +316,7 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
         <div className="page-heading"><h1 tabIndex={-1}>{currentPage.label}</h1></div>
         <div className="page-transition" key={page}>
           {page === 'dashboard' && <BossLedger key={ledgerVisit} onError={onError} onNavigationStateChange={reportLedgerNavigation} />}
-          {page === 'settings' && <Settings theme={theme} onThemeChange={onThemeChange} appInfo={appInfo} onLogout={() => runNavigation(() => void logout())} signingOut={signingOut} email={user.email} />}
+          {page === 'settings' && <Settings theme={theme} onThemeChange={onThemeChange} appInfo={appInfo} onLogout={() => runNavigation(() => void logout())} signingOut={signingOut} email={user.email} closeBehavior={closeBehavior} onCloseBehaviorChange={onCloseBehaviorChange} />}
         </div>
       </main>
     </div>
@@ -297,9 +336,10 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
   </div>;
 }
 
-function Settings({ theme, onThemeChange, appInfo, onLogout, signingOut, email }: { theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void; appInfo: AppInfo | null; onLogout: () => void; signingOut: boolean; email: string }) {
+function Settings({ theme, onThemeChange, appInfo, onLogout, signingOut, email, closeBehavior, onCloseBehaviorChange }: { theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void; appInfo: AppInfo | null; onLogout: () => void; signingOut: boolean; email: string; closeBehavior: CloseBehavior; onCloseBehaviorChange: (behavior: CloseBehavior) => void }) {
   return <div className="settings-layout">
     <section className="panel settings-section"><div className="section-heading"><h2>外观</h2></div><div className="settings-row"><strong>主题</strong><SegmentedControl value={theme} onChange={(value) => onThemeChange(value as ThemeMode)} data={[{ value: 'dark', label: <span className="theme-label"><Moon size={14} /> 深色</span> }, { value: 'light', label: <span className="theme-label"><Sun size={14} /> 浅色</span> }]} /></div></section>
+    {isDesktop && <section className="panel settings-section"><div className="section-heading"><h2>窗口</h2></div><div className="settings-row"><Switch classNames={{ root: 'settings-close-switch', body: 'settings-close-switch-body', labelWrapper: 'settings-close-switch-label', label: 'settings-close-switch-title', description: 'settings-close-switch-description' }} label="关闭窗口时最小化到任务栏" description="启用后，应用继续运行；关闭此选项会退出应用。" labelPosition="left" checked={closeBehavior === 'minimize'} onChange={(event) => onCloseBehaviorChange(event.currentTarget.checked ? 'minimize' : 'exit')} /></div></section>}
     <section className="panel settings-section"><div className="section-heading"><h2>账号</h2></div><div className="settings-row"><div><strong className="settings-email">{email}</strong>{!appInfo?.persistentSession && <p>关闭后需重新登录</p>}</div><Button variant="default" color="red" leftSection={<LogOut size={15} />} loading={signingOut} onClick={onLogout}>退出登录</Button></div></section>
     <p className="settings-version">PWTools {appInfo && appInfo.version !== '浏览器预览' ? `v${appInfo.version}` : ''}</p>
   </div>;

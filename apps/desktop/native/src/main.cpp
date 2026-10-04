@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 #include "api_bridge.hpp"
 #include "config.hpp"
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -80,6 +81,16 @@ fs::path DataDirectory() {
 
 void Check(HRESULT result) {
   if (FAILED(result)) throw std::runtime_error("WebView2 operation failed");
+}
+
+RECT CenteredWindowBounds(const RECT& workArea, UINT dpi) {
+  const int workWidth = workArea.right - workArea.left;
+  const int workHeight = workArea.bottom - workArea.top;
+  const int width = std::min(MulDiv(1320, dpi, 96), workWidth);
+  const int height = std::min(MulDiv(880, dpi, 96), workHeight);
+  const int left = workArea.left + (workWidth - width) / 2;
+  const int top = workArea.top + (workHeight - height) / 2;
+  return {left, top, left + width, top + height};
 }
 
 class Host {
@@ -349,6 +360,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
       limits->ptMinTrackSize = {MulDiv(960, dpi, 96), MulDiv(640, dpi, 96)};
       MONITORINFO monitor{sizeof(MONITORINFO)};
       if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        // Small work areas must also fit at launch, even at a high DPI scale.
+        limits->ptMinTrackSize.x = std::min(limits->ptMinTrackSize.x, monitor.rcWork.right - monitor.rcWork.left);
+        limits->ptMinTrackSize.y = std::min(limits->ptMinTrackSize.y, monitor.rcWork.bottom - monitor.rcWork.top);
         limits->ptMaxPosition = {monitor.rcWork.left - monitor.rcMonitor.left, monitor.rcWork.top - monitor.rcMonitor.top};
         limits->ptMaxSize = {monitor.rcWork.right - monitor.rcWork.left, monitor.rcWork.bottom - monitor.rcWork.top};
       }
@@ -395,10 +409,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     registration.lpszClassName = WindowClass;
     Check(RegisterClassExW(&registration) ? S_OK : E_FAIL);
     Host host;
-    const int dpi = GetDpiForSystem();
-    const int width = MulDiv(1320, dpi, 96), height = MulDiv(880, dpi, 96);
-    HWND window = CreateWindowExW(0, WindowClass, L"PWTools · 老板账本", WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, width, height, nullptr, nullptr, instance, &host);
+    POINT cursor{};
+    const HMONITOR startupMonitor = GetCursorPos(&cursor)
+        ? MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
+        : MonitorFromWindow(nullptr, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO monitor{sizeof(MONITORINFO)};
+    if (!GetMonitorInfoW(startupMonitor, &monitor)) throw std::runtime_error("startup monitor");
+    auto bounds = CenteredWindowBounds(monitor.rcWork, GetDpiForSystem());
+    HWND window = CreateWindowExW(0, WindowClass, L"PWTools · 老板账本", WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, nullptr, nullptr, instance, &host);
     if (!window) throw std::runtime_error("window creation");
+    // Query this monitor's DPI after creation, while the window is still hidden.
+    // Its first visible frame is centered and sized within the taskbar work area.
+    bounds = CenteredWindowBounds(monitor.rcWork, GetDpiForWindow(window));
+    if (!SetWindowPos(window, nullptr, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, SWP_NOZORDER | SWP_NOACTIVATE)) throw std::runtime_error("startup window placement");
     const DWORD corner = 2;
     DwmSetWindowAttribute(window, 33, &corner, sizeof(corner));
     // Create WebView2 in a visible parent. Navigating in a hidden parent and

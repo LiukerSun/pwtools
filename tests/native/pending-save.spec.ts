@@ -49,7 +49,8 @@ async function startPendingProxy(loss: '断开响应' | '无效 JSON 响应') {
         if (HOP_HEADERS.has(name) || value === undefined) continue;
         for (const item of Array.isArray(value) ? value : [value]) headers.append(name, item);
       }
-      const upstream = await fetch(`http://localhost:8080${path}`, {
+      const upstreamRoot = (process.env.PWTOOLS_E2E_API_URL || 'http://localhost:8080/api').replace(/\/api\/?$/, '');
+      const upstream = await fetch(`${upstreamRoot}${path}`, {
         method: request.method,
         headers,
         ...(body.byteLength ? { body: new Uint8Array(body).buffer } : {}),
@@ -110,6 +111,10 @@ test(`原生窗口阻止未决记账退出，${loss}和限流后只记一场`, a
     proxy = await startPendingProxy(loss);
     desktop = await NativeApplication.launch(dataDir, proxy.apiUrl);
     const page = desktop.page;
+    // This suite verifies the exit guard. Explicitly select exit so first-close
+    // education and minimize preferences do not change the scenario under test.
+    await page.evaluate(() => localStorage.setItem('pwtools:close-behavior', 'exit'));
+    await page.reload();
     page.on('dialog', (dialog) => { if (dialog.type() !== 'beforeunload') void dialog.dismiss().catch(() => {}); });
     const pageErrors: string[] = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
