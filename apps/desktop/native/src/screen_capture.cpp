@@ -9,12 +9,14 @@
 #include <WebView2.h>
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <exception>
 #include <fstream>
 #include <limits>
 #include <utility>
+#include <unordered_set>
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -198,7 +200,44 @@ std::vector<BYTE> FreezeDesktop(const RECT& desktop, bool pattern) {
   // The GDI bitmap and raw pixels die before base64/JSON copies are allocated.
   return encoded;
 }
+
+std::vector<RECT> SnapshotWindowBounds(const RECT& desktop) {
+  std::vector<RECT> bounds;
+  std::unordered_set<HWND> visited;
+  // Cache top-level windows in front-to-back order before showing the overlay.
+  // No titles, process names or child controls are read or passed to the page.
+  for (HWND window = GetTopWindow(nullptr); window && visited.size() < 4096 && bounds.size() < 512;
+       window = GetWindow(window, GW_HWNDNEXT)) {
+    if (!visited.insert(window).second) break;
+    if (!IsWindowVisible(window) || IsIconic(window)) continue;
+    DWORD process = 0;
+    GetWindowThreadProcessId(window, &process);
+    if (!process || process == GetCurrentProcessId()) continue;
+    const auto styles = GetWindowLongPtrW(window, GWL_EXSTYLE);
+    if (styles & WS_EX_TRANSPARENT) continue;
+    DWORD cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) continue;
+    std::array<wchar_t, 256> className{};
+    if (GetClassNameW(window, className.data(), static_cast<int>(className.size()))) {
+      const std::wstring name(className.data());
+      if (name == L"Progman" || name == L"WorkerW" || name == L"Shell_TrayWnd"
+          || name == L"Shell_SecondaryTrayWnd" || name == L"tooltips_class32") continue;
+    }
+    RECT frame{};
+    if (FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, &frame, sizeof(frame)))
+        && !GetWindowRect(window, &frame)) continue;
+    if (auto clipped = ClipCaptureWindowBounds(frame, desktop)) bounds.push_back(*clipped);
+  }
+  return bounds;
+}
 } // namespace
+
+std::optional<RECT> ClipCaptureWindowBounds(const RECT& window, const RECT& desktop) {
+  const LONG left = std::max(window.left, desktop.left), top = std::max(window.top, desktop.top);
+  const LONG right = std::min(window.right, desktop.right), bottom = std::min(window.bottom, desktop.bottom);
+  if (right <= left || bottom <= top) return {};
+  return RECT{left - desktop.left, top - desktop.top, right - desktop.left, bottom - desktop.top};
+}
 
 std::vector<BYTE> EncodeCaptureBackground(HBITMAP bitmap) {
   BITMAP image{};
@@ -233,6 +272,7 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
   bool originalIconic = false, active = false, finishing = false, shown = false, ready = false, backgroundServed = false;
   uint64_t generation = 0;
   std::vector<BYTE> background;
+  std::vector<RECT> windowBounds;
   std::optional<ScreenCaptureResult> pendingResult;
 
   State(HWND window, ICoreWebView2Environment* webEnvironment, const std::filesystem::path& renderer,
@@ -261,7 +301,7 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
     completion = std::move(callback); active = true; finishing = false; shown = false; ready = false; backgroundServed = false;
     pendingResult.reset(); ++generation;
     try {
-      overlay = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, OverlayClass, L"PWTools · 框选战绩截图",
+      overlay = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, OverlayClass, L"PWTools · 战绩截图",
                                 WS_POPUP, desktop.left, desktop.top, width, height, nullptr, nullptr,
                                 registration.hInstance, this);
       if (!overlay) CaptureFailure();
@@ -291,7 +331,7 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
     if (!active && !overlay) return;
     finishing = true; active = false; ++generation;
     auto callback = std::move(completion);
-    pendingResult.reset(); std::vector<BYTE>().swap(background);
+    pendingResult.reset(); std::vector<BYTE>().swap(background); windowBounds.clear();
     if (overlay) { KillTimer(overlay, StartTimer); KillTimer(overlay, ExpiryTimer); }
     if (controller) controller->Close(); view.Reset(); controller.Reset();
     if (overlay) { HWND target = std::exchange(overlay, nullptr); DestroyWindow(target); }
@@ -321,8 +361,16 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
       if (method == "captureOverlayReady") {
         if (!args.empty() || backgroundServed || background.empty()) throw ApiFailure("INVALID_INPUT", "截图初始化参数不正确。");
         auto image = Base64(background); std::vector<BYTE>().swap(background); backgroundServed = true;
+        auto targets = json::array();
+        for (const auto& bounds : windowBounds) targets.push_back({{"x", bounds.left}, {"y", bounds.top},
+          {"width", bounds.right - bounds.left}, {"height", bounds.bottom - bounds.top}});
+        windowBounds.clear();
+        POINT cursor{};
+        json pointer = nullptr;
+        if (GetCursorPos(&cursor)) pointer = {{"x", cursor.x - desktop.left}, {"y", cursor.y - desktop.top}};
         Post({{"id", id}, {"ok", true}, {"data", {{"content_type", "image/png"}, {"data_base64", std::move(image)},
-              {"width", desktop.right - desktop.left}, {"height", desktop.bottom - desktop.top}}}});
+              {"width", desktop.right - desktop.left}, {"height", desktop.bottom - desktop.top},
+              {"windows", std::move(targets)}, {"cursor", std::move(pointer)}}}});
         return;
       }
       if (method == "captureOverlayShow") {
@@ -414,7 +462,9 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
   }
 
   void Initialize() {
-    DwmFlush(); background = FreezeDesktop(desktop, testPattern);
+    DwmFlush();
+    windowBounds = testPattern ? std::vector<RECT>{} : SnapshotWindowBounds(desktop);
+    background = FreezeDesktop(desktop, testPattern);
     const auto weak = weak_from_this(); const auto token = generation;
     const HRESULT status = environment->CreateCoreWebView2Controller(overlay,
         Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>([weak, token](HRESULT result, ICoreWebView2Controller* created) -> HRESULT {

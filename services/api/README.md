@@ -88,17 +88,21 @@ Rust 2024 + Axum 0.8 + SQLx 0.8。启动时自动执行 `migrations/`，运行�
 | --- | --- | --- |
 | GET / PATCH | `/matches/settings` | 读取或保存 `{ "boss_id", "boss_player_name" }`，两项均为 1–80 个字符；未设置时返回空字符串 |
 | POST | `/matches` | 原始二进制上传，返回 `{ "record", "duplicate" }`；新增 201，重复 200 |
+| POST | `/matches/local` | 同样上传和保存原图，立即返回草稿，不调用服务端 OCR；原生客户端并行在本机识别 |
 | GET | `/matches?page=1&page_size=20&order_id={id}&confirmed=false` | 对应订单的 `{ "items", "total", "page", "page_size" }`，每页最多 100 条；`confirmed=false` 只查草稿，`true` 只查已确认，省略则返回两者；省略订单仅查询当前旧设置老板的未分配历史。总数与分页使用相同筛选范围 |
 | GET / PATCH / DELETE | `/matches/{id}` | 读取、人工修改或删除记录；删除同时删除原图，成功返回 204 |
 | GET | `/matches/{id}/image` | 下载原始图片，账号鉴权，`private, no-store` |
 | POST | `/matches/{id}/recognize` | 使用已保存的原图重新识别，返回记录 |
+| POST | `/matches/{id}/local-recognition` | `{ "image_sha256", "recognition" }`；保存客户端 OCR 结果并返回记录，`recognition: null` 表示本地识别失败 |
 | GET | `/matches/stats?order_id={id}` | 指定订单截图的确认数量、成功/失败数量、草稿数、成功金额总和及成功率；订单完整余额通过 `/orders/{id}` 获取 |
 
-上传使用 `Content-Type: image/png` / `image/jpeg` / `image/webp`，并可通过 `X-File-Name: encodeURIComponent(filename)` 指定原始名称。仅上传端点允许 12 MiB，其他端点仍限制为 16 KiB。后端验证真实图片格式并完整解码，单边最多 16000 像素、总像素最多 4000 万，解码和 OCR 均限制并发。
+上传使用 `Content-Type: image/png` / `image/jpeg` / `image/webp`，并可通过 `X-File-Name: encodeURIComponent(filename)` 指定原始名称。两个上传端点允许 12 MiB，本地识别结果端点允许 1 MiB，其余端点限制为 16 KiB。后端验证真实图片格式并完整解码，单边最多 16000 像素、总像素最多 4000 万，解码和服务端 OCR 均限制并发。
+
+`recognition` 使用内部 OCR 响应结构：`{ "outcome", "players": [{ "player_name", "outcome", "amount", "confidence" }], "raw_text", "warnings" }`。仅记录所有者能提交结果，`image_sha256` 必须等于已保存原图的摘要；客户端不能指定老板、订单或确认入账状态。服务端规范化金额、昵称和置信度，沿用原有精确昵称匹配，保留人工校正字段。返回成功只代表 OCR 参考已保存，金额仍需用户明确确认后入账。
 
 记录包含 `id`、`order_id`、`failure_extra_amount`、`boss_id`、`boss_player_name`、`original_name`、`image_content_type`、`image_sha256`、`image_width`、`image_height`、`image_size`、`players`、`raw_text`、`warnings`、`ocr_status`、`player_name`、`outcome`、`amount`、`fake_amount`、`net_amount`、`credited_amount`、`confirmed`、`played_at`、`note`、`created_at`、`updated_at`，不公开所有者 ID、内部校对标志、配置快照或图片字节。`played_at` 是可空 UTC 时间字符串。
 
-启用 OSS 后，新原图私有存储于独立 `pwtools/` 目录，数据库保留归属、对象引用和 SHA-256。上传使用 Content-MD5，随后回读验证长度与 SHA-256，验证成功才提交记录；OCR 繁忙或失败保留原图和草稿。未启用 OSS 的开发/测试继续使用 PostgreSQL `BYTEA`；旧原图迁移前仍可读取。排队和 OCR 各有 35 秒上限。单个账号、老板标识、SHA-256 的组合唯一，重复上传不增加统计；同老板原图不能重复归到不同订单，同一截图可为不同老板记录其各自结果。
+启用 OSS 后，新原图私有存储于独立 `pwtools/` 目录，数据库保留归属、对象引用和 SHA-256。上传使用 Content-MD5，随后回读验证长度与 SHA-256，验证成功才提交记录；OCR 繁忙或失败保留原图和草稿。未启用 OSS 的开发/测试继续使用 PostgreSQL `BYTEA`；旧原图迁移前仍可读取。旧识别链路的排队和 OCR 各有 35 秒上限；本地识别不进入服务端 OCR 队列。单个账号、老板标识、SHA-256 的组合唯一，重复上传不增加统计；同老板原图不能重复归到不同订单，同一截图可为不同老板记录其各自结果。
 
 ### 私有 OSS 存储与历史迁移
 

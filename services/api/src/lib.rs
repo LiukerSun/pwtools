@@ -161,11 +161,19 @@ pub fn router(state: AppState, allowed_origins: Vec<HeaderValue>) -> Router {
         .route("/api/matches/{id}/recognize", post(matches::recognize))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES));
+    let local_recognition_routes = Router::new()
+        .route(
+            "/api/matches/{id}/local-recognition",
+            post(matches::local_recognition),
+        )
+        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(RequestBodyLimitLayer::new(1024 * 1024));
     let upload_routes = Router::new()
         .route("/api/matches", post(matches::upload))
+        .route("/api/matches/local", post(matches::upload_local))
         .layer(DefaultBodyLimit::max(ocr::MAX_IMAGE_BYTES))
         .layer(RequestBodyLimitLayer::new(ocr::MAX_IMAGE_BYTES));
-    normal_routes.merge(upload_routes)
+    normal_routes.merge(upload_routes).merge(local_recognition_routes)
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "NOT_FOUND", "接口不存在") })
         .method_not_allowed_fallback(|| async { ApiError::new(StatusCode::METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "此接口不支持该请求方式") })
         .layer(middleware::from_fn(normalize_body_limit))

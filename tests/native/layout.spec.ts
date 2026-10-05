@@ -15,6 +15,12 @@ test('原生客户端三类订单、模板、中文日期与深浅主题布局',
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.name));
     await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+    await expect.poll(async () => (await app!.windowState()).frameRgb).toEqual([17, 23, 34]);
+    for (const active of [false, true]) {
+      const frame = await app.notifyFrameActivation(active);
+      expect(frame.frameRgb).toEqual([17, 23, 34]);
+      expect(frame.frameTopRgb).toEqual([17, 23, 34]);
+    }
     const context = await page.evaluate(async id => {
       const api = window.pwtools!;
       await api.register({ email: `native-layout-${id}@example.test`, password: `Test-${id}!` });
@@ -72,6 +78,12 @@ test('原生客户端三类订单、模板、中文日期与深浅主题布局',
 
     await page.getByRole('navigation').getByRole('button', { name: '设置', exact: true }).click();
     await page.locator('label').filter({ hasText: '浅色' }).click();
+    await expect.poll(async () => (await app!.windowState()).frameRgb).toEqual([243, 245, 250]);
+    for (const active of [false, true]) {
+      const frame = await app.notifyFrameActivation(active);
+      expect(frame.frameRgb).toEqual([243, 245, 250]);
+      expect(frame.frameTopRgb).toEqual([243, 245, 250]);
+    }
     await page.getByRole('navigation').getByRole('button', { name: '老板账本', exact: true }).click();
     await page.getByRole('button', { name: '查看小桃老板订单', exact: true }).click();
     await app.setSize(960, 760);

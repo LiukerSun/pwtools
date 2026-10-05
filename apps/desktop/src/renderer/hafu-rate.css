@@ -1,0 +1,27 @@
+.hafu-rate-calculator { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 22px; max-width: 1080px; align-items: start; }
+.hafu-rate-inputs { padding: 24px; }
+.hafu-rate-inputs > .section-heading { align-items: center; margin-bottom: 24px; min-height: 30px; }
+.hafu-rate-fields { display: grid; gap: 24px; }
+.hafu-rate-result { overflow: hidden; }
+.hafu-rate-primary { padding: 28px; background: var(--blue-soft); border-bottom: 1px solid var(--border); }
+.hafu-rate-primary h2 { font-size: 14px; font-weight: 600; color: var(--blue); }
+.hafu-rate-output { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; margin: 18px 0 12px; }
+.hafu-rate-output strong { min-width: 0; max-width: 100%; font-size: 48px; font-weight: 650; letter-spacing: -1px; line-height: 1.2; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.hafu-rate-output > span { color: var(--muted); font-size: 13px; }
+.hafu-rate-primary > p { font-size: 12px; color: var(--muted); line-height: 1.7; }
+.hafu-rate-breakdown { padding: 24px 28px; }
+.hafu-rate-breakdown dl { display: grid; gap: 18px; margin: 0; }
+.hafu-rate-breakdown dl > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; }
+.hafu-rate-breakdown dt { color: var(--muted); font-size: 13px; }
+.hafu-rate-breakdown dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.hafu-rate-formula { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
+.hafu-rate-formula h3 { color: var(--muted); font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+.hafu-rate-formula p { color: var(--subtle); font-size: 12px; line-height: 1.8; }
+.hafu-rate-formula p + p { margin-top: 4px; }
+@media (max-width: 1000px) {
+  .hafu-rate-calculator { grid-template-columns: minmax(0, 1fr); max-width: 640px; }
+}
+@media (max-width: 720px) {
+  .hafu-rate-inputs, .hafu-rate-primary, .hafu-rate-breakdown { padding: 20px; }
+  .hafu-rate-output strong { font-size: 40px; }
+}

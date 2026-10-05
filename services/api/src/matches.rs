@@ -20,7 +20,7 @@ use crate::{
     auth::AuthenticatedUser,
     error::{ApiError, ApiJson},
     ledger,
-    ocr::{OcrPlayer, Outcome, Recognition},
+    ocr::{OcrPlayer, OcrResponse, Outcome, Recognition},
     storage,
     storage_migration::{self, api_storage_error},
 };
@@ -289,6 +289,25 @@ pub async fn upload(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<UploadResponse>), ApiError> {
+    upload_inner(state, session, headers, body, false).await
+}
+
+pub async fn upload_local(
+    State(state): State<AppState>,
+    session: AuthenticatedUser,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<(StatusCode, Json<UploadResponse>), ApiError> {
+    upload_inner(state, session, headers, body, true).await
+}
+
+async fn upload_inner(
+    state: AppState,
+    session: AuthenticatedUser,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+    local: bool,
+) -> Result<(StatusCode, Json<UploadResponse>), ApiError> {
     // Take a settings snapshot before image validation or awaiting the external OCR service.
     let order_id = headers
         .get("x-order-id")
@@ -442,9 +461,11 @@ pub async fn upload(
         .bind(width)
         .bind(height)
         .bind(bytes.len() as i32)
-        .bind(DbJson(vec![
-            "自动识别尚未完成；原图已保存，可稍后重新识别。".to_owned(),
-        ]))
+        .bind(DbJson(vec![if local {
+            "本地识别尚未完成；原图已保存，可稍后重新识别。".to_owned()
+        } else {
+            "自动识别尚未完成；原图已保存，可稍后重新识别。".to_owned()
+        }]))
         .bind(&settings.boss_id)
         .bind(&settings.boss_player_name)
         .bind(order_id)
@@ -485,6 +506,15 @@ pub async fn upload(
             Json(UploadResponse {
                 record,
                 duplicate: true,
+            }),
+        ));
+    }
+    if local {
+        return Ok((
+            StatusCode::CREATED,
+            Json(UploadResponse {
+                record: find(&state, session.user.id, id).await?,
+                duplicate: false,
             }),
         ));
     }
@@ -892,6 +922,42 @@ pub async fn recognize(
     let recognition = state.ocr.recognize(Bytes::from(bytes), &content_type).await;
     Ok(Json(
         update_recognition(&state, session.user.id, id, &boss_player_name, recognition).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalRecognitionInput {
+    image_sha256: String,
+    recognition: Option<OcrResponse>,
+}
+
+pub async fn local_recognition(
+    State(state): State<AppState>,
+    session: AuthenticatedUser,
+    RecordId(id): RecordId,
+    ApiJson(input): ApiJson<LocalRecognitionInput>,
+) -> Result<Json<MatchRecord>, ApiError> {
+    let record = find(&state, session.user.id, id).await?;
+    validate_record_order(&state, session.user.id, &record).await?;
+    if input.image_sha256 != record.image_sha256 {
+        return Err(ApiError::validation("识别结果与原图不一致，请重新识别"));
+    }
+    let recognition = match input.recognition {
+        Some(raw) => Recognition::from_response(raw).map_err(ApiError::validation)?,
+        None => {
+            Recognition::failure("本地识别暂时不可用，原图已保存；你可以手动填写或稍后重新识别。")
+        }
+    };
+    Ok(Json(
+        update_recognition(
+            &state,
+            session.user.id,
+            id,
+            &record.boss_player_name,
+            recognition,
+        )
+        .await?,
     ))
 }
 

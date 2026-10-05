@@ -1,6 +1,6 @@
 {
   "name": "pwtools",
-  "version": "0.9.11",
+  "version": "0.9.21",
   "private": true,
   "description": "陪玩从业者的私人老板与订单账本",
   "workspaces": [
@@ -12,13 +12,18 @@
     "build": "npm run build --workspace @pwtools/desktop",
     "typecheck": "npm run typecheck --workspace @pwtools/desktop",
     "package:win": "npm run package:win --workspace @pwtools/desktop",
+    "publish:win": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/native-publish.ps1",
     "backend:up": "docker compose up -d --build",
     "backend:down": "docker compose down",
     "backend:logs": "docker compose logs -f api",
     "test:e2e": "playwright test",
     "test:desktop": "playwright test --config playwright.native.config.ts",
     "test:bridge": "node --experimental-strip-types --test tests/unit/native-bridge.test.ts",
+    "test:updater": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/native-test-updater.ps1",
+    "test:capture-selection": "node --experimental-strip-types --test tests/unit/capture-selection.test.ts",
+    "test:hafu-rate": "node --experimental-strip-types --test tests/unit/hafu-rate.test.ts",
     "test:startup": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/native-test-startup.ps1 -Attempts 3 -ExerciseRestore",
+    "test:resize": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/native-test-resize.ps1",
     "test:installer": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/native-test-installer.ps1",
     "test:native-api": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/native-test-api.ps1"
   },

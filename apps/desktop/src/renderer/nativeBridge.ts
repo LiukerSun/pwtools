@@ -131,6 +131,7 @@ export function createNativeBridge(webview: NativeWebView): {
     me: () => invoke('me'),
     logout: () => invoke('logout'),
     windowControl: action => invoke('windowControl', [action]),
+    setWindowTheme: theme => invoke('setWindowTheme', [theme]),
     setImportHotkey: shortcut => invoke('setImportHotkey', [shortcut]),
     captureScreen: async () => {
       const value = await invoke('captureScreen');
@@ -149,6 +150,10 @@ export function createNativeBridge(webview: NativeWebView): {
       return { name: value.name, ...imageFromNative(value) };
     },
     appInfo: () => invoke('appInfo'),
+    getUpdateState: () => invoke('getUpdateState'),
+    checkForUpdates: () => invoke('checkForUpdates'),
+    downloadUpdate: () => invoke('downloadUpdate'),
+    installUpdate: () => invoke('installUpdate'),
     onCloseRequested: handler => {
       closeHandlers.add(handler);
       if (closeRequestedBeforeSubscription) {

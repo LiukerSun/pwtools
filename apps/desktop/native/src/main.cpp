@@ -15,6 +15,7 @@
 #include "clipboard_image.hpp"
 #include "screen_capture.hpp"
 #include "config.hpp"
+#include "updater.hpp"
 #include <algorithm>
 #include <atomic>
 #include <filesystem>
@@ -32,6 +33,7 @@ namespace fs = std::filesystem;
 namespace {
 constexpr UINT ReplyMessage = WM_APP + 1;
 constexpr UINT ForceCloseMessage = WM_APP + 2;
+constexpr UINT UpdateInstallReplyMessage = WM_APP + 3;
 constexpr UINT WindowRestoreCommand = 0x8001;
 constexpr UINT WindowExitCommand = 0x8002;
 constexpr int ImportHotkeyIdA = 0x7001;
@@ -88,6 +90,10 @@ fs::path DataDirectory() {
 
 void Check(HRESULT result) {
   if (FAILED(result)) throw std::runtime_error("WebView2 operation failed");
+}
+
+int ResizeBorder(HWND window) {
+  return MulDiv(7, GetDpiForWindow(window), 96);
 }
 
 RECT CenteredWindowBounds(const RECT& workArea, UINT dpi) {
@@ -149,6 +155,8 @@ class Host {
   bool debug = false;
   bool restoreMaximized = false;
   bool pendingImport = false;
+  bool installingUpdate = false;
+  COLORREF backgroundColor = RGB(17, 23, 34);
   int importHotkeyId = 0;
   UINT importHotkeyModifiers = 0;
   UINT importHotkeyKey = 0;
@@ -156,6 +164,7 @@ class Host {
   ComPtr<ICoreWebView2Controller> controller;
   ComPtr<ICoreWebView2> view;
   std::shared_ptr<pwtools::ApiBridge> api;
+  std::shared_ptr<pwtools::Updater> updater;
   std::shared_ptr<std::atomic<unsigned>> requests = std::make_shared<std::atomic<unsigned>>(0);
   std::wstring pageUrl = ProductionUrl;
   std::wstring profileWindowProperty;
@@ -167,6 +176,12 @@ class Host {
     if (!controller) return;
     RECT bounds{};
     GetClientRect(window, &bounds);
+    // A windowed WebView consumes pointer hit tests inside its own bounds.
+    // Keep the resize border owned by the host so WM_NCHITTEST can reach it.
+    if (!IsZoomed(window)) {
+      const int border = ResizeBorder(window);
+      InflateRect(&bounds, -border, -border);
+    }
     controller->put_Bounds(bounds);
   }
 
@@ -175,6 +190,7 @@ class Host {
   }
 
   void CloseRequested() {
+    if (installingUpdate) return;
     if (forceClose || !ready || !view) { DestroyWindow(window); return; }
     Post({{"event", "close-requested"}});
   }
@@ -194,6 +210,7 @@ class Host {
   }
 
   void ExitRequested() {
+    if (installingUpdate) return;
     RestoreWindow();
     if (forceClose || !ready || !view) { DestroyWindow(window); return; }
     Post({{"event", "exit-requested"}});
@@ -228,6 +245,7 @@ class Host {
   }
 
   void ImportRequested() {
+    if (installingUpdate) return;
     // The renderer checks unsaved work/login first, then hides this window and
     // starts selection. Raising it here would cover the game being captured.
     if (!ready || !view) { pendingImport = true; return; }
@@ -275,8 +293,40 @@ class Host {
       if (id.empty() || id.size() > 128 || !request.contains("method") || !request["method"].is_string() || !request.contains("args") || !request["args"].is_array() || request["args"].size() > 8) return;
       const std::string method = request["method"].get<std::string>();
       const json args = request["args"];
+      if (method == "setWindowTheme") {
+        if (args.size() != 1 || (args[0] != "dark" && args[0] != "light")) throw pwtools::ApiFailure("INVALID_INPUT", "窗口主题不正确。");
+        backgroundColor = args[0] == "light" ? RGB(243, 245, 250) : RGB(17, 23, 34);
+        // Paint only the exposed native frame; WebView2 paints its own surface.
+        RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_NOCHILDREN);
+        Post({{"id", id}, {"ok", true}, {"data", nullptr}});
+        return;
+      }
       if (method == "appInfo") {
-        Post({{"id", id}, {"ok", true}, {"data", {{"version", PWTOOLS_VERSION}, {"apiUrl", api->ApiUrl()}, {"persistentSession", api->PersistentSession()}, {"runtime", "webview2"}}}});
+        Post({{"id", id}, {"ok", true}, {"data", {{"version", PWTOOLS_VERSION}, {"apiUrl", api->ApiUrl()}, {"persistentSession", api->PersistentSession()}, {"runtime", "webview2"}, {"updatesSupported", true}}}});
+        return;
+      }
+      if (method == "getUpdateState" || method == "checkForUpdates" || method == "downloadUpdate") {
+        if (!args.empty()) throw pwtools::ApiFailure("INVALID_INPUT", "更新操作不接受额外参数。");
+        if (method == "checkForUpdates") updater->Check();
+        if (method == "downloadUpdate") updater->DownloadUpdate();
+        Post({{"id", id}, {"ok", true}, {"data", updater->State()}});
+        return;
+      }
+      if (installingUpdate) throw pwtools::ApiFailure("UPDATE_BUSY", "正在准备安装更新，请稍候。");
+      if (method == "installUpdate") {
+        if (!args.empty()) throw pwtools::ApiFailure("INVALID_INPUT", "更新安装不接受额外参数。");
+        if (requests->load() || (screenCapture && screenCapture->Active())) throw pwtools::ApiFailure("BUSY", "请等待当前保存或截图完成后再安装。");
+        installingUpdate = true;
+        try {
+          std::thread([target = window, module = updater, id] {
+            json response;
+            try { module->Install(); response = {{"id", id}, {"ok", true}, {"data", nullptr}}; }
+            catch (const pwtools::ApiFailure& error) { response = {{"id", id}, {"ok", false}, {"error", {{"code", error.code}, {"message", error.what()}}}}; }
+            catch (...) { response = {{"id", id}, {"ok", false}, {"error", {{"code", "UPDATE_INSTALL"}, {"message", "未能启动安装，请重新检查更新。"}}}}; }
+            auto reply = std::make_unique<std::string>(response.dump());
+            if (PostMessageW(target, UpdateInstallReplyMessage, 0, reinterpret_cast<LPARAM>(reply.get()))) reply.release();
+          }).detach();
+        } catch (...) { installingUpdate = false; throw; }
         return;
       }
       if (method == "windowControl") {
@@ -340,7 +390,9 @@ class Host {
         const int width = args[0].get<int>(), height = args[1].get<int>();
         if (width < 960 || height < 640 || width > 3840 || height > 2160) throw pwtools::ApiFailure("INVALID_INPUT", "窗口尺寸不正确。");
         const auto dpi = GetDpiForWindow(window);
-        SetWindowPos(window, nullptr, 0, 0, MulDiv(width, dpi, 96), MulDiv(height, dpi, 96), SWP_NOMOVE | SWP_NOZORDER);
+        // Test callers request the renderer viewport, excluding the resize frame.
+        const int frame = IsZoomed(window) ? 0 : 2 * ResizeBorder(window);
+        SetWindowPos(window, nullptr, 0, 0, MulDiv(width, dpi, 96) + frame, MulDiv(height, dpi, 96) + frame, SWP_NOMOVE | SWP_NOZORDER);
         Post({{"id", id}, {"ok", true}, {"data", nullptr}});
         return;
       }
@@ -384,7 +436,7 @@ class Host {
       settings4->put_IsPasswordAutosaveEnabled(FALSE);
     }
     ComPtr<ICoreWebView2Controller2> controller2;
-    if (SUCCEEDED(controller.As(&controller2))) controller2->put_DefaultBackgroundColor({255, 13, 22, 33});
+    if (SUCCEEDED(controller.As(&controller2))) controller2->put_DefaultBackgroundColor({255, 17, 23, 34});
     Check(controller->put_IsVisible(IsIconic(window) ? FALSE : TRUE));
     EventRegistrationToken registration{};
     Check(view->add_ProcessFailed(Callback<ICoreWebView2ProcessFailedEventHandler>([this](ICoreWebView2*, ICoreWebView2ProcessFailedEventArgs* args) -> HRESULT {
@@ -452,6 +504,8 @@ class Host {
     fs::create_directories(dataDir);
     const auto configuredApi = Environment(L"PWTOOLS_API_URL");
     api = std::make_shared<pwtools::ApiBridge>(configuredApi.empty() ? PWTOOLS_DEFAULT_API_URL : Utf8(configuredApi), dataDir);
+    updater = std::make_shared<pwtools::Updater>(api->ApiUrl(), PWTOOLS_VERSION, dataDir, ExecutableDirectory());
+    updater->Check();
     const auto dev = Environment(L"PWTOOLS_DEV_URL");
     if (!dev.empty()) {
       if (dev != L"http://localhost:5173" && dev != L"http://localhost:5173/" && dev != L"http://127.0.0.1:5173" && dev != L"http://127.0.0.1:5173/") throw std::runtime_error("invalid development URL");
@@ -497,11 +551,23 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
   if (!host) return DefWindowProcW(window, message, wParam, lParam);
   switch (message) {
     case WM_NCCALCSIZE: return 0;
+    case WM_NCACTIVATE:
+      // Keep native activation semantics without painting a system frame over
+      // the client-owned resize border (which otherwise leaves gray strips).
+      return DefWindowProcW(window, message, wParam, -1);
+    case WM_ERASEBKGND: {
+      RECT bounds{};
+      GetClientRect(window, &bounds);
+      const auto dc = reinterpret_cast<HDC>(wParam);
+      SetDCBrushColor(dc, host->backgroundColor);
+      FillRect(dc, &bounds, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+      return 1;
+    }
     case WM_NCHITTEST: {
       if (IsZoomed(window)) break;
       RECT bounds{};
       GetWindowRect(window, &bounds);
-      const int border = MulDiv(7, GetDpiForWindow(window), 96);
+      const int border = ResizeBorder(window);
       const int x = GET_X_LPARAM(lParam), y = GET_Y_LPARAM(lParam);
       const bool left = x < bounds.left + border, right = x >= bounds.right - border;
       const bool top = y < bounds.top + border, bottom = y >= bounds.bottom - border;
@@ -524,12 +590,14 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_DPICHANGED: {
       const RECT* bounds = reinterpret_cast<RECT*>(lParam);
       SetWindowPos(window, nullptr, bounds->left, bounds->top, bounds->right - bounds->left, bounds->bottom - bounds->top, SWP_NOZORDER | SWP_NOACTIVATE);
+      host->Resize();
       return 0;
     }
     case WM_GETMINMAXINFO: {
       auto* limits = reinterpret_cast<MINMAXINFO*>(lParam);
       const UINT dpi = GetDpiForWindow(window);
-      limits->ptMinTrackSize = {MulDiv(960, dpi, 96), MulDiv(640, dpi, 96)};
+      const int frame = 2 * ResizeBorder(window);
+      limits->ptMinTrackSize = {MulDiv(960, dpi, 96) + frame, MulDiv(640, dpi, 96) + frame};
       MONITORINFO monitor{sizeof(MONITORINFO)};
       if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor)) {
         // Small work areas must also fit at launch, even at a high DPI scale.
@@ -553,6 +621,14 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
       if (host->importHotkeyId && wParam == static_cast<WPARAM>(host->importHotkeyId)) host->ImportRequested();
       return 0;
     case ForceCloseMessage: host->forceClose = true; DestroyWindow(window); return 0;
+    case UpdateInstallReplyMessage: {
+      std::unique_ptr<std::string> reply(reinterpret_cast<std::string*>(lParam));
+      const auto response = json::parse(*reply);
+      host->Post(response);
+      if (response.value("ok", false)) PostMessageW(window, ForceCloseMessage, 0, 0);
+      else host->installingUpdate = false;
+      return 0;
+    }
     case ReplyMessage: {
       std::unique_ptr<std::string> reply(reinterpret_cast<std::string*>(lParam));
       if (host->view) host->view->PostWebMessageAsJson(Wide(*reply).c_str());
@@ -592,7 +668,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     registration.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     registration.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
     registration.hIconSm = registration.hIcon;
-    registration.hbrBackground = CreateSolidBrush(RGB(13, 22, 33));
+    registration.hbrBackground = CreateSolidBrush(RGB(17, 23, 34));
     registration.lpszClassName = WindowClass;
     Check(RegisterClassExW(&registration) ? S_OK : E_FAIL);
     Host host;

@@ -2,8 +2,10 @@ Unicode true
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !include "x64.nsh"
+!include "FileFunc.nsh"
+Var UpdateMode
 
-!define PRODUCT_VERSION "0.9.11"
+!define PRODUCT_VERSION "0.9.21"
 !define PAYLOAD_DIR "${__FILEDIR__}\..\release\native-win-x64"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\PWToolsNative"
 Name "PWTools"
@@ -15,7 +17,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
 BrandingText "PWTools"
-VIProductVersion "0.9.11.0"
+VIProductVersion "0.9.21.0"
 VIAddVersionKey /LANG=1033 "ProductName" "PWTools"
 VIAddVersionKey /LANG=1033 "FileDescription" "PWTools setup"
 VIAddVersionKey /LANG=1033 "FileVersion" "${PRODUCT_VERSION}"
@@ -36,10 +38,84 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "PWTools"
 !insertmacro MUI_LANGUAGE "SimpChinese"
 
 Function .onInit
+  StrCpy $UpdateMode 0
   ${IfNot} ${RunningX64}
     MessageBox MB_OK|MB_ICONSTOP "PWTools 需要 64 位 Windows 10 或更新版本。"
     SetErrorLevel 1
     Abort
+  ${EndIf}
+  ${GetParameters} $0
+  ClearErrors
+  ${GetOptions} $0 "/UPDATEPID=" $1
+  ${IfNot} ${Errors}
+    StrCmp $1 "" invalid_update
+    StrLen $2 $1
+    ${If} $2 > 10
+      Goto invalid_update
+    ${EndIf}
+    StrCpy $3 0
+    update_pid_digit:
+      StrCpy $4 $1 1 $3
+      StrCmp $4 "" update_pid_valid
+      StrCmp $4 "0" update_pid_next
+      StrCmp $4 "1" update_pid_next
+      StrCmp $4 "2" update_pid_next
+      StrCmp $4 "3" update_pid_next
+      StrCmp $4 "4" update_pid_next
+      StrCmp $4 "5" update_pid_next
+      StrCmp $4 "6" update_pid_next
+      StrCmp $4 "7" update_pid_next
+      StrCmp $4 "8" update_pid_next
+      StrCmp $4 "9" update_pid_next invalid_update
+    update_pid_next:
+      IntOp $3 $3 + 1
+      Goto update_pid_digit
+    update_pid_valid:
+    IntCmp $1 0 invalid_update invalid_update
+    StrCpy $UpdateMode 1
+    SetSilent silent
+    ; Wait only for the requesting process. Never terminate another instance.
+    System::Call 'kernel32::OpenProcess(i 0x100000, i 0, i r1) p.r2 ?e'
+    Pop $3
+    ${If} $2 != 0
+      System::Call 'kernel32::WaitForSingleObject(p r2, i 60000) i.r3'
+      System::Call 'kernel32::CloseHandle(p r2)'
+      ${If} $3 != 0
+        MessageBox MB_OK|MB_ICONEXCLAMATION "PWTools 尚未退出，请关闭后重新安装更新。"
+        SetErrorLevel 2
+        Abort
+      ${EndIf}
+    ${Else}
+      ${If} $3 != 87
+        Goto invalid_update
+      ${EndIf}
+    ${EndIf}
+    ; Refuse to overwrite an executable still held by another client profile.
+    IfFileExists "$INSTDIR\PWTools.exe" 0 invalid_update
+    System::Call 'kernel32::CreateFileW(w "$INSTDIR\PWTools.exe", i 0xC0000000, i 1, p 0, i 3, i 0, p 0) p.r2'
+    ${If} $2 == -1
+      MessageBox MB_OK|MB_ICONEXCLAMATION "还有 PWTools 窗口正在运行，请全部关闭后重新运行安装包。"
+      SetErrorLevel 2
+      Abort
+    ${EndIf}
+    System::Call 'kernel32::CloseHandle(p r2)'
+  ${EndIf}
+  Return
+  invalid_update:
+    MessageBox MB_OK|MB_ICONSTOP "更新启动参数无效，请从 PWTools 内重新检查更新。"
+    SetErrorLevel 2
+    Abort
+FunctionEnd
+
+Function .onInstSuccess
+  ${If} $UpdateMode == 1
+    Exec '"$INSTDIR\PWTools.exe"'
+  ${EndIf}
+FunctionEnd
+
+Function .onInstFailed
+  ${If} $UpdateMode == 1
+    MessageBox MB_OK|MB_ICONEXCLAMATION "更新未能安装完成。请重新运行下载的安装包；原有账户与账本数据不会被删除。"
   ${EndIf}
 FunctionEnd
 
@@ -61,9 +137,17 @@ Section "PWTools" SEC_MAIN
     ${EndIf}
   SetOutPath "$INSTDIR"
   File "${PAYLOAD_DIR}\PWTools.exe"
+  RMDir /r "$INSTDIR\renderer"
   SetOutPath "$INSTDIR\renderer"
   File /r "${PAYLOAD_DIR}\renderer\*"
+  SetOutPath "$INSTDIR\ocr"
+  ; Remove the embedded Python payload when upgrading from 0.9.12.
+  RMDir /r "$INSTDIR\ocr"
+  CreateDirectory "$INSTDIR\ocr"
+  File /r "${PAYLOAD_DIR}\ocr\*"
   SetOutPath "$INSTDIR\licenses"
+  Delete "$INSTDIR\licenses\Python-LICENSE.txt"
+  Delete "$INSTDIR\licenses\OCR-THIRD-PARTY-NOTICES.txt"
   File /r "${PAYLOAD_DIR}\licenses\*"
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\Uninstall-PWTools.exe"
@@ -90,6 +174,7 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\PWTools"
   Delete "$INSTDIR\PWTools.exe"
   RMDir /r "$INSTDIR\renderer"
+  RMDir /r "$INSTDIR\ocr"
   RMDir /r "$INSTDIR\licenses"
   Delete "$INSTDIR\Uninstall-PWTools.exe"
   RMDir "$INSTDIR"

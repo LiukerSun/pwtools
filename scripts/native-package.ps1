@@ -18,7 +18,12 @@ try {
   $makeNsis = Find-MakeNsis
   Invoke-Checked $makeNsis @('/INPUTCHARSET', 'UTF8', (Join-Path $script:NativeRoot 'installer.nsi'))
   $desktopVersion = (Get-Content -LiteralPath (Join-Path $script:DesktopRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
-  Write-Host "Installer: $(Join-Path $script:DesktopRoot "release/PWTools-Setup-$desktopVersion.exe")"
+  $taskInstaller = Join-Path $script:DesktopRoot "release/PWTools-Setup-$desktopVersion.exe"
+  $taskChecksum = (Get-Sha256 $taskInstaller) + '  ' + [IO.Path]::GetFileName($taskInstaller) + "`n"
+  [IO.File]::WriteAllText($taskInstaller + '.sha256', $taskChecksum, [Text.UTF8Encoding]::new($false))
+  Invoke-Checked 'node.exe' @((Join-Path $PSScriptRoot 'native-update-manifest.mjs'))
+  Write-Host "Installer: $taskInstaller"
+  Write-Host "SHA-256: $taskInstaller.sha256"
 } finally {
   if ($null -eq $taskPreviousApiUrl) {
     [Environment]::SetEnvironmentVariable('PWTOOLS_API_URL', [NullString]::Value, 'Process')

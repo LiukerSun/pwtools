@@ -70,6 +70,10 @@ public:
   }
   const std::string& Url() const { return url_; }
   Request Last() { std::lock_guard lock(mutex_); return last_; }
+  Request Upload() { std::lock_guard lock(mutex_); return upload_; }
+  unsigned LocalWrites() const { return local_writes_.load(); }
+  void CompletedDuplicateNext() { duplicate_.store(true); }
+  void RejectLocalNext() { reject_local_.store(true); }
   int Failures() const { return failures_.load(); }
   void HoldMe() { std::lock_guard lock(mutex_); hold_me_ = true; held_ = released_ = false; }
   void WaitForHeldMe() {
@@ -84,8 +88,10 @@ private:
   std::string url_, current_token_, current_email_;
   std::atomic<bool> stopped_{false}, redirect_{false}, error_{false};
   std::atomic<int> failures_{0};
+  std::atomic<unsigned> local_writes_{0};
+  std::atomic<bool> duplicate_{false}, reject_local_{false};
   std::thread accept_; std::vector<std::thread> workers_;
-  std::mutex mutex_; std::condition_variable changed_; Request last_;
+  std::mutex mutex_; std::condition_variable changed_; Request last_, upload_;
   bool hold_me_ = false, held_ = false, released_ = false;
   unsigned login_number_ = 0;
 
@@ -150,6 +156,25 @@ private:
       Send(client, 204, ""); return;
     }
     if (request.path.ends_with("/image")) { Send(client, 200, std::string("\1\2\3", 3), "image/png"); return; }
+    if (request.path == "/api/matches/local") {
+      { std::lock_guard lock(mutex_); upload_ = request; }
+      const auto duplicate = duplicate_.exchange(false);
+      Send(client, duplicate ? 200 : 201, Json{{"duplicate", duplicate}, {"record", {
+        {"id", id}, {"ocr_status", duplicate ? "completed" : "failed"}, {"amount", nullptr}, {"warnings", Json::array()}
+      }}}.dump()); return;
+    }
+    if (request.path.ends_with("/local-recognition")) {
+      ++local_writes_;
+      if (reject_local_.exchange(false)) {
+        Send(client, 503, Json{{"error", {{"code", "UNAVAILABLE"}, {"message", "保存暂时不可用"}}}}.dump()); return;
+      }
+      const auto payload = Json::parse(request.body);
+      Check(payload.at("image_sha256") == "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81", "local result is not bound to original bytes");
+      const auto failed = payload.at("recognition").is_null();
+      Send(client, 200, Json{{"id", id}, {"ocr_status", failed ? "failed" : "completed"},
+                            {"warnings", Json::array()}, {"amount", nullptr}}.dump()); return;
+    }
+    Check(!request.path.ends_with("/recognize"), "desktop must not invoke server OCR");
     if (request.method == "DELETE") { Send(client, 204, ""); return; }
     Send(client, 200, Json{{"method", request.method}, {"path", request.path}}.dump());
   }
@@ -157,7 +182,12 @@ private:
 
 void Run(const std::filesystem::path& directory) {
   Fixture fixture;
-  ApiBridge bridge(fixture.Url() + "/", directory);
+  bool fail_local = false;
+  ApiBridge bridge(fixture.Url() + "/", directory, [&](const std::vector<unsigned char>& bytes, const std::string& mime) {
+    Check(bytes == std::vector<unsigned char>({1, 2, 3}) && mime == "image/png", "local OCR image bytes changed");
+    if (fail_local) throw ApiFailure("LOCAL_OCR_UNAVAILABLE", "fixture model unavailable");
+    return Json{{"outcome", "unknown"}, {"players", Json::array()}, {"raw_text", "本地识别"}, {"warnings", Json::array()}};
+  });
   Check(bridge.ApiUrl() == fixture.Url(), "API URL normalization failed");
   Check(bridge.PersistentSession(), "DPAPI availability check failed");
   for (const auto url : {"http://example.com/api", "https://name:password@example.com/api", "https://example.com/api?x=1", "https://example.com/api#fragment", "file:///api"}) Reject([&] { ApiBridge rejected(url, directory); }, "INVALID_CONFIG");
@@ -207,7 +237,7 @@ void Run(const std::filesystem::path& directory) {
     {"updateMatchSettings", Json::array({Json{{"boss_id", "legacy-game-id"}, {"boss_player_name", "小桃知晚"}}}), "PATCH", "/api/matches/settings"},
     {"getMatch", Json::array({id}), "GET", "/api/matches/" + id},
     {"updateMatch", Json::array({id, match}), "PATCH", "/api/matches/" + id},
-    {"recognizeMatch", Json::array({id}), "POST", "/api/matches/" + id + "/recognize"},
+    {"recognizeMatch", Json::array({id}), "POST", "/api/matches/" + id + "/local-recognition"},
     {"deleteMatch", Json::array({id}), "DELETE", "/api/matches/" + id},
     {"listBosses", Json::array({"老板"}), "GET", "/api/bosses?q=%E8%80%81%E6%9D%BF"},
     {"getBoss", Json::array({id}), "GET", "/api/bosses/" + id},
@@ -230,10 +260,22 @@ void Run(const std::filesystem::path& directory) {
     const auto request = fixture.Last(); Check(request.method == item.verb && request.path == item.path, "HTTP method or route mapping mismatch");
   }
   bridge.Execute("uploadMatch", Json::array({Json{{"name", "截图.png"}, {"content_type", "image/png"}, {"data_base64", "AQID"}, {"order_id", id}}}));
-  const auto upload = fixture.Last();
+  const auto upload = fixture.Upload();
+  Check(upload.path == "/api/matches/local", "desktop upload used server OCR route");
   Check(upload.body == std::string("\1\2\3", 3) && upload.headers.at("x-order-id") == id && upload.headers.at("x-file-name") == "%E6%88%AA%E5%9B%BE.png", "upload metadata or bytes changed");
   const auto image = bridge.Execute("matchImage", Json::array({id}));
   Check(image["content_type"] == "image/png" && image["data_base64"] == "AQID", "image bytes did not roundtrip");
+  const auto upload_args = Json::array({Json{{"name", "截图.png"}, {"content_type", "image/png"}, {"data_base64", "AQID"}}});
+  fail_local = true;
+  Check(bridge.Execute("uploadMatch", upload_args)["record"]["ocr_status"] == "failed", "model failure must retain the saved draft");
+  fail_local = false;
+  fixture.CompletedDuplicateNext();
+  const auto writes = fixture.LocalWrites();
+  Check(bridge.Execute("uploadMatch", upload_args)["duplicate"] == true && fixture.LocalWrites() == writes,
+        "completed duplicate must retain existing results");
+  fixture.RejectLocalNext();
+  const auto pending = bridge.Execute("uploadMatch", upload_args);
+  Check(pending["record"]["id"] == id && !pending["record"]["warnings"].empty(), "sync failure lost the saved original");
 
   Reject([&] { bridge.Execute("getMatch", Json::array({"../me"})); }, "INVALID_INPUT");
   Reject([&] { bridge.Execute("listMatches", Json::parse("[0,20]")); }, "INVALID_INPUT");

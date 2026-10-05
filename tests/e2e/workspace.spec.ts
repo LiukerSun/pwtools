@@ -24,7 +24,8 @@ test('私人账本只保留基础账户，登录、外观、侧栏与退出正�
   expect((await request.patch('http://localhost:8080/api/me', { headers, data: { bio: 'removed' } })).status()).toBe(405);
   await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
   const navigation = page.getByRole('navigation', { name: '主导航' });
-  await expect(navigation.getByRole('button')).toHaveCount(2);
+  await expect(navigation.getByRole('button')).toHaveCount(3);
+  await expect(navigation.getByRole('button', { name: '哈夫币汇率', exact: true })).toBeVisible();
   for (const name of ['工具箱', '个人资料', '快速切换', '搜索页面与工具', '战绩记录']) {
     await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0);
   }

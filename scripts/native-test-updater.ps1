@@ -1,0 +1,5 @@
+. (Join-Path $PSScriptRoot 'native-common.ps1')
+$taskBuildRoot = Assert-WorkspacePath (Join-Path $script:NativeRoot '.build')
+Invoke-Checked 'cmake.exe' @('-S', $script:NativeRoot, '-B', $taskBuildRoot, '-G', 'Visual Studio 17 2022', '-A', 'x64')
+Invoke-Checked 'cmake.exe' @('--build', $taskBuildRoot, '--config', 'Release', '--target', 'updater_test', '--parallel')
+Invoke-Checked 'ctest.exe' @('--test-dir', $taskBuildRoot, '-C', 'Release', '--output-on-failure', '-R', '^updater_fixtures$')

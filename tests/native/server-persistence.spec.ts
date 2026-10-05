@@ -116,7 +116,8 @@ test('真实原生桥在独立进程及全新客户端目录间同步账号、�
     await expect(settings.locator('.settings-version')).toHaveText(`PWTools v${expectedVersion}`);
     await expect(settings.getByRole('heading', { name: '连接', exact: true })).toHaveCount(0);
     await expect(settings.getByText('连接信息', { exact: true })).toHaveCount(0);
-    await expect(settings.getByRole('button', { name: /重试|检查连接/ })).toHaveCount(0);
+    await expect(settings.getByRole('button', { name: /^(?:重试|重试连接|检查连接)$/ })).toHaveCount(0);
+    await expect(settings.getByRole('region', { name: '版本更新', exact: true })).toBeVisible();
     await expect(settings.locator('.service-address, .connection-details')).toHaveCount(0);
     await expect(settings).not.toContainText(apiUrl);
     await settings.locator('label').filter({ hasText: '浅色' }).click();

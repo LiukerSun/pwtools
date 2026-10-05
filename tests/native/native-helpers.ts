@@ -15,6 +15,8 @@ export interface NativeWindowState {
   iconic: boolean; visible: boolean; maximized: boolean; toolWindow: boolean; appWindow: boolean; owner: number;
   restoreToMaximized: boolean; showCommand: number;
   trayIconRegistered: boolean;
+  frameRgb: number[];
+  frameTopRgb: number[];
   patternWindowRgb?: number[]; patternDesktopRgb?: number[]; patternCloaked?: number; topMost?: boolean;
 }
 
@@ -79,6 +81,7 @@ export class NativeApplication {
   async requestNativeClose(): Promise<void> { await nativeCommand(this.page, 'test:request-close', []); }
   async setSize(width: number, height: number): Promise<void> { await nativeCommand(this.page, 'test:window-size', [width, height]); }
   async windowState(): Promise<NativeWindowState> { return inspectCapturedWindow(this.process, 'inspect'); }
+  async notifyFrameActivation(active: boolean): Promise<NativeWindowState> { return inspectCapturedWindow(this.process, active ? 'frame-active' : 'frame-inactive'); }
   async restoreWindow(): Promise<void> { await inspectCapturedWindow(this.process, 'restore'); }
   async requestExplicitExit(): Promise<void> { await inspectCapturedWindow(this.process, 'explicit-exit'); }
   async sendRegisteredHotkey(shortcut: ImportHotkey): Promise<void> { await sendCapturedHotkey(this.process, shortcut); }
@@ -125,7 +128,7 @@ export class NativeApplication {
   }
 }
 
-async function inspectCapturedWindow(child: ChildProcess, action: 'inspect' | 'restore' | 'explicit-exit' | 'hotkey-notification' | 'present-pattern', shortcut?: ImportHotkey, patternWindow = false): Promise<NativeWindowState> {
+async function inspectCapturedWindow(child: ChildProcess, action: 'inspect' | 'restore' | 'explicit-exit' | 'hotkey-notification' | 'present-pattern' | 'frame-active' | 'frame-inactive', shortcut?: ImportHotkey, patternWindow = false): Promise<NativeWindowState> {
   if (process.platform !== 'win32' || !child.pid || child.exitCode !== null) throw new Error('测试原生窗口进程不存在');
   // Enumerate only the captured child PID and expected application class. Never
   // inspect, restore, or close a normal user profile or another application's HWND.
@@ -155,6 +158,7 @@ public static class PWToolsCapturedWindow {
   [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out UIntPtr result);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
   [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr window, IntPtr rect, IntPtr region, uint flags);
   [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr window);
@@ -180,6 +184,9 @@ $targetProcess = [uint32]${child.pid}
   return $true
 }, [IntPtr]::Zero) | Out-Null
 if ($script:capturedWindow -eq [IntPtr]::Zero) { throw 'Captured application window not found' }
+${action === 'frame-active' || action === 'frame-inactive' ? `$activationResult = [UIntPtr]::Zero
+if ([PWToolsCapturedWindow]::SendMessageTimeout($script:capturedWindow, 0x86, [UIntPtr]::new(${action === 'frame-active' ? 1 : 0}), [IntPtr]::Zero, 2, 2000, [ref]$activationResult) -eq [IntPtr]::Zero) { throw 'Captured window activation notification failed' }
+[void][PWToolsCapturedWindow]::DwmFlush()` : ''}
 ${action === 'present-pattern' && patternWindow ? "if (-not [PWToolsCapturedWindow]::SetWindowPos($script:capturedWindow, [IntPtr]::new(-1), 0, 0, 0, 0, 0x43)) { throw 'Owned pattern presentation failed' }; [void][PWToolsCapturedWindow]::RedrawWindow($script:capturedWindow, [IntPtr]::Zero, [IntPtr]::Zero, 0x105)" : ''}
 ${action === 'restore' ? "if (-not [PWToolsCapturedWindow]::PostMessage($script:capturedWindow, 0x112, [UIntPtr]::new(0xF120), [IntPtr]::Zero)) { throw 'Captured taskbar restore command failed' }" : ''}
 ${action === 'hotkey-notification' ? `[void][PWToolsCapturedWindow]::PostMessage($script:capturedWindow, 0x312, [UIntPtr]::new(0x7001), [IntPtr]::new(${((0x70 + Number(shortcut!.code.slice(1)) - 1) << 16) | 7}))
@@ -192,6 +199,12 @@ $trayBounds = [PWToolsCapturedWindow+Rect]::new()
 $trayRegistered = [PWToolsCapturedWindow]::Shell_NotifyIconGetRect([ref]$trayIdentifier, [ref]$trayBounds) -eq 0
 $bounds = [PWToolsCapturedWindow+Rect]::new()
 if (-not [PWToolsCapturedWindow]::GetWindowRect($script:capturedWindow, [ref]$bounds)) { throw 'Window bounds unavailable' }
+$frameDc = [PWToolsCapturedWindow]::GetDC($script:capturedWindow)
+try {
+  $frameColor = [PWToolsCapturedWindow]::GetPixel($frameDc, 2, [int](($bounds.Bottom - $bounds.Top) / 2))
+  $frameTopColor = [PWToolsCapturedWindow]::GetPixel($frameDc, [int](($bounds.Right - $bounds.Left) / 2), 2)
+}
+finally { [void][PWToolsCapturedWindow]::ReleaseDC($script:capturedWindow, $frameDc) }
 $monitor = [PWToolsCapturedWindow+MonitorInfo]::new()
 $monitor.Size = [System.Runtime.InteropServices.Marshal]::SizeOf($monitor)
 if (-not [PWToolsCapturedWindow]::GetMonitorInfo([PWToolsCapturedWindow]::MonitorFromWindow($script:capturedWindow, 2), [ref]$monitor)) { throw 'Monitor bounds unavailable' }
@@ -207,6 +220,8 @@ $result = [ordered]@{
   restoreToMaximized = ($placement.Flags -band 2) -ne 0; showCommand = $placement.ShowCommand
   toolWindow = ($extendedStyle -band 0x80) -ne 0; appWindow = ($extendedStyle -band 0x40000) -ne 0; owner = [PWToolsCapturedWindow]::GetWindow($script:capturedWindow, 4).ToInt64()
   trayIconRegistered = $trayRegistered
+  frameRgb = @([int]($frameColor -band 255), [int](($frameColor -shr 8) -band 255), [int](($frameColor -shr 16) -band 255))
+  frameTopRgb = @([int]($frameTopColor -band 255), [int](($frameTopColor -shr 8) -band 255), [int](($frameTopColor -shr 16) -band 255))
   topMost = ($extendedStyle -band 8) -ne 0
 }
 ${patternWindow ? `[void][PWToolsCapturedWindow]::DwmFlush()

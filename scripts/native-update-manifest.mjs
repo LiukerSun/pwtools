@@ -1,0 +1,22 @@
+import { createHash } from 'node:crypto';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const desktop = resolve(root, 'apps/desktop');
+const { version } = JSON.parse(await readFile(resolve(desktop, 'package.json'), 'utf8'));
+const release = JSON.parse(await readFile(resolve(desktop, 'release-notes.json'), 'utf8'));
+if (!/^(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})$/.test(version) || version.split('.').some(value => Number(value) > 65535)) throw new Error('Release version must be a stable major.minor.patch version');
+if (release.version !== version || typeof release.notes !== 'string' || !release.notes.trim() || Buffer.byteLength(release.notes) > 6000) throw new Error('Update apps/desktop/release-notes.json for this release before packaging');
+const name = `PWTools-Setup-${version}.exe`;
+const installer = await readFile(resolve(desktop, 'release', name));
+if (installer.length < 2 || installer.length > 256 * 1024 * 1024 || installer.subarray(0, 2).toString() !== 'MZ') throw new Error('Invalid installer payload');
+const sha256 = createHash('sha256').update(installer).digest('hex');
+const checksum = (await readFile(resolve(desktop, 'release', `${name}.sha256`), 'utf8')).trim().split(/\s+/);
+if (checksum[0].toLowerCase() !== sha256 || checksum[1] !== name) throw new Error('Installer checksum does not match');
+const manifest = { schema_version: 1, platform: 'windows-x64', version, published_at: new Date().toISOString(), notes: release.notes.trim(), size: installer.length, sha256 };
+const output = resolve(desktop, 'release', 'updates', 'windows-x64');
+await mkdir(output, { recursive: true });
+await writeFile(resolve(output, 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+console.log(`Update manifest: ${resolve(output, 'latest.json')}`);

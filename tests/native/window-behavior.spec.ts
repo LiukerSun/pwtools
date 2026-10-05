@@ -229,6 +229,8 @@ async function startWindowFixture() {
     void (async () => {
       const path = new URL(request.url || '/', 'http://127.0.0.1').pathname;
       if (request.method === 'GET' && path === '/api/health') { respond(response, 200, { status: 'ok', database: 'connected' }); return; }
+      // This isolated fixture intentionally offers no update; window guards must still work.
+      if (request.method === 'GET' && path === '/api/updates/windows-x64/latest.json') { respond(response, 404, { error: { code: 'UPDATE_NOT_AVAILABLE', message: '测试环境无更新。' } }); return; }
       if (request.method === 'POST' && path === '/api/auth/login') { request.resume(); respond(response, 200, { token: 'isolated-window-test-session', user }); return; }
       if (request.method === 'GET' && path === '/api/me') { respond(response, 200, user); return; }
       if (request.method === 'GET' && path === '/api/bosses') { respond(response, 200, { items: bosses }); return; }

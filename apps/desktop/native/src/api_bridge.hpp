@@ -1,10 +1,12 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 #include <nlohmann/json.hpp>
 
 namespace pwtools {
@@ -20,7 +22,8 @@ public:
 // Images cross the host seam as base64; the bearer token never leaves this module.
 class ApiBridge {
 public:
-  ApiBridge(std::string api_url, std::filesystem::path data_directory);
+  using LocalRecognizer = std::function<nlohmann::json(const std::vector<unsigned char>&, const std::string&)>;
+  ApiBridge(std::string api_url, std::filesystem::path data_directory, LocalRecognizer recognizer = {});
   ~ApiBridge();
   ApiBridge(const ApiBridge&) = delete;
   ApiBridge& operator=(const ApiBridge&) = delete;

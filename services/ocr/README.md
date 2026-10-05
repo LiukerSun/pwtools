@@ -1,4 +1,12 @@
-# 三角洲战绩本地 OCR
+# 三角洲战绩 OCR
+
+Windows 桌面版从 0.9.13 起使用原生 C++ 在用户电脑上识别：`apps/desktop/native/src/local_ocr.cpp` 用 Windows WIC 在内存中解码图片，调用 ONNX Runtime C++ API，`scoreboard.cpp` 解析战绩表。客户端构建及运行均不需要 Python、NumPy、OpenCV 或系统 OCR 语言包。模型和原生推理 DLL 由 `scripts/native-ocr-prepare.ps1` 从校验过 SHA-256 的官方发行物提取到 `ocr/` 目录，只分发所需的三个模型与五个 DLL。模型按需加载，识别结束释放；没有后台模型进程、HTTP 端口或原图临时文件。每台电脑独立处理，不进入服务端推理队列。
+
+导入时本地识别与原图保存并行，随后向 API 提交绑定原图 SHA-256 的结果。重新识别从需登录的原图端点读取图片，再在本机推理。模型异常或超时后释放任务，已保存原图与人工校对仍保留。桌面端一次调用含排队、解码、加载和推理的总预算为 45 秒，超时会请求中断推理；模型加载及图片解码本身为同步操作。仅用两个 CPU 线程，禁用空闲自旋与推理内存池，检测长边最多 1600 像素，文字裁片来自长边最多 2000 像素的图片。原图上传和结果保存仍需要连接服务端。`native/tests/local_ocr_test.cpp` 是无窗口的原生样例检查；设置 `PWTOOLS_OCR_SAMPLE` 可启用真实截图验证。
+
+C++ 标准库没有 OCR。Windows 自带的 `Windows.Media.Ocr` [官方支持要求应用拥有 MSIX 包身份](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr)，当前客户端使用 Win32 / NSIS，因此选择独立原生推理库，避免依赖系统语言包和变更安装方式。模型与服务端相同，使用 [ONNX Runtime 官方 C++ 接口](https://onnxruntime.ai/docs/get-started/with-cpp.html)。
+
+以下 HTTP 服务继续支持浏览器预览与旧客户端。
 
 内部 Python 3.12 HTTP 服务，采用 RapidOCR 3.9.2 的 PP-OCRv6 small 检测/识别模型和 ONNX Runtime 1.23.2 CPU 推理。模型包含在 RapidOCR wheel 中，构建镜像时检查并初始化；运行时显式使用本地模型路径，不依赖首个请求下载，不调用云端 OCR。
 

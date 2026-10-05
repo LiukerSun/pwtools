@@ -7,7 +7,7 @@ test('订单内识别重试失败、关闭保护、草稿恢复及删除失败�
   const ledger = await openLedger(page);
   const navigation = page.getByRole('navigation');
   await expect(navigation.getByRole('button', { name: '战绩记录', exact: true })).toHaveCount(0);
-  await expect(navigation.getByRole('button')).toHaveCount(2);
+  await expect(navigation.getByRole('button')).toHaveCount(3);
   const boss = await ledger.post<Boss>('/bosses', {
     display_name: '校对测试老板', game_id: 'review-boss', game_name: '校对测试老板', notes: '订单内核对截图。',
   });

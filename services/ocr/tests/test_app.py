@@ -35,7 +35,8 @@ def test_health_body_validation_and_unknown_response():
 
 def test_pixel_limit_is_checked_before_decompression(monkeypatch):
     import app
-    monkeypatch.setattr(app, "MAX_PIXELS", 100)
+    import image_input
+    monkeypatch.setattr(image_input, "MAX_PIXELS", 100)
     with TestClient(create_app(lambda: object(), fake_recognition)) as client:
         assert client.post("/recognize", content=png(), headers={"Content-Type": "image/png"}).status_code == 413
 

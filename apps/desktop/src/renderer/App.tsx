@@ -2,13 +2,16 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from 're
 import { Alert, Button, createTheme, InputWrapper, Loader, MantineProvider, Menu, Modal, PasswordInput, SegmentedControl, Select, Switch, Textarea, TextInput, Tooltip } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { Notifications, notifications } from '@mantine/notifications';
-import { BookOpen, ChevronDown, LogOut, Mail, Maximize2, Minus, Moon, PanelLeftClose, PanelLeftOpen, Settings2, Sun, X } from 'lucide-react';
+import { BookOpen, Calculator, ChevronDown, ChevronRight, Gamepad2, LogOut, Mail, Maximize2, Minus, Moon, PanelLeftClose, PanelLeftOpen, Settings2, Sun, X } from 'lucide-react';
 import type { AppInfo, ImportHotkey, MatchUploadInput, User } from '../shared/contracts';
 import { api, errorInfo, isDesktop, isSessionError } from './api';
 import BossLedger from './BossLedger';
+import HafuRateCalculator from './HafuRateCalculator';
+import { emptyHafuRateInput, type HafuRateInput } from './hafuRate';
+import { StartupUpdatePrompt, UpdateNotice, UpdateSettings, useAppUpdates, type AppUpdates } from './AppUpdates';
 import ImportShortcut, { initialImportHotkey, storeImportHotkey } from './ImportShortcut';
 
-type PageId = 'dashboard' | 'settings';
+type PageId = 'dashboard' | 'hafu-rate' | 'settings';
 type ThemeMode = 'dark' | 'light';
 type Connection = 'checking' | 'connected' | 'failed';
 // Keep the stored 'minimize' value compatible with earlier installations.
@@ -16,7 +19,7 @@ type CloseBehavior = 'minimize' | 'exit';
 
 const uiTheme = createTheme({
   primaryColor: 'indigo',
-  colors: { indigo: ['#EDF9FE', '#D6EFF9', '#B6E3F3', '#96D7EF', '#7ACDEB', '#52B1D2', '#308EAD', '#226E89', '#20586B', '#174354'] },
+  colors: { indigo: ['#eef2ff', '#dfe7ff', '#c4d2ff', '#a8beff', '#91adff', '#7494ef', '#5674d5', '#405ec0', '#354fa4', '#2b428c'] },
   primaryShade: { light: 7, dark: 4 },
   fontFamily: '"Segoe UI Variable", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
   headings: { fontWeight: '650' },
@@ -30,12 +33,14 @@ const uiTheme = createTheme({
     PasswordInput: PasswordInput.extend({ defaultProps: { size: 'md' } }),
     Textarea: Textarea.extend({ defaultProps: { size: 'md' } }),
     Select: Select.extend({ defaultProps: { size: 'md' } }),
+    Modal: Modal.extend({ defaultProps: { closeButtonProps: { 'aria-label': '关闭弹窗' } } }),
   },
 });
 
 const pages = [
-  { id: 'dashboard' as const, label: '老板账本', icon: BookOpen },
-  { id: 'settings' as const, label: '设置', icon: Settings2 },
+  { id: 'dashboard' as const, label: '老板账本', icon: BookOpen, description: '记住每位老板，跟进每一笔约定。' },
+  { id: 'hafu-rate' as const, label: '哈夫币汇率', icon: Calculator, description: '按订单价格、保底与抽成，算清每 1000W 的到手金额。' },
+  { id: 'settings' as const, label: '设置', icon: Settings2, description: '让工作台更符合你的习惯。' },
 ];
 
 function initialTheme(): ThemeMode {
@@ -62,6 +67,8 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [restoring, setRestoring] = useState(true);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  const updates = useAppUpdates(appInfo);
+  const [loginUpdatesOpened, setLoginUpdatesOpened] = useState(false);
   const [connection, setConnection] = useState<Connection>('checking');
   const [restoreError, setRestoreError] = useState('');
   const [importHotkey, setImportHotkey] = useState<ImportHotkey | null>(initialImportHotkey);
@@ -157,6 +164,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    void api.setWindowTheme?.(theme).catch(() => {});
     try { localStorage.setItem('pwtools:theme', theme); } catch { /* The selected theme still applies for this session. */ }
   }, [theme]);
 
@@ -187,6 +195,7 @@ export default function App() {
   }, []);
 
   const authenticated = (currentUser: User) => {
+    setLoginUpdatesOpened(false);
     setUser(currentUser);
     setRestoreError('');
     void checkConnection();
@@ -196,25 +205,26 @@ export default function App() {
     <Notifications position="top-right" autoClose={2400} limit={2} containerWidth={360} />
     <div className="app-root">
       <TitleBar onClose={requestWindowClose} onExit={requestWindowExit} />
-      {restoring ? <div className="restore-screen"><BrandMark /><Loader size="sm" /></div> : user ? <Workspace key={user.id} user={user} onSignedOut={() => setUser(null)} onError={handleError} theme={theme} onThemeChange={setTheme} appInfo={appInfo} onCloseHandlerChange={registerWindowClose} closeBehavior={closeBehavior ?? 'minimize'} onCloseBehaviorChange={updateCloseBehavior} importRequest={importRequest > importHandledRef.current ? importRequest : 0} onImportHandled={reportImportHandled} importHotkey={importHotkey} hotkeyError={hotkeyError} hotkeyBusy={hotkeyBusy} onImportHotkeyChange={updateImportHotkey} onHotkeyEditingChange={reportHotkeyEditing} /> : <AuthScreen onAuthenticated={authenticated} connection={connection} restoreError={restoreError} />}
+      {restoring ? <div className="restore-screen"><BrandMark /><Loader size="sm" /></div> : user ? <Workspace key={user.id} user={user} onSignedOut={() => setUser(null)} onError={handleError} theme={theme} onThemeChange={setTheme} appInfo={appInfo} updates={updates} onCloseHandlerChange={registerWindowClose} closeBehavior={closeBehavior ?? 'minimize'} onCloseBehaviorChange={updateCloseBehavior} importRequest={importRequest > importHandledRef.current ? importRequest : 0} onImportHandled={reportImportHandled} importHotkey={importHotkey} hotkeyError={hotkeyError} hotkeyBusy={hotkeyBusy} onImportHotkeyChange={updateImportHotkey} onHotkeyEditingChange={reportHotkeyEditing} /> : <AuthScreen updates={updates} onOpenUpdates={() => setLoginUpdatesOpened(true)} onAuthenticated={authenticated} connection={connection} restoreError={restoreError} />}
     </div>
     {isDesktop && <Modal classNames={{ content: 'window-close-modal' }} opened={closeDialogOpened} onClose={() => setCloseDialogOpened(false)} title="关闭窗口" centered size="sm" zIndex={450}>
       <p>最小化后继续在后台运行，保留任务栏图标。点击任务栏图标恢复窗口。可在设置中更改关闭方式。</p>
       <div className="window-close-actions"><Button variant="default" onClick={() => chooseCloseBehavior('exit')}>退出应用</Button><Button onClick={() => chooseCloseBehavior('minimize')}>最小化到任务栏</Button></div>
     </Modal>}
+    <Modal className="login-update-modal" title="软件更新" opened={!user && loginUpdatesOpened} onClose={() => !updates.installing && setLoginUpdatesOpened(false)} centered withCloseButton={!updates.installing} closeOnEscape={!updates.installing} closeOnClickOutside={!updates.installing}><UpdateSettings updates={updates} onInstall={() => void updates.install()} /></Modal>
   </MantineProvider>;
 }
 
 function BrandMark({ small = false }: { small?: boolean }) {
-  return <span className={`brand-mark ${small ? 'small' : ''}`}><BookOpen size={small ? 19 : 25} strokeWidth={1.8} /></span>;
+  return <span className={`brand-mark ${small ? 'small' : ''}`} aria-hidden="true"><Gamepad2 size={small ? 22 : 28} strokeWidth={1.8} /></span>;
 }
 
 function TitleBar({ onClose, onExit }: { onClose: () => void; onExit: () => void }) {
   return <div className="titlebar">
     {isDesktop ? <Menu position="bottom-start" shadow="md" width={164} offset={7}>
-      <Menu.Target><button className="titlebar-brand titlebar-menu-button" aria-label="应用菜单"><BookOpen size={14} /><span>PWTools</span><ChevronDown className="titlebar-menu-chevron" size={12} /></button></Menu.Target>
+      <Menu.Target><button className="titlebar-brand titlebar-menu-button" aria-label="应用菜单"><Gamepad2 size={16} /><span>PWTools</span><ChevronDown className="titlebar-menu-chevron" size={12} /></button></Menu.Target>
       <Menu.Dropdown><Menu.Item color="red" leftSection={<LogOut size={15} />} onClick={onExit}>退出应用</Menu.Item></Menu.Dropdown>
-    </Menu> : <div className="titlebar-brand"><BookOpen size={14} /><span>PWTools</span></div>}
+    </Menu> : <div className="titlebar-brand"><Gamepad2 size={16} /><span>PWTools</span></div>}
     {isDesktop ? <div className="window-controls">
       <button aria-label="最小化窗口" onClick={() => void api.windowControl('minimize')}><Minus size={15} /></button>
       <button aria-label="最大化或还原窗口" onClick={() => void api.windowControl('maximize')}><Maximize2 size={13} /></button>
@@ -223,9 +233,9 @@ function TitleBar({ onClose, onExit }: { onClose: () => void; onExit: () => void
   </div>;
 }
 
-interface AuthProps { onAuthenticated: (user: User) => void; connection: Connection; restoreError: string }
+interface AuthProps { onAuthenticated: (user: User) => void; connection: Connection; restoreError: string; updates: AppUpdates; onOpenUpdates: () => void }
 
-function AuthScreen({ onAuthenticated, connection, restoreError }: AuthProps) {
+function AuthScreen({ onAuthenticated, connection, restoreError, updates, onOpenUpdates }: AuthProps) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -258,9 +268,9 @@ function AuthScreen({ onAuthenticated, connection, restoreError }: AuthProps) {
   });
   return <main className="auth-layout">
     <section className="auth-form-section" aria-label="私人账本登录">
-      <div className="auth-brand"><BrandMark /><strong>PWTools</strong></div>
+      <div className="auth-brand"><BrandMark /><div><strong>PWTools</strong><span>你的陪玩工作台</span></div></div>
       <div className="auth-form-content" key={mode}>
-        <div className="auth-form-heading"><h1>{mode === 'login' ? '登录' : '注册'}</h1></div>
+        <div className="auth-form-heading"><h1>{mode === 'login' ? '登录' : '注册'}</h1><p>{mode === 'login' ? '继续管理你的老板与订单。' : '建立自己的陪玩账本。'}</p></div>
         {(error || restoreError) && <Alert color="red" className="inline-alert">{error || restoreError}</Alert>}
         <form onSubmit={submit} className="auth-form">
           <TextInput label="邮箱" type="email" placeholder="you@example.com" autoComplete="email" maxLength={254} disabled={loading} required {...form.getInputProps('email')} />
@@ -271,7 +281,9 @@ function AuthScreen({ onAuthenticated, connection, restoreError }: AuthProps) {
       </div>
       <div className="auth-mode-switch"><Button type="button" variant="subtle" size="sm" disabled={loading} onClick={() => changeMode(mode === 'login' ? 'register' : 'login')}>{mode === 'login' ? '注册账号' : '返回登录'}</Button></div>
       {connection === 'failed' && <div className="auth-connection"><span className="status-dot error" />连接失败，请稍后重试</div>}
+      <div className="auth-update-slot"><UpdateNotice updates={updates} onOpen={onOpenUpdates} /></div>
     </section>
+    <StartupUpdatePrompt updates={updates} onInstall={() => void updates.install()} />
   </main>;
 }
 
@@ -279,6 +291,7 @@ interface WorkspaceProps {
   user: User; onSignedOut: () => void;
   onError: (error: unknown) => boolean; theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void;
   appInfo: AppInfo | null;
+  updates: AppUpdates;
   onCloseHandlerChange: (handler: (() => void) | null) => void;
   closeBehavior: CloseBehavior;
   onCloseBehaviorChange: (behavior: CloseBehavior) => void;
@@ -291,8 +304,9 @@ interface WorkspaceProps {
   onHotkeyEditingChange: (editing: boolean) => void;
 }
 
-function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, onCloseHandlerChange, closeBehavior, onCloseBehaviorChange, importRequest, onImportHandled, importHotkey, hotkeyError, hotkeyBusy, onImportHotkeyChange, onHotkeyEditingChange }: WorkspaceProps) {
+function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, updates, onCloseHandlerChange, closeBehavior, onCloseBehaviorChange, importRequest, onImportHandled, importHotkey, hotkeyError, hotkeyBusy, onImportHotkeyChange, onHotkeyEditingChange }: WorkspaceProps) {
   const [page, setPage] = useState<PageId>('dashboard');
+  const [hafuRateInput, setHafuRateInput] = useState<HafuRateInput>(emptyHafuRateInput);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed);
   const [ledgerVisit, setLedgerVisit] = useState(0);
   const [ledgerImportRequest, setLedgerImportRequest] = useState(0);
@@ -311,8 +325,10 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
   pageRef.current = page;
   const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
   const [pendingClose, setPendingClose] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState(false);
   const pendingCaptureRef = useRef(false);
   const allowCloseRef = useRef(false);
+  const installingUpdateRef = useRef(false);
   const reportLedgerNavigation = useCallback((state: { dirty: boolean; busy: boolean }) => { ledgerNavigationRef.current = state; }, []);
   const [signingOut, setSigningOut] = useState(false);
   const signingOutRef = useRef(false);
@@ -326,7 +342,7 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
   const requestImport = useCallback(() => {
     // An active selection owns the screen; another hotkey must not restore
     // the main window over it or start a second capture.
-    if (captureBusyRef.current) return;
+    if (captureBusyRef.current || installingUpdateRef.current) return;
     const navigation = pageRef.current === 'dashboard' ? ledgerNavigationRef.current : { dirty: false, busy: false };
     if (navigation.busy || signingOutRef.current) { restoreForImport(); notifications.show({ message: '请等待保存或识别完成', color: 'orange' }); return; }
     if (importFlowRef.current) { restoreForImport(); notifications.show({ message: '请继续完成当前战绩导入', color: 'blue' }); return; }
@@ -353,7 +369,7 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
         if (mountedRef.current) setCapturing(false);
       }
     };
-    if (navigation.dirty) { restoreForImport(); pendingCaptureRef.current = true; setPendingClose(false); setPendingNavigation(() => () => void capture()); return; }
+    if (navigation.dirty) { restoreForImport(); pendingCaptureRef.current = true; setPendingClose(false); setPendingUpdate(false); setPendingNavigation(() => () => void capture()); return; }
     void capture();
   }, [restoreForImport]);
   useEffect(() => {
@@ -370,6 +386,7 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
     });
   }, []);
   const requestWindowClose = useCallback(() => {
+    if (installingUpdateRef.current) return;
     const state = pageRef.current === 'dashboard' ? ledgerNavigationRef.current : { dirty: false, busy: false };
     if (state.busy || captureBusyRef.current || signingOutRef.current) {
       notifications.show({ title: '当前操作尚未完成', message: '请等待保存结果', color: 'orange' });
@@ -406,19 +423,29 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
     return () => window.removeEventListener('beforeunload', protectWindow);
   }, [requestWindowClose]);
   const currentPage = pages.find(item => item.id === page)!;
-  const runNavigation = (action: () => void) => {
+  const PageSymbol = page === 'dashboard' ? Gamepad2 : currentPage.icon;
+  const runNavigation = (action: () => void, forUpdate = false) => {
+    if (installingUpdateRef.current) return;
     const currentNavigation = page === 'dashboard' ? ledgerNavigationRef.current : { dirty: false, busy: false };
     if (currentNavigation.busy || captureBusyRef.current) {
       notifications.show({ message: '请等待保存或识别完成', color: 'orange' });
       return;
     }
-    if (currentNavigation.dirty) { pendingCaptureRef.current = false; setPendingClose(false); setPendingNavigation(() => action); return; }
+    if (currentNavigation.dirty) { pendingCaptureRef.current = false; setPendingClose(false); setPendingUpdate(forUpdate); setPendingNavigation(() => action); return; }
     action();
   };
   const navigatePage = (nextPage: PageId) => runNavigation(() => {
     if (nextPage === 'dashboard') setLedgerVisit(value => value + 1);
     setPage(nextPage);
   });
+  const installUpdate = () => runNavigation(() => {
+    if (signingOutRef.current) return;
+    installingUpdateRef.current = true;
+    allowCloseRef.current = true;
+    void updates.install().then(started => {
+      if (!started) { installingUpdateRef.current = false; allowCloseRef.current = false; }
+    });
+  }, true);
   const logout = async () => {
     if (signingOutRef.current) return;
     signingOutRef.current = true; setSigningOut(true);
@@ -428,21 +455,26 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
   };
   return <div className="workspace">
     <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
-      <div className="sidebar-brand-row"><div className="sidebar-brand"><BrandMark small /><div><strong>PWTools</strong></div></div><Tooltip label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'} position="right"><button className="sidebar-toggle" aria-label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'} aria-expanded={!sidebarCollapsed} aria-controls="pw-sidebar-navigation" onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button></Tooltip></div>
+      <div className="sidebar-brand-row"><div className="sidebar-brand"><BrandMark small /><div><strong>PWTools</strong><span>陪玩工作台</span></div></div><Tooltip label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'} position="right"><button className="sidebar-toggle" aria-label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'} aria-expanded={!sidebarCollapsed} aria-controls="pw-sidebar-navigation" onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button></Tooltip></div>
       <nav className="main-nav" id="pw-sidebar-navigation" aria-label="主导航" style={{ '--nav-index': pages.findIndex(item => item.id === page) } as CSSProperties}>
         <span className="nav-active-rail" aria-hidden="true" />
         {pages.map(({ id, label, icon: Icon }) => <Tooltip key={id} label={label} position="right" disabled={!sidebarCollapsed}><button className={`nav-item ${page === id ? 'active' : ''}`} onClick={() => navigatePage(id)} aria-label={label} aria-current={page === id ? 'page' : undefined}><Icon size={20} /><span className="nav-text">{label}</span></button></Tooltip>)}
       </nav>
+      <div className="sidebar-bottom">
+        <div className="sidebar-footnote"><BookOpen size={14} aria-hidden="true" /><span>我的私人账本</span></div>
+      </div>
     </aside>
     <div className="workspace-body">
       <header className="workspace-header">
+        <div className="header-location"><span>我的工作台</span><ChevronRight size={14} aria-hidden="true" /><strong>{currentPage.label}</strong></div>
         <div className="header-actions"><Tooltip label={theme === 'dark' ? '切换至浅色' : '切换至深色'}><button className="header-theme-toggle" aria-label={theme === 'dark' ? '切换至浅色' : '切换至深色'} onClick={() => onThemeChange(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button></Tooltip><Menu position="bottom-end" shadow="md" transitionProps={{ transition: 'pop-top-right', duration: 160 }}><Menu.Target><button className="account-menu" aria-label="账号菜单"><Mail size={15} /><span title={user.email}>{user.email}</span><ChevronDown size={13} /></button></Menu.Target><Menu.Dropdown className="account-dropdown"><Menu.Label>{user.email}</Menu.Label><Menu.Item color="red" leftSection={<LogOut size={15} />} onClick={() => runNavigation(() => void logout())} disabled={signingOut}>退出登录</Menu.Item></Menu.Dropdown></Menu></div>
       </header>
       <main className="page-main" ref={mainRef}>
-        <div className="page-heading"><h1 tabIndex={-1}>{currentPage.label}</h1></div>
-        <div className="page-transition" key={page}>
-          {page === 'dashboard' && <BossLedger key={ledgerVisit} onError={onError} onNavigationStateChange={reportLedgerNavigation} importRequest={ledgerImportRequest} initialImportImage={ledgerImportImage} importBusy={capturing} onRequestImport={requestImport} onImportFlowChange={reportImportFlow} />}
-          {page === 'settings' && <Settings theme={theme} onThemeChange={onThemeChange} appInfo={appInfo} onLogout={() => runNavigation(() => void logout())} signingOut={signingOut} email={user.email} closeBehavior={closeBehavior} onCloseBehaviorChange={onCloseBehaviorChange} importHotkey={importHotkey} hotkeyError={hotkeyError} hotkeyBusy={hotkeyBusy} onImportHotkeyChange={onImportHotkeyChange} onHotkeyEditingChange={onHotkeyEditingChange} />}
+        <div className="page-heading"><div><h1 tabIndex={-1}>{currentPage.label}</h1><p>{currentPage.description}</p></div><span className="page-heading-symbol" aria-hidden="true"><PageSymbol size={page === 'dashboard' ? 32 : 30} strokeWidth={1.3} /></span></div>
+        <UpdateNotice updates={updates} onOpen={() => navigatePage('settings')} /><div className="page-transition" key={page}>
+          {page === 'dashboard' && <BossLedger key={ledgerVisit} onError={onError} onNavigationStateChange={reportLedgerNavigation} importRequest={ledgerImportRequest} initialImportImage={ledgerImportImage} importBusy={capturing} onImportFlowChange={reportImportFlow} />}
+          {page === 'hafu-rate' && <HafuRateCalculator input={hafuRateInput} onChange={setHafuRateInput} />}
+          {page === 'settings' && <Settings updates={updates} onInstallUpdate={installUpdate} theme={theme} onThemeChange={onThemeChange} appInfo={appInfo} onLogout={() => runNavigation(() => void logout())} signingOut={signingOut} email={user.email} closeBehavior={closeBehavior} onCloseBehaviorChange={onCloseBehaviorChange} importHotkey={importHotkey} hotkeyError={hotkeyError} hotkeyBusy={hotkeyBusy} onImportHotkeyChange={onImportHotkeyChange} onHotkeyEditingChange={onHotkeyEditingChange} />}
         </div>
       </main>
     </div>
@@ -461,17 +493,19 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
         if (!pendingCaptureRef.current) reportLedgerNavigation({ dirty: false, busy: false });
         pendingCaptureRef.current = false;
         action?.();
-      }}>放弃修改并{pendingClose ? '关闭' : '切换'}</Button></div>
+      }}>放弃修改并{pendingClose ? '关闭' : pendingUpdate ? '更新' : '切换'}</Button></div>
     </Modal>
+    <StartupUpdatePrompt updates={updates} onInstall={installUpdate} />
   </div>;
 }
 
-function Settings({ theme, onThemeChange, appInfo, onLogout, signingOut, email, closeBehavior, onCloseBehaviorChange, importHotkey, hotkeyError, hotkeyBusy, onImportHotkeyChange, onHotkeyEditingChange }: { theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void; appInfo: AppInfo | null; onLogout: () => void; signingOut: boolean; email: string; closeBehavior: CloseBehavior; onCloseBehaviorChange: (behavior: CloseBehavior) => void; importHotkey: ImportHotkey | null; hotkeyError: string; hotkeyBusy: boolean; onImportHotkeyChange: (shortcut: ImportHotkey | null) => Promise<boolean>; onHotkeyEditingChange: (editing: boolean) => void }) {
+function Settings({ updates, onInstallUpdate, theme, onThemeChange, appInfo, onLogout, signingOut, email, closeBehavior, onCloseBehaviorChange, importHotkey, hotkeyError, hotkeyBusy, onImportHotkeyChange, onHotkeyEditingChange }: { updates: AppUpdates; onInstallUpdate: () => void; theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void; appInfo: AppInfo | null; onLogout: () => void; signingOut: boolean; email: string; closeBehavior: CloseBehavior; onCloseBehaviorChange: (behavior: CloseBehavior) => void; importHotkey: ImportHotkey | null; hotkeyError: string; hotkeyBusy: boolean; onImportHotkeyChange: (shortcut: ImportHotkey | null) => Promise<boolean>; onHotkeyEditingChange: (editing: boolean) => void }) {
   return <div className="settings-layout">
     <section className="panel settings-section"><div className="section-heading"><h2>外观</h2></div><div className="settings-row"><strong>主题</strong><SegmentedControl value={theme} onChange={(value) => onThemeChange(value as ThemeMode)} data={[{ value: 'dark', label: <span className="theme-label"><Moon size={14} /> 深色</span> }, { value: 'light', label: <span className="theme-label"><Sun size={14} /> 浅色</span> }]} /></div></section>
     {isDesktop && <section className="panel settings-section"><div className="section-heading"><h2>窗口</h2></div><div className="settings-row"><Switch classNames={{ root: 'settings-close-switch', body: 'settings-close-switch-body', labelWrapper: 'settings-close-switch-label', label: 'settings-close-switch-title', description: 'settings-close-switch-description' }} label="关闭窗口时最小化到任务栏" description="启用后，应用继续运行并保留任务栏图标，点击图标恢复窗口。关闭此选项后，点击关闭窗口会退出应用。" labelPosition="left" checked={closeBehavior === 'minimize'} onChange={(event) => onCloseBehaviorChange(event.currentTarget.checked ? 'minimize' : 'exit')} /></div></section>}
     {isDesktop && <ImportShortcut shortcut={importHotkey} error={hotkeyError} busy={hotkeyBusy} onSave={onImportHotkeyChange} onEditingChange={onHotkeyEditingChange} />}
     <section className="panel settings-section"><div className="section-heading"><h2>账号</h2></div><div className="settings-row"><div><strong className="settings-email">{email}</strong>{!appInfo?.persistentSession && <p>关闭后需重新登录</p>}</div><Button variant="default" color="red" leftSection={<LogOut size={15} />} loading={signingOut} onClick={onLogout}>退出登录</Button></div></section>
+    {appInfo?.updatesSupported && <UpdateSettings updates={updates} onInstall={onInstallUpdate} />}
     <p className="settings-version">PWTools {appInfo && appInfo.version !== '浏览器预览' ? `v${appInfo.version}` : ''}</p>
   </div>;
 }

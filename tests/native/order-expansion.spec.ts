@@ -52,9 +52,9 @@ for (const kind of ['hourly', 'escort'] as const) {
         const bridge = window.pwtools!;
         const state = { unexpected: [] as string[], entries: [] as string[], matches: [] as string[] };
         (window as Window & { expansionRequests?: typeof state }).expansionRequests = state;
-        // Keep only native window controls and close subscriptions; guard every data method.
+        // Preserve native window controls and read-only update status; guard every ledger method.
         for (const method of Object.keys(bridge)) {
-          if (['windowControl', 'onCloseRequested', 'onExitRequested', 'onImportRequested', 'setImportHotkey'].includes(method)) continue;
+          if (['windowControl', 'onCloseRequested', 'onExitRequested', 'onImportRequested', 'setImportHotkey', 'getUpdateState'].includes(method)) continue;
           (bridge as unknown as Record<string, unknown>)[method] = async () => {
             state.unexpected.push(method);
             throw new Error(`未配置的原生测试请求：${method}`);

@@ -8,6 +8,7 @@ try {
     Invoke-Checked 'npm.cmd' @('run', 'build:renderer', '--workspace', '@pwtools/desktop')
   }
   & (Join-Path $PSScriptRoot 'native-prepare.ps1')
+  & (Join-Path $PSScriptRoot 'native-ocr-prepare.ps1')
   $cmake = Get-Command cmake.exe -ErrorAction SilentlyContinue
   if (-not $cmake) { throw 'CMake 3.24 or newer is required. Install https://cmake.org/download/.' }
   $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'

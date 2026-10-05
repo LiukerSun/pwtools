@@ -273,7 +273,7 @@ struct RawOcrPlayer {
 }
 
 #[derive(Deserialize)]
-struct OcrResponse {
+pub(crate) struct OcrResponse {
     outcome: Outcome,
     players: Vec<RawOcrPlayer>,
     raw_text: String,
@@ -312,6 +312,68 @@ impl Recognition {
                     },
                 )
             })
+    }
+
+    pub(crate) fn from_response(raw: OcrResponse) -> Result<Self, &'static str> {
+        if raw.players.len() > 100
+            || raw.raw_text.chars().count() > 100_000
+            || raw.warnings.len() > 100
+        {
+            return Err("识别结果内容过多，请重新识别");
+        }
+        let mut warnings = raw
+            .warnings
+            .into_iter()
+            .map(|value| value.chars().take(1000).collect())
+            .collect::<Vec<String>>();
+        let mut players = Vec::with_capacity(raw.players.len());
+        for player in raw.players {
+            let amount = player
+                .amount
+                .as_ref()
+                .and_then(|value| {
+                    value.as_i64().or_else(|| {
+                        value
+                            .as_f64()
+                            .filter(|value| {
+                                value.fract() == 0.0 && (0.0..=MAX_AMOUNT as f64).contains(value)
+                            })
+                            .map(|value| value as i64)
+                    })
+                })
+                .filter(|value| (0..=MAX_AMOUNT).contains(value));
+            if player.amount.is_some() && amount.is_none() {
+                warnings.push("部分识别金额不是有效的非负整数，请人工确认。".into());
+            }
+            let player_name = player
+                .player_name
+                .trim()
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(80)
+                .collect();
+            players.push(OcrPlayer {
+                player_name,
+                outcome: player.outcome,
+                amount: if player.outcome == Outcome::Failed {
+                    Some(0)
+                } else {
+                    amount
+                },
+                confidence: player
+                    .confidence
+                    .filter(|value| value.is_finite() && (0.0..=1.0).contains(value)),
+            });
+        }
+        if players.is_empty() && raw.outcome != Outcome::Unknown {
+            warnings.push("识别到了结果，但未定位玩家名称；请人工填写。".into());
+        }
+        Ok(Self {
+            players,
+            raw_text: raw.raw_text,
+            warnings,
+            completed: true,
+        })
     }
 }
 
@@ -487,58 +549,6 @@ impl OcrService {
             body.extend_from_slice(&chunk);
         }
         let raw: OcrResponse = serde_json::from_slice(&body).map_err(|_| OcrError::Unavailable)?;
-        if raw.players.len() > 100
-            || raw.raw_text.chars().count() > 100_000
-            || raw.warnings.len() > 100
-        {
-            return Err(OcrError::Unavailable);
-        }
-        let mut warnings = raw
-            .warnings
-            .into_iter()
-            .map(|value| value.chars().take(1000).collect())
-            .collect::<Vec<String>>();
-        let mut players = Vec::with_capacity(raw.players.len());
-        for player in raw.players {
-            let amount = player
-                .amount
-                .as_ref()
-                .and_then(|value| {
-                    value.as_i64().or_else(|| {
-                        value
-                            .as_f64()
-                            .filter(|value| {
-                                value.fract() == 0.0 && (0.0..=MAX_AMOUNT as f64).contains(value)
-                            })
-                            .map(|value| value as i64)
-                    })
-                })
-                .filter(|value| (0..=MAX_AMOUNT).contains(value));
-            if player.amount.is_some() && amount.is_none() {
-                warnings.push("部分识别金额不是有效的非负整数，请人工确认。".into());
-            }
-            let player_name: String = player
-                .player_name
-                .trim()
-                .chars()
-                .filter(|character| !character.is_control())
-                .take(80)
-                .collect();
-            players.push(OcrPlayer {
-                player_name,
-                outcome: player.outcome,
-                amount,
-                confidence: player.confidence.filter(|value| value.is_finite()),
-            });
-        }
-        if players.is_empty() && raw.outcome != Outcome::Unknown {
-            warnings.push("识别到了结果，但未定位玩家名称；请人工填写。".into());
-        }
-        Ok(Recognition {
-            players,
-            raw_text: raw.raw_text,
-            warnings,
-            completed: true,
-        })
+        Recognition::from_response(raw).map_err(|_| OcrError::Unavailable)
     }
 }

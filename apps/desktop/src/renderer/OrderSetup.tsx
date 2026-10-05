@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Alert, Button, Collapse, Loader, Modal, NumberInput, Select, Textarea, TextInput } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { Check, ChevronDown, Pencil, Settings2, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, Clock3, Pencil, Settings2, ShieldCheck, Target, Trash2 } from 'lucide-react';
 import type { Boss, FailureMode, FailureTrigger, OrderInput, OrderKind, OrderTemplate, ServiceOrder } from '../shared/contracts';
 import { api, errorInfo } from './api';
 import { MAX_QUANTITY, failureSummary, modeLabels, orderInput, orderLabels, quantityText, triggerLabels } from './orderPresentation';
@@ -129,13 +129,13 @@ export default function OrderSetup({ boss, order, template, saveAsTemplate, onCl
   };
   const title = isTemplate ? template ? '编辑个人模板' : '保存为个人模板' : order ? '订单配置' : '新建订单';
   return <>
-    <Modal opened onClose={() => guard(onClose)} title={title} centered size="md" classNames={{ content: 'ledger-form-modal-content', header: 'ledger-form-modal-header', body: 'ledger-form-modal-body' }} closeOnEscape={!busy && !managerOpen} closeOnClickOutside={!busy && !managerOpen} withCloseButton={!busy}>
+    <Modal opened onClose={() => guard(onClose)} title={title} centered size="lg" classNames={{ content: 'ledger-form-modal-content', header: 'ledger-form-modal-header', body: 'ledger-form-modal-body' }} closeOnEscape={!busy && !managerOpen} closeOnClickOutside={!busy && !managerOpen} withCloseButton={!busy}>
       <form className="ledger-form" onSubmit={submit}>
         <div className="ledger-form-fields ledger-setup-fields">
           {error && <Alert color="red" title="尚未保存">{error}</Alert>}
           {!order && !isTemplate && <section className="ledger-template-chooser" aria-label="选择订单模板">
             <div className="ledger-setup-heading"><span>选择模板</span><Button variant="subtle" size="xs" aria-label="管理个人模板" leftSection={<Settings2 size={13} />} disabled={busy} onClick={() => setManagerOpen(true)}>管理模板</Button></div>
-            <fieldset className="ledger-kind-options" aria-label="基础订单模板" disabled={busy}>{kinds.map((kind) => <label key={kind} className={chosen === kind ? 'selected' : ''}><input type="radio" aria-label={`使用${orderLabels[kind]}模板`} name="order-template" value={kind} checked={chosen === kind} onChange={() => choose(kind)} /><span><strong>{orderLabels[kind]}</strong><small>{descriptions[kind]}</small></span></label>)}</fieldset>
+            <fieldset className="ledger-kind-options ledger-template-options" aria-label="基础订单模板" disabled={busy}>{kinds.map((kind) => <label key={kind} className={chosen === kind ? 'selected' : ''}><input type="radio" aria-label={`使用${orderLabels[kind]}模板`} name="order-template" value={kind} checked={chosen === kind} onChange={() => choose(kind)} /><span className={`template-kind-icon ${kind}`} aria-hidden="true">{kind === 'hourly' ? <Clock3 size={22} /> : kind === 'escort' ? <ShieldCheck size={22} /> : <Target size={22} />}</span><span><strong>{orderLabels[kind]}</strong><small>{descriptions[kind]}</small></span></label>)}</fieldset>
             {templateLoading ? <p className="ledger-rule-copy" role="status">加载模板…</p> : templateError ? <Alert color="orange">{templateError}<Button variant="subtle" size="xs" onClick={() => setReload((value) => value + 1)}>重试</Button></Alert> : templates.length > 0 && <Select label="个人模板" placeholder="选择已保存的模板" searchable allowDeselect={false} value={templates.some((item) => item.id === chosen) ? chosen : null} data={templates.map((item) => ({ value: item.id, label: `${item.name} · ${orderLabels[item.kind]}` }))} disabled={busy} onChange={(value) => { if (value) choose(value); }} />}
           </section>}
           {(chosen || isTemplate) && <>

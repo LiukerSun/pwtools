@@ -16,6 +16,8 @@ namespace pwtools {
 // reading the desktop, accessing the clipboard or opening a capture window.
 std::vector<BYTE> EncodeCaptureBackground(HBITMAP bitmap);
 std::vector<BYTE> ValidateCaptureReply(const std::string& base64);
+// Convert physical screen coordinates to the frozen desktop's local pixels.
+std::optional<RECT> ClipCaptureWindowBounds(const RECT& window, const RECT& desktop);
 
 struct ScreenCaptureResult {
   std::optional<std::vector<BYTE>> png;

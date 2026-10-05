@@ -6,7 +6,7 @@ import { resolve, join, basename, sep } from 'node:path';
 import type { DesktopBridge } from '../../apps/desktop/src/shared/contracts';
 import { NativeApplication } from './native-helpers';
 
-test('真实截图经过 WebView2 原生二进制桥：OCR、去重、原图与重启持久化', async () => {
+test('真实截图经过 WebView2 原生二进制桥：本地 OCR、去重、原图与重启持久化', async () => {
   test.skip(!process.env.PWTOOLS_OCR_SAMPLE, '设置 PWTOOLS_OCR_SAMPLE 为本地三角洲样例，不将用户原图提交到仓库');
   test.setTimeout(240_000);
   const source = await readFile(process.env.PWTOOLS_OCR_SAMPLE!);
@@ -26,7 +26,7 @@ test('真实截图经过 WebView2 原生二进制桥：OCR、去重、原图与�
     await page.reload();
     await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
     await expect(page.getByRole('navigation').getByRole('button', { name: '战绩记录', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('navigation').getByRole('button')).toHaveCount(2);
+    await expect(page.getByRole('navigation').getByRole('button')).toHaveCount(3);
     const context = await page.evaluate(async () => {
       const bridge: DesktopBridge = window.pwtools!;
       const boss = await bridge.createBoss({ display_name: '团团老板', game_id: 'boss-001', game_name: '团团吃大饼', notes: '先核对原图再记账' });
@@ -39,8 +39,10 @@ test('真实截图经过 WebView2 原生二进制桥：OCR、去重、原图与�
     await article.getByRole('button', { name: '记一场', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '记一场', exact: true });
     await expect(dialog.getByRole('radio', { name: '截图录入', exact: true })).toBeChecked();
+    const recognitionStarted = Date.now();
     await dialog.getByLabel('导入本场截图', { exact: true }).setInputFiles(process.env.PWTOOLS_OCR_SAMPLE!);
     await expect(dialog.getByLabel(/^带出金额/)).toHaveValue('3,314,221', { timeout: 90_000 });
+    console.info(`Local OCR import and original save: ${(Date.now() - recognitionStarted) / 1000} seconds`);
     await expect(dialog.getByLabel(/^假账扣除/)).toHaveValue('');
     await dialog.getByLabel(/^假账扣除/).fill('314221');
     await expect(dialog.getByRole('region', { name: '本场净值', exact: true }).locator('strong').last()).toHaveText('3,000,000');
@@ -80,6 +82,13 @@ test('真实截图经过 WebView2 原生二进制桥：OCR、去重、原图与�
     expect(record.stats.confirmed_count).toBe(1);
     expect(record.drafts.items).toHaveLength(0);
     expect(record.order.remaining_quantity).toBe(7000000);
+    const recognizedAgain = await page.evaluate(async id => window.pwtools!.recognizeMatch(id), record.record.id);
+    expect(recognizedAgain.ocr_status).toBe('completed');
+    expect(recognizedAgain.players.map(player => player.amount)).toEqual([3314221, 1867449, 97593]);
+    expect(recognizedAgain.confirmed).toBe(true);
+    expect(recognizedAgain.amount).toBe(3314221);
+    expect(recognizedAgain.fake_amount).toBe(314221);
+    expect(recognizedAgain.net_amount).toBe(3000000);
     const duplicate = await page.evaluate(async ({ encoded, orderId }) => {
       return window.pwtools!.uploadMatch({ name: '重复截图.png', content_type: 'image/png', data: Uint8Array.from(atob(encoded), char => char.charCodeAt(0)), order_id: orderId });
     }, { encoded, orderId: context.order.id });

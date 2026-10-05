@@ -3,7 +3,7 @@
 # Run from Windows PowerShell 5.1 after building the installer and starting the API.
 # NSIS /D= and _?= must be last and unquoted: https://nsis.sourceforge.io/Docs/Chapter3.html
 [CmdletBinding()]
-param([string]$InstallerPath = '')
+param([string]$InstallerPath = '', [switch]$ExerciseUpdate)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -269,7 +269,7 @@ try {
   $taskMenuSnapshot = Get-PathSnapshot $taskMenuFolder $true
   $taskShortcutSnapshots = @($taskShortcutPaths | ForEach-Object { Get-PathSnapshot $_ $false })
   $taskSnapshotsReady = $true
-  foreach ($name in @('PWTOOLS_E2E_EXECUTABLE', 'PWTOOLS_DEV_URL')) {
+  foreach ($name in @('PWTOOLS_E2E_EXECUTABLE', 'PWTOOLS_DEV_URL', 'PWTOOLS_DATA_DIR', 'PWTOOLS_API_URL', 'PWTOOLS_DEBUG_PORT')) {
     $taskEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
   }
   if (-not [IO.Directory]::Exists($taskArtifactsRoot)) {
@@ -299,9 +299,54 @@ try {
   }
   Write-Host ('已核对安装文件：' + $installedFiles.Count)
 
+  if ($ExerciseUpdate) {
+    $taskPhase = '自动更新安装与重启'
+    $taskUpdateProbe = Join-Path $taskRepoRoot 'apps/desktop/native/.build/tests/updater_test.exe'
+    if (-not [IO.File]::Exists($taskUpdateProbe)) { throw 'Run npm run test:updater before exercising an update.' }
+    $taskUpdateManifest = Join-Path $taskRepoRoot 'apps/desktop/release/updates/windows-x64/latest.json'
+    $taskUpdateProfile = Assert-StagePath (Join-Path $stage 'update-qa-profile')
+    New-Item -ItemType Directory -Path $taskUpdateProfile | Out-Null
+    $taskSentinel = Join-Path $taskUpdateProfile 'preserve-during-update.txt'
+    [IO.File]::WriteAllText($taskSentinel, $taskStageName)
+    $taskStaleAsset = Assert-StagePath (Join-Path $stage 'renderer/stale-update-qa.js')
+    [IO.File]::WriteAllText($taskStaleAsset, 'obsolete renderer asset')
+    [Environment]::SetEnvironmentVariable('PWTOOLS_DATA_DIR', $taskUpdateProfile, 'Process')
+    [Environment]::SetEnvironmentVariable('PWTOOLS_API_URL', 'http://127.0.0.1:1/api', 'Process')
+    [Environment]::SetEnvironmentVariable('PWTOOLS_DEV_URL', $null, 'Process')
+    [Environment]::SetEnvironmentVariable('PWTOOLS_DEBUG_PORT', $null, 'Process')
+    & $taskUpdateProbe --install-local-probe $taskInstaller $taskUpdateManifest $stage $taskUpdateProfile
+    if ($LASTEXITCODE -ne 0) { throw 'Update download/handoff failed.' }
+    $taskRestarted = @()
+    for ($taskAttempt = 0; $taskAttempt -lt 150; $taskAttempt++) {
+      $taskRestarted = @(Get-CimInstance Win32_Process -Filter "Name = 'PWTools.exe'" | Where-Object { $_.ExecutablePath -eq (Join-Path $stage 'PWTools.exe') })
+      if ($taskRestarted.Count -eq 1) { break }
+      Start-Sleep -Milliseconds 400
+    }
+    if ($taskRestarted.Count -ne 1) { throw 'Updated application did not restart.' }
+    & taskkill.exe /PID $taskRestarted[0].ProcessId /T /F | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not close the restarted QA application.' }
+    for ($taskAttempt = 0; $taskAttempt -lt 50; $taskAttempt++) {
+      $taskInstallerProcesses = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'PWTools-Setup-%'" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($taskUpdateProfile + '\', [StringComparison]::OrdinalIgnoreCase) })
+      if ($taskInstallerProcesses.Count -eq 0) { break }
+      Start-Sleep -Milliseconds 200
+    }
+    if ($taskInstallerProcesses.Count -ne 0) { throw 'Update installer did not exit.' }
+    if ([IO.File]::ReadAllText($taskSentinel) -cne $taskStageName) { throw 'Update changed the existing profile.' }
+    if ([IO.File]::Exists($taskStaleAsset)) { throw 'Update retained stale renderer assets.' }
+    foreach ($relative in $taskPayloadHashes.Keys) {
+      if ((Get-FileHashValue (Assert-StagePath (Join-Path $stage $relative))) -ne $taskPayloadHashes[$relative]) { throw 'Updated payload differs from release files.' }
+    }
+    foreach ($name in @('PWTOOLS_DATA_DIR', 'PWTOOLS_API_URL', 'PWTOOLS_DEV_URL', 'PWTOOLS_DEBUG_PORT')) { [Environment]::SetEnvironmentVariable($name, $taskEnvironment[$name], 'Process') }
+    Write-Host '自动下载、校验、等待调用进程退出、升级、自动重启、旧资源清理和本地数据保留均通过。'
+  }
+
   $taskPhase = '普通启动与窗口呈现'
   & (Join-Path $PSHOME 'powershell.exe') -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $taskRepoRoot 'scripts/native-test-startup.ps1') -ExecutablePath (Join-Path $stage 'PWTools.exe') -Attempts 3 -ExerciseRestore
   if ($LASTEXITCODE -ne 0) { throw '已安装程序的普通启动或窗口恢复失败。' }
+
+  $taskPhase = '原生窗口边缘缩放'
+  & (Join-Path $PSHOME 'powershell.exe') -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $taskRepoRoot 'scripts/native-test-resize.ps1') -ExecutablePath (Join-Path $stage 'PWTools.exe')
+  if ($LASTEXITCODE -ne 0) { throw '已安装程序的窗口拖拽缩放失败。' }
 
   $taskPhase = '原生登录验收'
   [Environment]::SetEnvironmentVariable('PWTOOLS_E2E_EXECUTABLE', (Join-Path $stage 'PWTools.exe'), 'Process')
@@ -317,6 +362,14 @@ try {
 } finally {
   if ($taskLocationChanged) { Pop-Location }
   foreach ($name in $taskEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $taskEnvironment[$name], 'Process') }
+  if ($ExerciseUpdate -and $taskStageCreated) {
+    try {
+      $stage = Assert-StagePath $taskStageRoot
+      foreach ($process in @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($stage + '\', [StringComparison]::OrdinalIgnoreCase) })) {
+        & taskkill.exe /PID $process.ProcessId /T /F 2>$null | Out-Null
+      }
+    } catch { $taskCleanupErrors.Add('更新验收进程清理未完成') }
+  }
   if ($taskInstallAttempted -and $taskStageCreated) {
     try {
       $uninstaller = Assert-StagePath (Join-Path $taskStageRoot 'Uninstall-PWTools.exe')

@@ -9,12 +9,14 @@
 #include <wincrypt.h>
 #include <bcrypt.h>
 #include "api_bridge.hpp"
+#include "local_ocr.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <future>
 #include <limits>
 #include <mutex>
 #include <string_view>
@@ -366,8 +368,14 @@ struct ApiBridge::Impl {
   std::string token;
   std::uint64_t revision = 0, auth_intent = 0;
   std::atomic<bool> persistent{false};
+  LocalRecognizer local_recognizer;
 
-  Impl(std::string value, const std::filesystem::path& directory) : url(ParseUrl(value)), entropy(Hash(url.canonical)) {
+  Impl(std::string value, const std::filesystem::path& directory, LocalRecognizer recognizer)
+      : url(ParseUrl(value)), entropy(Hash(url.canonical)), local_recognizer(std::move(recognizer)) {
+    if (!local_recognizer) {
+      auto local = std::make_shared<LocalOcr>();
+      local_recognizer = [local](const Bytes& image, const std::string& mime) { return local->Recognize(image, mime); };
+    }
     session_path = directory / ("session-native-" + Hex(entropy).substr(0, 16) + ".bin");
     std::error_code error;
     std::filesystem::create_directories(directory, error);
@@ -470,6 +478,16 @@ struct ApiBridge::Impl {
     return result;
   }
 
+  Json LocalResult(const Bytes& bytes, const std::string& mime) {
+    try { return local_recognizer(bytes, mime); }
+    catch (...) { return nullptr; } // The saved original remains available for manual entry or retry.
+  }
+  Json SaveLocalResult(const std::string& path, const Bytes& bytes, Json recognition, const Snapshot& snapshot) {
+    const auto hash = Hex(Hash(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size())));
+    const Json payload{{"image_sha256", hash}, {"recognition", std::move(recognition)}};
+    return Request(path + "/local-recognition", L"POST", &payload, true, 15000, &snapshot);
+  }
+
   Json Execute(const std::string& method, const Json& args) {
     if (!args.is_array()) Invalid();
     const auto& first = Arg(args, 0); const auto& second = Arg(args, 1);
@@ -502,9 +520,25 @@ struct ApiBridge::Impl {
       const auto bytes = DecodeImage(first["data_base64"]);
       const auto order_id = first.contains("order_id") ? OptionalId(first["order_id"]) : std::string{};
       const auto headers = "X-File-Name: " + Encode(name) + "\r\n" + (order_id.empty() ? "" : "X-Order-Id: " + order_id + "\r\n");
-      const auto response = Send("/matches", L"POST", bytes, type, headers, true, 100000, kMaxJsonResponse);
+      const auto snapshot = Current();
+      auto recognition = std::async(std::launch::async, [this, bytes, type] { return LocalResult(bytes, type); });
+      const auto response = Send("/matches/local", L"POST", bytes, type, headers, true, 70000, kMaxJsonResponse, &snapshot);
       auto result = Json::parse(response.body.begin(), response.body.end(), nullptr, false);
-      if (result.is_discarded()) throw ApiFailure("INVALID_RESPONSE", "服务返回的数据格式不正确。"); return result;
+      if (!result.is_object() || !result.contains("record") || !result["record"].is_object() || !result.contains("duplicate") || !result["duplicate"].is_boolean()) {
+        throw ApiFailure("INVALID_RESPONSE", "服务返回的数据格式不正确。");
+      }
+      auto local = recognition.get();
+      // An interrupted first upload can be completed by retrying the same original.
+      // Completed duplicate records retain their existing OCR and manual results.
+      if (!result["duplicate"].get<bool>() || result["record"].value("ocr_status", "") != "completed") {
+        const auto path = "/matches/" + Uuid(result["record"].at("id"));
+        try { result["record"] = SaveLocalResult(path, bytes, std::move(local), snapshot); }
+        catch (const ApiFailure& failure) {
+          if (failure.code == "UNAUTHORIZED") throw;
+          result["record"]["warnings"] = Json::array({"原图已保存，本地识别结果尚未同步；请稍后重新识别，或手动填写。"});
+        }
+      }
+      return result;
     }
     if (method == "listMatches") {
       Arguments(args, 0, 4); auto query = Pages(first, second, 20);
@@ -522,10 +556,11 @@ struct ApiBridge::Impl {
       Arguments(args, 1, 1); const auto path = "/matches/" + Uuid(first);
       if (method == "getMatch") return Request(path);
       if (method == "deleteMatch") return Request(path, L"DELETE");
-      if (method == "recognizeMatch") return Request(path + "/recognize", L"POST", nullptr, true, 100000);
-      const auto response = Send(path + "/image", L"GET", {}, "", "", true, 15000, kMaxImage);
+      const auto snapshot = Current();
+      const auto response = Send(path + "/image", L"GET", {}, "", "", true, method == "recognizeMatch" ? 20000 : 15000, kMaxImage, &snapshot);
       const auto type = response.content_type.empty() ? "image/png" : response.content_type;
       if (type != "image/png" && type != "image/jpeg" && type != "image/webp") throw ApiFailure("INVALID_IMAGE", "服务返回的截图格式不正确。");
+      if (method == "recognizeMatch") return SaveLocalResult(path, response.body, LocalResult(response.body, type), snapshot);
       return Json{{"content_type", type}, {"data_base64", EncodeImage(response.body)}};
     }
     if (method == "updateMatch") { Arguments(args, 2, 2); const auto id = Uuid(first); MatchBody(second); return Request("/matches/" + id, L"PATCH", &second); }
@@ -548,7 +583,8 @@ struct ApiBridge::Impl {
   }
 };
 
-ApiBridge::ApiBridge(std::string api_url, std::filesystem::path data_directory) : impl_(std::make_unique<Impl>(std::move(api_url), data_directory)) {}
+ApiBridge::ApiBridge(std::string api_url, std::filesystem::path data_directory, LocalRecognizer recognizer)
+    : impl_(std::make_unique<Impl>(std::move(api_url), data_directory, std::move(recognizer))) {}
 ApiBridge::~ApiBridge() = default;
 Json ApiBridge::Execute(const std::string& method, const Json& args) {
   try { return impl_->Execute(method, args); }

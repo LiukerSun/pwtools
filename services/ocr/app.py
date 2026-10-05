@@ -1,41 +1,22 @@
 from __future__ import annotations
 
 import asyncio
-import io
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
-from PIL import Image, ImageOps, UnidentifiedImageError
 
 from engine import create_engine, recognize
+from image_input import MAX_BYTES, MIME_FORMATS, ImageInputError, decode_image as decode_input
 
-MAX_BYTES = 12 * 1024 * 1024
-MAX_PIXELS = 40_000_000
 TIMEOUT_SECONDS = 30
-MIME_FORMATS = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}
-Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
 
-def decode_image(data: bytes, mime: str) -> Image.Image:
+def decode_image(data: bytes, mime: str):
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            image = Image.open(io.BytesIO(data))
-            if image.format != MIME_FORMATS[mime]:
-                raise HTTPException(415, "图片格式与 Content-Type 不一致")
-            width, height = image.size
-            if width < 1 or height < 1 or width * height > MAX_PIXELS:
-                raise HTTPException(413, "图片不能超过 4000 万像素")
-            if getattr(image, "n_frames", 1) != 1:
-                raise HTTPException(415, "请上传单帧图片")
-            image.load()
-            return ImageOps.exif_transpose(image).convert("RGB")
-    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
-        raise HTTPException(413, "图片不能超过 4000 万像素") from error
-    except (UnidentifiedImageError, OSError, ValueError) as error:
-        raise HTTPException(422, "无法解码图片，请上传完整的 PNG、JPEG 或 WebP") from error
+        return decode_input(data, mime)
+    except ImageInputError as error:
+        raise HTTPException(error.status, str(error)) from error
 
 
 def create_app(engine_factory=create_engine, recognition=recognize) -> FastAPI:

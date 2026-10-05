@@ -88,10 +88,15 @@ const browserBridge: DesktopBridge = {
     : Promise.reject(new ClientError('UNAUTHORIZED', '请先登录。')),
   logout: async () => { await request('/auth/logout', { method: 'POST' }); browserToken = null; },
   windowControl: async () => {},
+  setWindowTheme: async () => {},
   setImportHotkey: async () => { throw new ClientError('DESKTOP_ONLY', '全局快捷键仅在桌面应用中可用。'); },
   captureScreen: async () => { throw new ClientError('DESKTOP_ONLY', '屏幕截图仅在桌面应用中可用。'); },
   readClipboardImage: async () => null,
   appInfo: async () => ({ version: '浏览器预览', apiUrl: browserApiUrl, persistentSession: false }),
+  getUpdateState: async () => { throw new ClientError('DESKTOP_ONLY', '版本更新仅在桌面应用中可用。'); },
+  checkForUpdates: async () => { throw new ClientError('DESKTOP_ONLY', '版本更新仅在桌面应用中可用。'); },
+  downloadUpdate: async () => { throw new ClientError('DESKTOP_ONLY', '版本更新仅在桌面应用中可用。'); },
+  installUpdate: async () => { throw new ClientError('DESKTOP_ONLY', '版本更新仅在桌面应用中可用。'); },
   uploadMatch: async (input) => {
     const response = await send('/matches', {
       method: 'POST',

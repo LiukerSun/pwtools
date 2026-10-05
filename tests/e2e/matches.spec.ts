@@ -24,7 +24,7 @@ test('浏览器预览按老板匹配截图并校对撤离失败', async ({ page 
   await page.clock.setFixedTime(new Date('2026-10-04T02:00:00Z'));
   const ledger = await openLedger(page);
   await expect(page.getByRole('navigation').getByRole('button', { name: '战绩记录', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('navigation').getByRole('button')).toHaveCount(2);
+  await expect(page.getByRole('navigation').getByRole('button')).toHaveCount(3);
   const boss = await ledger.post<Boss>('/bosses', {
     display_name: '截图验收老板', game_id: 'boss-web', game_name: '小桃知晚', notes: '每场确认后再记账',
   });

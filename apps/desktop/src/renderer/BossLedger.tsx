@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Button, Collapse, Loader, Menu, Modal, NumberInput, SegmentedControl, Textarea, TextInput } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { ArrowLeft, BookOpen, Check, ChevronDown, ChevronRight, Clock3, FileImage, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Trash2, UsersRound } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BookOpen, Check, ChevronDown, ChevronRight, Clock3, ListFilter, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Target, Trash2, UsersRound, X } from 'lucide-react';
 import type { Boss, BossInput, LedgerEntry, LedgerEntryKind, MatchUploadInput, ServiceOrder } from '../shared/contracts';
 import { api, errorInfo } from './api';
 import OrderSetup from './OrderSetup';
@@ -20,7 +20,6 @@ interface BossLedgerProps {
   importRequest?: number;
   initialImportImage?: MatchUploadInput | null;
   importBusy?: boolean;
-  onRequestImport?: () => void;
   onImportFlowChange?: (opened: boolean) => void;
 }
 type FormContext = { type: 'boss-create' } | { type: 'boss-edit'; boss: Boss } | { type: 'adjustment'; order: ServiceOrder };
@@ -52,7 +51,7 @@ function sumOrders(items: ServiceOrder[], field: 'completed_quantity' | 'remaini
   return { hourly: sums.hourly === null ? null : Number(sums.hourly), escort: sums.escort === null ? null : Number(sums.escort) };
 }
 
-export default function BossLedger({ onError, initialBossId, initialOrderId, onNavigationStateChange, importRequest = 0, initialImportImage, importBusy = false, onRequestImport, onImportFlowChange }: BossLedgerProps) {
+export default function BossLedger({ onError, initialBossId, initialOrderId, onNavigationStateChange, importRequest = 0, initialImportImage, importBusy = false, onImportFlowChange }: BossLedgerProps) {
   const mounted = useRef(true);
   const [bosses, setBosses] = useState<Boss[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(initialBossId || null);
@@ -65,6 +64,8 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
   const [detailError, setDetailError] = useState('');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
+  const [view, setView] = useState('bosses');
+  const [orderKind, setOrderKind] = useState('all');
   const [refresh, setRefresh] = useState(0);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [completedOpen, setCompletedOpen] = useState(false);
@@ -129,18 +130,18 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
     return () => { alive = false; };
   }, [selectedId, refresh, onError]);
   useEffect(() => {
-    if (detailLoading || !pendingAnchor.current || !orders.length) return;
+    if (detailLoading || !pendingAnchor.current || !(selectedId ? orders : allOrders).length) return;
     const anchor = pendingAnchor.current;
     const frame = requestAnimationFrame(() => {
       const node = orderNodes.current.get(anchor.id);
       const scroller = modeRef.current?.closest('.page-main');
-      if (!node || !scroller) return;
+      if (!node || !scroller) { pendingAnchor.current = null; return; }
       scroller.scrollTop += node.getBoundingClientRect().top - scroller.getBoundingClientRect().top - (anchor.offset ?? 12);
       if (anchor.focus) node.querySelector<HTMLButtonElement>('.ledger-order-row-main')?.focus({ preventScroll: true });
       setHighlightId(anchor.id); pendingAnchor.current = null;
     });
     return () => cancelAnimationFrame(frame);
-  }, [orders, detailLoading, completedOpen]);
+  }, [orders, allOrders, selectedId, detailLoading, completedOpen, view]);
   useEffect(() => { if (!highlightId) return; const timer = window.setTimeout(() => setHighlightId(null), 2200); return () => clearTimeout(timer); }, [highlightId]);
 
   const summaries = useMemo(() => {
@@ -158,6 +159,12 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
     return bosses.filter((item) => (filter !== 'active' || (summaries.get(item.id)?.active || 0) > 0) && (!needle || [item.display_name, item.game_id, item.game_name, item.notes].some((value) => value.toLocaleLowerCase().includes(needle)))).sort((a, b) => Number((summaries.get(b.id)?.active || 0) > 0) - Number((summaries.get(a.id)?.active || 0) > 0) || b.updated_at.localeCompare(a.updated_at));
   }, [bosses, search, filter, summaries]);
   const currentBoss = boss?.id === selectedId ? boss : null;
+  const allActiveOrders = useMemo(() => allOrders.filter((order) => order.status === 'active').sort((a, b) => b.updated_at.localeCompare(a.updated_at) || a.id.localeCompare(b.id)), [allOrders]);
+  const remaining = useMemo(() => sumOrders(allActiveOrders, 'remaining_quantity'), [allActiveOrders]);
+  const visibleOrders = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase();
+    return allActiveOrders.filter((order) => (orderKind === 'all' || order.kind === orderKind) && (!needle || [order.boss_name, order.boss_game_name, order.title, order.note].some((value) => value.toLocaleLowerCase().includes(needle))));
+  }, [allActiveOrders, search, orderKind]);
   const completedByKind = useMemo(() => sumOrders(orders, 'completed_quantity'), [orders]);
   const activeOrders = orders.filter((order) => order.status === 'active');
   const completedOrders = orders.filter((order) => order.status === 'completed');
@@ -226,28 +233,42 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
     const summary = order.kind === 'single_round' ? `单场目标 ${quantityText(order.total_quantity, order.kind)}` : orderSummary(order);
     const progress = order.kind === 'single_round' ? `最佳单场 ${quantityText(order.best_round_quantity, order.kind)}` : `${order.status === 'completed' ? '约定' : '已完成'} ${quantityText(order.status === 'completed' ? order.total_quantity : order.completed_quantity, order.kind)}`;
     return <article className={`ledger-order ledger-order-compact ${order.status === 'completed' ? 'is-completed' : ''} ${highlightId === order.id ? 'is-highlighted' : ''}`} key={order.id} aria-label={`${order.title}订单`} ref={(node) => { if (node) orderNodes.current.set(order.id, node); else orderNodes.current.delete(order.id); }}>
-      <div className="ledger-order-row"><button type="button" className="ledger-order-row-main" aria-label={`${order.title}场次账本`} aria-expanded={expanded} aria-controls={`ledger-history-${order.id}`} disabled={navigationBusy} onClick={() => setExpandedOrderId((current) => current === order.id ? null : order.id)}><span className={`ledger-order-kind ${order.kind}`}>{order.kind === 'hourly' ? <Clock3 size={14} /> : <ShieldCheck size={14} />}{orderLabels[order.kind]}</span><span className="ledger-order-row-copy"><span className="ledger-order-row-title"><strong>{order.title}</strong><span className={`ledger-order-status ${order.status}`}>{orderStateText(order)}</span></span><span className="ledger-order-row-meta">{progress}</span></span><span className="ledger-order-row-quantity">{summary}<ChevronDown size={14} className={expanded ? 'expanded' : ''} /></span></button><div className="ledger-order-row-actions"><Button size="xs" variant={order.status === 'completed' ? 'default' : 'filled'} disabled={navigationBusy || detailLoading} onClick={() => openEntry(order)}>记一场</Button><Menu position="bottom-end" shadow="md" withinPortal><Menu.Target><button type="button" className="ledger-more-button" aria-label={`${order.title}更多操作`} disabled={navigationBusy || detailLoading}><MoreHorizontal size={18} /></button></Menu.Target><Menu.Dropdown><Menu.Item leftSection={<SlidersHorizontal size={14} />} onClick={() => openEditor({ order })}>订单配置</Menu.Item>{(order.kind === 'hourly' || order.kind === 'escort') && <Menu.Item leftSection={<Pencil size={14} />} onClick={() => openForm({ type: 'adjustment', order })}>调整约定</Menu.Item>}<Menu.Item leftSection={<Plus size={14} />} onClick={() => openEditor({ order, saveAsTemplate: true })}>保存为个人模板</Menu.Item></Menu.Dropdown></Menu></div></div>
+      <div className="ledger-order-row">
+        <button type="button" className="ledger-order-row-main" aria-label={`${order.title}场次账本`} aria-expanded={expanded} aria-controls={`ledger-history-${order.id}`} disabled={navigationBusy} onClick={() => setExpandedOrderId((current) => current === order.id ? null : order.id)}>
+          <span className={`ledger-order-kind ${order.kind}`}>{order.kind === 'hourly' ? <Clock3 size={19} aria-hidden="true" /> : order.kind === 'single_round' ? <Target size={19} aria-hidden="true" /> : <ShieldCheck size={19} aria-hidden="true" />}<span>{orderLabels[order.kind]}</span></span>
+          <span className="ledger-order-row-copy">{!selectedId && <span className="ledger-order-boss">{order.boss_name}</span>}<span className="ledger-order-row-title"><strong>{order.title}</strong><span className={`ledger-order-status ${order.status}`}>{orderStateText(order)}</span></span><span className="ledger-order-row-meta">{progress}</span></span>
+          <span className="ledger-order-row-quantity">{summary}<ChevronDown size={15} className={expanded ? 'expanded' : ''} aria-hidden="true" /></span>
+        </button>
+        <div className="ledger-order-row-actions"><Button size="sm" variant={order.status === 'completed' ? 'default' : 'filled'} leftSection={<Plus size={15} aria-hidden="true" />} disabled={navigationBusy || detailLoading} onClick={() => openEntry(order)}>记一场</Button><Menu position="bottom-end" shadow="md" withinPortal><Menu.Target><button type="button" className="ledger-more-button" aria-label={`${order.title}更多操作`} disabled={navigationBusy || detailLoading}><MoreHorizontal size={19} /></button></Menu.Target><Menu.Dropdown>{!selectedId && <Menu.Item leftSection={<UsersRound size={14} />} onClick={() => selectBoss(order.boss_id)}>查看老板资料</Menu.Item>}<Menu.Item leftSection={<SlidersHorizontal size={14} />} onClick={() => openEditor({ order })}>订单配置</Menu.Item>{(order.kind === 'hourly' || order.kind === 'escort') && <Menu.Item leftSection={<Pencil size={14} />} onClick={() => openForm({ type: 'adjustment', order })}>调整约定</Menu.Item>}<Menu.Item leftSection={<Plus size={14} />} onClick={() => openEditor({ order, saveAsTemplate: true })}>保存为个人模板</Menu.Item></Menu.Dropdown></Menu></div>
+      </div>
+      <OrderProgress order={order} />
       <Collapse expanded={expanded}><div id={`ledger-history-${order.id}`} className="ledger-history-wrap">{expanded && <><OrderFacts order={order} /><LedgerHistory order={order} refresh={refresh} disabled={navigationBusy} onError={onError} onOpenMatch={(matchId) => openEntry(order, matchId)} onDeleteEntry={(entry) => { setDeleteError(''); setDeletion({ type: 'manual', order, entry }); }} onDeleteMatch={(matchId, label, confirmed) => { setDeleteError(''); setDeletion({ type: 'screenshot', order, matchId, label, confirmed }); }} /></>}</div></Collapse>
     </article>;
   }
 
   return <div className="boss-ledger">
-    {!selectedId && <div className="ledger-overview"><div><BookOpen size={17} /><span>{listLoading && bosses.length === 0 ? '加载中…' : <><strong>{bosses.length}</strong> 位老板，<strong>{allOrders.filter((order) => order.status === 'active').length}</strong> 笔进行中订单</>}</span></div><div className="ledger-overview-actions">{onRequestImport && <Button variant="default" size="xs" leftSection={<FileImage size={14} />} disabled={navigationBusy} onClick={onRequestImport}>导入战绩</Button>}<Button variant="default" size="xs" aria-label="刷新老板账本" leftSection={<RefreshCw size={14} />} disabled={navigationBusy || listLoading} onClick={refreshLedger}>刷新</Button><Button size="xs" leftSection={<Plus size={15} />} disabled={navigationBusy} onClick={() => openForm({ type: 'boss-create' })}>添加老板</Button></div></div>}
+    {!selectedId && <section className="ledger-summary" aria-label="待完成进度" aria-busy={listLoading}>
+      <button className="ledger-summary-primary" disabled={navigationBusy || listLoading || Boolean(listError)} onClick={() => { setView('orders'); setSearch(''); setOrderKind('all'); }}><span><span className="summary-live-dot" />进行中订单<ArrowUpRight size={17} aria-hidden="true" /></span><strong>{listLoading || listError ? '—' : allActiveOrders.length}<small>笔</small></strong><span>查看订单，直接记一场</span></button>
+      <div className="ledger-summary-stat"><span><Clock3 size={17} aria-hidden="true" />待陪玩时长</span><strong>{listLoading || listError ? '—' : remaining.hourly === null ? '请按订单查看' : minutesText(remaining.hourly)}</strong><small>小时单剩余</small></div>
+      <div className="ledger-summary-stat"><span><ShieldCheck size={17} aria-hidden="true" />待护航带出</span><strong title={remaining.escort === null ? undefined : quantityText(remaining.escort, 'escort')}>{listLoading || listError ? '—' : remaining.escort === null ? '请按订单查看' : <CompactAmount value={remaining.escort} />}</strong><small>护航单剩余 · 哈夫币</small></div>
+      <div className="ledger-summary-stat"><span><Target size={17} aria-hidden="true" />单局待达标</span><strong>{listLoading || listError ? '—' : allActiveOrders.filter(order => order.kind === 'single_round').length}<small>单</small></strong><small>按单场结果判定</small></div>
+    </section>}
     {listError && <Alert color="red" title="老板列表未加载">{listError}</Alert>}
     <div className="ledger-mode-content" ref={modeRef} key={selectedId || 'overview'}>
-      {!selectedId ? <section className="ledger-all-bosses" aria-label="所有老板总览" aria-busy={listLoading}>
-        <div className="ledger-all-heading"><div><h2>所有老板</h2></div>{(search.trim() || filter !== 'all') && <span>{visibleBosses.length} / {bosses.length} 位</span>}</div>
-        <div className="ledger-all-filters"><TextInput aria-label="搜索老板" placeholder="搜索老板、ID 或备注" leftSection={<Search size={15} />} value={search} onChange={(event) => setSearch(event.currentTarget.value)} /><SegmentedControl value={filter} onChange={setFilter} data={[{ label: '全部老板', value: 'all' }, { label: '有进行中订单', value: 'active' }]} /></div>
-        {listLoading && bosses.length === 0 ? <div className="ledger-loading" role="status"><Loader size="sm" /><span>加载中…</span></div> : bosses.length === 0 && !listError ? <div className="ledger-onboarding"><span className="ledger-onboarding-icon"><UsersRound size={35} strokeWidth={1.4} /></span><h2>还没有老板</h2><Button leftSection={<Plus size={16} />} onClick={() => openForm({ type: 'boss-create' })}>添加第一位老板</Button></div> : visibleBosses.length ? <table className="ledger-boss-table" aria-label="老板总览"><thead><tr><th>老板</th><th>累计完成</th><th>还欠老板</th><th>进行中</th><th>关键备注</th><th>订单</th></tr></thead><tbody>{visibleBosses.map((item) => {
+      {!selectedId ? <section className={`ledger-all-bosses ${view === 'orders' ? 'is-order-view' : ''}`} aria-label={view === 'bosses' ? '所有老板总览' : '所有进行中订单'} aria-busy={listLoading}>
+        <div className="ledger-all-heading"><SegmentedControl className="ledger-view-switch" aria-label="账本视图" value={view} onChange={(value) => { setView(value); setSearch(''); setExpandedOrderId(null); }} data={[{ value: 'bosses', label: <span><UsersRound size={16} aria-hidden="true" />老板总览<b>{bosses.length}</b></span> }, { value: 'orders', label: <span><BookOpen size={16} aria-hidden="true" />进行中订单<b>{allActiveOrders.length}</b></span> }]} /><div className="ledger-overview-actions"><Button variant="subtle" size="sm" aria-label="刷新老板账本" title="刷新账本" disabled={navigationBusy || listLoading} onClick={refreshLedger}><RefreshCw size={16} className={listLoading ? 'is-spinning' : ''} aria-hidden="true" /></Button><Button variant="default" size="sm" leftSection={<Plus size={16} aria-hidden="true" />} disabled={navigationBusy} onClick={() => openForm({ type: 'boss-create' })}>添加老板</Button></div></div>
+        <div className="ledger-all-filters"><TextInput aria-label={view === 'bosses' ? '搜索老板' : '搜索进行中订单'} placeholder={view === 'bosses' ? '搜索老板、ID 或备注' : '搜索老板或订单名称'} leftSection={<Search size={16} aria-hidden="true" />} rightSection={search ? <button className="ledger-search-clear" aria-label="清空搜索" onClick={() => setSearch('')}><X size={14} /></button> : undefined} value={search} onChange={(event) => setSearch(event.currentTarget.value)} />{view === 'bosses' ? <SegmentedControl aria-label="老板筛选" value={filter} onChange={setFilter} data={[{ label: '全部老板', value: 'all' }, { label: '有进行中订单', value: 'active' }]} /> : <SegmentedControl aria-label="订单类型筛选" value={orderKind} onChange={setOrderKind} data={[{ label: '全部类型', value: 'all' }, { label: '小时单', value: 'hourly' }, { label: '护航单', value: 'escort' }, { label: '单局单', value: 'single_round' }]} />}</div>
+        <div className="ledger-list-caption"><h2>{view === 'bosses' ? '所有老板' : '进行中订单'}</h2><span><ListFilter size={13} aria-hidden="true" />{view === 'bosses' ? '进行中优先' : '最近更新优先'}</span><span role="status">{view === 'bosses' ? `${visibleBosses.length} 位老板` : `${visibleOrders.length} 笔订单`}</span></div>
+        {view === 'orders' ? (listLoading && !allOrders.length ? <div className="ledger-loading" role="status"><Loader size="sm" /><span>加载中…</span></div> : visibleOrders.length ? <div className="ledger-orders ledger-orders-compact ledger-home-orders">{visibleOrders.map(renderOrder)}</div> : <div className="ledger-list-empty"><BookOpen size={28} /><strong>{listError ? '订单数据暂时未加载' : search || orderKind !== 'all' ? '没有符合条件的订单' : '暂无进行中订单'}</strong><span>{listError ? '点击刷新，重新加载账本。' : search || orderKind !== 'all' ? '试试其他关键词或订单类型。' : '从老板资料中建立一笔新订单。'}</span><Button variant="default" onClick={() => { if (search || orderKind !== 'all') { setSearch(''); setOrderKind('all'); } else { setView('bosses'); setFilter('all'); } }}>{search || orderKind !== 'all' ? '清除筛选' : '查看老板'}</Button></div>) : <>
+        {listLoading && bosses.length === 0 ? <div className="ledger-loading" role="status"><Loader size="sm" /><span>加载中…</span></div> : bosses.length === 0 && !listError ? <div className="ledger-onboarding"><span className="ledger-onboarding-icon"><UsersRound size={35} strokeWidth={1.4} /></span><h2>从第一位老板开始</h2><p>添加称呼，再建立小时单、护航单或单局单。</p><Button leftSection={<Plus size={16} />} onClick={() => openForm({ type: 'boss-create' })}>添加第一位老板</Button></div> : visibleBosses.length ? <table className="ledger-boss-table" aria-label="老板总览"><thead><tr><th>老板</th><th>累计完成</th><th>还欠老板</th><th>进行中</th><th>关键备注</th><th>订单</th></tr></thead><tbody>{visibleBosses.map((item) => {
           const summary = summaries.get(item.id); if (!summary) return null;
           return <tr key={item.id} aria-label={`${item.display_name}老板汇总`}><td data-label="老板"><button className="ledger-row-identity" aria-label={`查看${item.display_name}资料与订单`} disabled={navigationBusy} onClick={() => selectBoss(item.id)}><span className="ledger-row-avatar">{Array.from(item.display_name).slice(0, 1)}</span><strong>{item.display_name}</strong></button>{item.game_id && <span className="ledger-row-id">ID：{item.game_id}</span>}{item.game_name && <span className="ledger-row-game-name">昵称：{item.game_name}</span>}</td><td data-label="累计完成"><QuantityPair quantities={summary.completed} /></td><td className={`ledger-row-remaining ${summary.active ? 'has-debt' : ''}`} data-label="还欠老板"><QuantityPair quantities={summary.remaining} />{summary.singles > 0 && <div className="ledger-pending-orders"><span>单局待达标 <b>{summary.singles} 单</b></span></div>}{summary.orders.length === 0 && <small>尚未建单</small>}</td><td data-label="进行中"><span className={`ledger-row-active ${summary.active ? 'active' : ''}`}>{summary.active}<small> 笔</small></span><span className="ledger-row-total-orders">共 {summary.orders.length} 单</span></td><td data-label="关键备注"><button className={`ledger-row-note ${item.notes ? '' : 'empty'}`} title={item.notes || '添加老板备注'} aria-label={`编辑${item.display_name}备注`} disabled={navigationBusy} onClick={() => openForm({ type: 'boss-edit', boss: item })}><MessageSquare size={13} /><span>{item.notes || '添加备注'}</span></button></td><td data-label="订单"><div className="ledger-row-actions"><Button variant="default" size="xs" rightSection={<ChevronRight size={13} />} aria-label={`查看${item.display_name}订单`} disabled={navigationBusy} onClick={() => selectBoss(item.id)}>查看订单</Button></div></td></tr>;
-        })}</tbody></table> : <div className="ledger-list-empty"><Search size={25} /><strong>{listError ? '老板数据暂时未加载' : '没有符合条件的老板'}</strong>{!listError && <button onClick={() => { setSearch(''); setFilter('all'); }}>查看全部老板</button>}</div>}
+        })}</tbody></table> : <div className="ledger-list-empty"><Search size={25} /><strong>{listError ? '老板数据暂时未加载' : '没有符合条件的老板'}</strong>{!listError && <button onClick={() => { setSearch(''); setFilter('all'); }}>查看全部老板</button>}</div>}</>}
 
       </section> : <section className="ledger-detail" aria-label="老板详情与订单" aria-busy={detailLoading}>
         <div className="ledger-detail-navigation">
-          <Button variant="subtle" size="xs" leftSection={<ArrowLeft size={14} />} disabled={navigationBusy} onClick={() => { pendingAnchor.current = null; setSelectedId(null); setExpandedOrderId(null); setCompletedOpen(false); }}>返回所有老板</Button>
+          <Button variant="subtle" size="xs" leftSection={<ArrowLeft size={14} />} disabled={navigationBusy} onClick={() => { pendingAnchor.current = null; setSelectedId(null); setExpandedOrderId(null); setCompletedOpen(false); }}>{view === 'orders' ? '返回进行中订单' : '返回所有老板'}</Button>
           <div className="ledger-detail-actions">
-            {onRequestImport && <Button variant="default" size="xs" leftSection={<FileImage size={14} />} disabled={navigationBusy} onClick={onRequestImport}>导入战绩</Button>}
             <Button variant="subtle" size="xs" aria-label="刷新老板订单" leftSection={<RefreshCw size={13} />} disabled={navigationBusy || detailLoading} onClick={refreshLedger}>刷新</Button>
           </div>
         </div>
@@ -273,6 +294,21 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
     </Modal>
     <Modal opened={discardOpen} onClose={() => setDiscardOpen(false)} title="尚有未保存修改" centered size="sm"><div className="ledger-confirm-copy"><p>未保存的内容将丢失。</p><div className="ledger-confirm-actions"><Button variant="default" onClick={() => setDiscardOpen(false)}>继续填写</Button><Button color="orange" onClick={() => { setDiscardOpen(false); setForm(null); }}>放弃修改</Button></div></div></Modal>
     <Modal opened={deletion !== null} onClose={() => { if (!busy) setDeletion(null); }} title={deletion?.type === 'screenshot' ? '删除本场截图记录？' : '删除这条手工记录？'} centered size="sm" withCloseButton={!busy} closeOnEscape={!busy} closeOnClickOutside={!busy}>{deletion && <div className="ledger-confirm-copy"><p><strong>{deletion.order.title}</strong>：{deletion.type === 'screenshot' ? deletion.label : `${entryLabels[deletion.entry.kind]} ${quantityText(entryQuantity(deletion.entry), deletion.order.kind)}`}</p><p>{deletion.type === 'screenshot' ? deletion.confirmed ? '删除本场校对，撤销计入与追加，重新计算订单余额。' : '删除待确认截图和填写结果，不影响已入账金额。' : '撤销这条记录，重新计算订单进度与约定。'}</p>{deleteError && <Alert color="red" title="删除未完成">{deleteError}</Alert>}<div className="ledger-confirm-actions"><Button variant="default" disabled={busy} onClick={() => setDeletion(null)}>取消</Button><Button color="red" loading={busy} leftSection={<Trash2 size={14} />} onClick={() => void confirmDelete()}>删除记录</Button></div></div>}</Modal>
+  </div>;
+}
+
+function CompactAmount({ value }: { value: number }) {
+  const divisor = value >= 100_000_000 ? 100_000_000 : value >= 10_000 ? 10_000 : 1;
+  return <>{new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value / divisor)}{divisor > 1 && <small>{divisor === 100_000_000 ? '亿' : '万'}</small>}</>;
+}
+
+function OrderProgress({ order }: { order: ServiceOrder }) {
+  const quantity = order.kind === 'single_round' ? order.best_round_quantity : order.completed_quantity;
+  const percent = order.status === 'completed' ? 100 : order.total_quantity > 0 ? Math.min(100, Math.max(0, Math.floor(quantity / order.total_quantity * 100))) : 0;
+  return <div className={`ledger-order-progress ${order.kind}`}>
+    <div className="ledger-progress-track" role="progressbar" aria-label={`${order.title}${order.kind === 'single_round' ? '最佳单场进度' : '完成进度'}`} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><span style={{ transform: `scaleX(${percent / 100})` }} /></div>
+    <span>{order.kind === 'single_round' ? '最佳单场' : '已完成'} {percent}%</span>
+    <span>{order.record_count} 条记录</span>
   </div>;
 }
 

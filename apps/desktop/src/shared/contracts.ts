@@ -8,7 +8,17 @@ export interface LoginInput { email: string; password: string }
 export type RegisterInput = LoginInput;
 export interface AuthResponse { token: string; user: User }
 export interface HealthResponse { status: 'ok'; database: 'connected' }
-export interface AppInfo { version: string; apiUrl: string; persistentSession: boolean }
+export interface AppInfo { version: string; apiUrl: string; persistentSession: boolean; updatesSupported?: boolean }
+export interface UpdateState {
+  phase: 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'download-error' | 'ready' | 'installing' | 'error';
+  currentVersion: string;
+  latestVersion: string | null;
+  downloadedBytes: number;
+  totalBytes: number;
+  notes: string;
+  publishedAt: string;
+  error: string;
+}
 export interface ApiErrorData { code: string; message: string }
 export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: ApiErrorData };
 
@@ -153,10 +163,15 @@ export interface DesktopBridge {
   me(): Promise<User>;
   logout(): Promise<void>;
   windowControl(action: 'minimize' | 'maximize' | 'restore' | 'close'): Promise<void>;
+  setWindowTheme(theme: 'dark' | 'light'): Promise<void>;
   setImportHotkey(shortcut: ImportHotkey | null): Promise<void>;
   captureScreen(): Promise<MatchUploadInput | null>;
   readClipboardImage(): Promise<MatchUploadInput | null>;
   appInfo(): Promise<AppInfo>;
+  getUpdateState(): Promise<UpdateState>;
+  checkForUpdates(): Promise<UpdateState>;
+  downloadUpdate(): Promise<UpdateState>;
+  installUpdate(): Promise<void>;
   onCloseRequested?(handler: () => void): () => void;
   onExitRequested?(handler: () => void): () => void;
   onImportRequested?(handler: () => void): () => void;

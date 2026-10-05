@@ -12,7 +12,7 @@ from rapidocr import RapidOCR
 from scoreboard import OCRLine, parse_scoreboard
 
 
-def create_engine() -> RapidOCR:
+def create_engine(*, cpu_threads: int = 2) -> RapidOCR:
     models = Path(rapidocr.__file__).resolve().parent / "models"
     paths = {
         "Det.model_path": models / "PP-OCRv6_det_small.onnx",
@@ -23,7 +23,8 @@ def create_engine() -> RapidOCR:
         if not path.is_file():
             raise RuntimeError(f"Bundled OCR model missing: {path.name}; rebuild the image")
     return RapidOCR(params={**{key: str(path) for key, path in paths.items()},
-                            "EngineConfig.onnxruntime.intra_op_num_threads": 2,
+                            "Global.log_level": "critical",
+                            "EngineConfig.onnxruntime.intra_op_num_threads": cpu_threads,
                             "EngineConfig.onnxruntime.inter_op_num_threads": 1,
                             "EngineConfig.onnxruntime.use_cuda": False,
                             "EngineConfig.onnxruntime.use_dml": False,

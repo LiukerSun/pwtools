@@ -75,6 +75,14 @@ template<class Function> void Failure(const char* code, Function&& function) {
 int main() {
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
   try {
+    const RECT desktop{-1600, -200, 1920, 1080};
+    const auto clipped = pwtools::ClipCaptureWindowBounds({-1700, -300, -600, 600}, desktop);
+    Require(clipped && clipped->left == 0 && clipped->top == 0 && clipped->right == 1000 && clipped->bottom == 800,
+            "window snapping must clip and translate negative monitor coordinates");
+    const auto spanning = pwtools::ClipCaptureWindowBounds({-100, 100, 900, 700}, desktop);
+    Require(spanning && spanning->left == 1500 && spanning->top == 300 && spanning->right == 2500 && spanning->bottom == 900,
+            "window snapping must retain windows across monitor boundaries");
+    Require(!pwtools::ClipCaptureWindowBounds({1920, 0, 2000, 100}, desktop), "off-screen windows must not snap");
     Bitmap sample(4, 3);
     const auto png = pwtools::EncodeCaptureBackground(sample.handle);
     AssertPng(png, 4, 3);

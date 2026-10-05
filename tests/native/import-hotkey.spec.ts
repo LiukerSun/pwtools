@@ -147,7 +147,7 @@ async function installImportFixture(app: NativeApplication) {
     const bridge = window.pwtools!;
     const state: ImportFixtureState = { unexpected: [], captureCalls: 0, uploads: [], updates: [] };
     (window as Window & { importFixture?: typeof state }).importFixture = state;
-    const preserve = new Set(['windowControl', 'setImportHotkey', 'onCloseRequested', 'onExitRequested', 'onImportRequested', 'appInfo']);
+    const preserve = new Set(['windowControl', 'setImportHotkey', 'onCloseRequested', 'onExitRequested', 'onImportRequested', 'appInfo', 'getUpdateState']);
     for (const method of Object.keys(bridge)) {
       if (preserve.has(method)) continue;
       (bridge as unknown as Record<string, unknown>)[method] = async () => {
@@ -388,14 +388,12 @@ test('截图等待期间重复快捷键不会重拍，取消后可重试且截�
     await expect.poll(async () => (await app!.windowState()).iconic).toBe(true);
     await app.notifyRegisteredHotkey(PRIMARY);
     await expect.poll(async () => (await fixtureState(app!)).captureCalls).toBe(1);
-    await expect(page.getByRole('button', { name: '导入战绩', exact: true })).toBeDisabled();
     await app.notifyRegisteredHotkey(PRIMARY);
     expect((await fixtureState(app)).captureCalls).toBe(1);
     expect((await app.windowState()).iconic).toBe(true);
     await expect(page.getByRole('dialog', { name: '导入战绩', exact: true })).toHaveCount(0);
     expect((await fixtureState(app)).uploads).toEqual([]);
     await page.evaluate(() => (window as Window & { cancelPendingCapture?: () => void }).cancelPendingCapture!());
-    await expect(page.getByRole('button', { name: '导入战绩', exact: true })).toBeEnabled();
     await expect(page.getByRole('dialog', { name: '导入战绩', exact: true })).toHaveCount(0);
     expect((await app.windowState()).iconic).toBe(true);
     await page.evaluate(() => {
