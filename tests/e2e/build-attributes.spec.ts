@@ -34,6 +34,7 @@ test('截图校对、再次识别保留人工值、保存与清除', async ({ pa
   await dialog.getByRole('button', { name: '保存', exact: true }).click();
   await expect(dialog).not.toBeVisible();
   const article = page.getByRole('article', { name: 'M7战斗步枪改枪方案', exact: true });
+  await article.locator('summary').click();
   await expect(article.getByText(/个人截图校对/)).toBeVisible();
   const saved = (await get<{ items: WeaponBuildCode[] }>('/weapon-build-codes')).items[0];
   expect(saved.manual_attributes?.values).toMatchObject({ damage: 40, handling: 38, price: 852355 });

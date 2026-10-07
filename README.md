@@ -5,6 +5,7 @@
 ## 已有功能与范围
 
 - 改枪码管理支持完整码和核心码录入、备注、搜索与模式筛选、复制、编辑和确认删除，按账号保存到 PostgreSQL。后台配置 `BUILD_CODE_API_TOKEN` 后，从三角洲数据帝已收录方案查询属性与参考价，并按武器/模式缓存6小时；未收录或查询失败仍可保存。仅核心码需补充武器名和模式，属性保留来源和查询时间。
+- 改枪码列表采用紧凑多列卡片，默认按两行四列展示肉伤、甲伤、射程、后座、操控、稳定性、腰射和枪口初速；未提供的值显示「—」。射速、容量、开火模式、枪声传播距离、参考价和来源时间默认折叠到「更多属性」，支持键盘展开。此列表布局已随 0.9.42 测试版发布。
 - 改枪码支持选取或粘贴枪支属性面板截图，识别后可补录、校对并确认对应方案，也可直接手填。Windows 使用随包本机 OCR，浏览器调用鉴权预览接口。个人属性优先显示，再次识别默认填空并保留人工值，清除个人属性后恢复已有目录属性。只保存结构化属性、来源和时间到数据库，截图与完整识别文本不持久化，价格标为截图参考价；该功能已随 0.9.41 测试版上线。
 
 属性 OCR 部署时先更新 `ocr` 服务，使 `/recognize-build-attributes` 可用，再更新 API（启动执行 `202610070003_build_code_attributes.sql`），最后分发新客户端。浏览器使用 `POST /api/weapon-build-codes/recognize-attributes`，请求为 `name`、`content_type`、`data_base64`，预览不创建任何业务记录。Windows 只向 API 校验登录状态，图片在本机内存推理。保存接口的 `manual_attributes` 省略表示保留同身份旧值、对象表示确认保存、`null` 表示明确清除；对象包含 `identity`、`values`、`source`、`recognized_at` 和 `confirmed: true`，确认时间由服务器生成。无需第三方 Token 即可保存个人属性。
@@ -180,7 +181,7 @@ npm run build
 npm run package:win
 ```
 
-Windows 安装包生成在 `apps/desktop/release/`，当前测试版的文件名为 `PWTools-Setup-0.9.41.exe`，应用可执行文件为 `PWTools.exe`，卸载程序为 `Uninstall-PWTools.exe`。文件与默认安装路径均不带空格；默认安装到 `%LOCALAPPDATA%\Programs\PWToolsNative`，与旧 Electron 客户端分开。程序文件位于 `apps/desktop/release/native-win-x64/`。0.9.41 增加属性截图 OCR、手动校对保存和截图响应优化，配套 API、OCR 与数据库迁移已同步上线，保留转单及监狱地图 OCR 修复。安装包不包含 Docker 后端或数据库，通过 HTTPS 访问 API。[本地测试安装包](apps/desktop/release/PWTools-Setup-0.9.41.exe)。安装包、同名 `.sha256` 校验文件和 `updates/windows-x64/beta/latest.json` 测试更新清单均保留在本地。
+Windows 安装包生成在 `apps/desktop/release/`，当前测试版的文件名为 `PWTools-Setup-0.9.42.exe`，应用可执行文件为 `PWTools.exe`，卸载程序为 `Uninstall-PWTools.exe`。文件与默认安装路径均不带空格；默认安装到 `%LOCALAPPDATA%\Programs\PWToolsNative`，与旧 Electron 客户端分开。程序文件位于 `apps/desktop/release/native-win-x64/`。0.9.42 增加紧凑卡片布局和默认八项属性展示，保留属性截图 OCR、手动校对保存、截图响应优化及转单功能。配套 API、OCR 与数据库迁移沿用已上线的 0.9.41。安装包不包含 Docker 后端或数据库，通过 HTTPS 访问 API。[本地测试安装包](apps/desktop/release/PWTools-Setup-0.9.42.exe)。安装包、同名 `.sha256` 校验文件和 `updates/windows-x64/beta/latest.json` 测试更新清单均保留在本地。
 
 制作安装包需要 NSIS 3 的 `makensis.exe`，可安装到默认位置或加入 `PATH`；脚本也可复用本机既有的 NSIS 缓存。当前未配置 Windows 代码签名。
 
@@ -310,6 +311,10 @@ cargo run --manifest-path services/api/Cargo.toml --bin pwtools-api
 原生桌面版的识别由客户端处理，本机 Rust 开发无需启动 OCR 服务。浏览器预览与旧客户端仍使用服务端 OCR；Compose 默认不向宿主机映射 OCR，按照 [OCR 开发说明](services/ocr/README.md) 启动本机服务。没有 OCR 时仍能保存原图和人工校对。
 
 ## 检查与测试
+
+2026-10-07 已发布 0.9.42 测试版：改枪码列表默认展示肉伤、甲伤、射程、后座、操控、稳定性、腰射和枪口初速，其余参数和来源信息折叠。卡片最小宽度由440降至320像素、内边距由22降至12像素；约1040像素内容区可排3列，样本默认卡片高约233像素。深浅色、360/760/960像素窄屏无横向溢出，鼠标展开与键盘折叠已验证。
+
+类型检查、渲染器及 Windows 安装包构建、原生更新器 fixture 通过，发布资源已核对包含紧凑布局。安装包为31,544,595字节，SHA-256 为 `f87f6aefbb22e1e8fbc0b3e02cd697d25100e7528c68cd9255a9d0c7d08d7167`；公网清单与本地版本、通道、说明、大小和哈希一致，原生更新器完整下载并通过大小、哈希和安装包版本校验。正式通道保持0.9.22，此次只发布桌面端，现有生产 API 健康状态正常。
 
 2026-10-07 已发布 0.9.41 测试版：改枪码属性截图 OCR、个人属性校对保存，以及截图后台编码、快速唤起和鼠标附近确认工具栏。安装包为 31,549,913 字节，SHA-256 为 `0d1ca0b5190fe16109c710ee43b35a81c5d0fb6e0e0004c8a1c3d9bab80407c6`。
 

@@ -14,9 +14,15 @@ const emptyDraft = (): WeaponBuildCodeInput => ({ code: '', weapon_name: '', mod
 const statusText = { matched: '已匹配属性', unmatched: '未收录此方案', unavailable: '属性查询暂不可用，可稍后重试', not_configured: '属性服务尚未配置' };
 
 function Attributes({ value }: { value: BuildCodeAttributes }) {
-  return <div className="build-attributes"><dl>{value.properties.map(p => <div key={p.name}><dt>{p.name}</dt><dd>{p.value}<small>{p.unit}{p.change !== '-' ? p.change : ''}</small></dd></div>)}</dl>
-    {value.details && <details className="build-extra"><summary>更多属性</summary><dl>{([['capacity', '容量', '发'], ['muzzle_velocity_mps', '枪口初速', '米/秒'], ['sound_distance_m', '枪声传播距离', '米']] as const).map(([key, label, unit]) => value.details![key] != null && <div key={key}><dt>{label}</dt><dd>{value.details![key]}<small>{unit}</small></dd></div>)}{value.details.fire_modes?.length ? <div><dt>开火模式</dt><dd>{value.details.fire_modes.join('/')}</dd></div> : null}</dl></details>}
-    <div className="build-source"><span>{value.source} · {new Date(value.fetched_at).toLocaleString('zh-CN')}</span>{value.price !== null && <span>{value.snapshot_source ? '截图参考价' : '参考价'} {(value.price / 10000).toFixed(1)} 万</span>}</div></div>;
+  const primary = ([['damage', '肉伤', ''], ['armor_damage', '甲伤', ''], ['range_m', '射程', '米'], ['recoil_control', '后座', ''], ['handling', '操控', ''], ['stability', '稳定性', ''], ['hip_fire', '腰射', ''], ['muzzle_velocity_mps', '枪口初速', '米/秒']] as const).map(([key, name, unit]) => {
+    const property = value.properties.find(p => p.name === name);
+    return { name, value: property?.value ?? value.details?.[key], unit: property?.unit ?? unit, change: property?.change };
+  });
+  const remaining = value.properties.filter(p => !primary.some(main => main.name === p.name));
+  return <div className="build-attributes"><dl className="build-primary">{primary.map(p => <div key={p.name}><dt>{p.name}</dt><dd>{p.value ?? '—'}{p.value != null && <small>{p.unit}{p.change && p.change !== '-' ? p.change : ''}</small>}</dd></div>)}</dl>
+    <details className="build-extra"><summary>更多属性</summary><dl>{remaining.map(p => <div key={p.name}><dt>{p.name}</dt><dd>{p.value}<small>{p.unit}{p.change !== '-' ? p.change : ''}</small></dd></div>)}{value.details && <>{([['capacity', '容量', '发'], ['sound_distance_m', '枪声传播距离', '米']] as const).map(([key, label, unit]) => value.details![key] != null && <div key={key}><dt>{label}</dt><dd>{value.details![key]}<small>{unit}</small></dd></div>)}{value.details.fire_modes?.length ? <div><dt>开火模式</dt><dd>{value.details.fire_modes.join('/')}</dd></div> : null}</>}</dl>
+      <div className="build-source"><span>{value.source} · {new Date(value.fetched_at).toLocaleString('zh-CN')}</span>{value.price !== null && <span>{value.snapshot_source ? '截图参考价' : '参考价'} {(value.price / 10000).toFixed(1)} 万</span>}</div>
+    </details></div>;
 }
 
 export default function WeaponBuildCodes({ onError, onNavigationStateChange }: Props) {

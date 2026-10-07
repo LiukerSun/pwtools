@@ -41,6 +41,7 @@ test('实际 WebView2 本机识别 M7、校对保存和重启恢复', async () =
     app = await NativeApplication.launch(directory, undefined, { PWTOOLS_DEV_URL: '' });
     await expect(app.page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     await app.page.getByRole('button', { name: '改枪码管理', exact: true }).click();
+    await app.page.getByRole('article', { name: 'M7战斗步枪改枪方案', exact: true }).locator('summary').click();
     await expect(app.page.getByRole('article', { name: 'M7战斗步枪改枪方案', exact: true }).getByText(/个人截图校对/)).toBeVisible();
     expect((await app.page.evaluate(() => window.pwtools!.listBuildCodes())).items[0].manual_attributes).toEqual(saved.items[0].manual_attributes);
     expect(errors).toEqual([]);
