@@ -5,6 +5,7 @@
 #include "screen_capture.hpp"
 #include "api_bridge.hpp"
 #include <cstring>
+#include <chrono>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -103,7 +104,9 @@ int main() {
     // A detailed multi-monitor background may exceed the final file budget,
     // while users can still select a small region within it.
     Bitmap detailedBackground(3000, 2000, true);
+    const auto encodeStart = std::chrono::steady_clock::now();
     const auto detailed = pwtools::EncodeCaptureBackground(detailedBackground.handle);
+    std::cout << "detailed desktop encode ms: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-encodeStart).count() << '\n';
     Require(detailed.size() > 12 * 1024 * 1024 && detailed.size() < 64 * 1024 * 1024, "background must use its separate encoding budget");
     Failure("IMAGE_TOO_LARGE", [&] { pwtools::ValidateCaptureReply(Base64(detailed)); });
     std::cout << "screen capture fixtures passed: opaque BGRA background, bounded PNG, independent background/final budgets, canonical base64, original PNG identity (no screen or clipboard access)\n";

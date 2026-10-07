@@ -4,6 +4,7 @@
 #define ORT_API_MANUAL_INIT
 #include <onnxruntime_cxx_api.h>
 #include "local_ocr.hpp"
+#include "gun_attributes.hpp"
 #include "api_bridge.hpp"
 #include "scoreboard.hpp"
 
@@ -327,7 +328,7 @@ struct LocalOcr::Impl {
   std::chrono::milliseconds timeout;
   std::timed_mutex mutex;
   Impl(std::filesystem::path location, std::chrono::milliseconds budget) : directory(location.empty() ? DefaultDirectory() : std::filesystem::absolute(location)), timeout(budget) {}
-  Json Recognize(const std::vector<unsigned char>& bytes, const std::string& mime) {
+  Json Recognize(const std::vector<unsigned char>& bytes, const std::string& mime, bool build_attributes=false) {
     if (bytes.empty() || bytes.size()>kMaxImage || (mime!="image/png" && mime!="image/jpeg" && mime!="image/webp")) InvalidImage();
     const auto deadline=Clock::now()+timeout;
     std::unique_lock lock(mutex,std::defer_lock);
@@ -343,11 +344,12 @@ struct LocalOcr::Impl {
         const auto dictionary=Dictionary(recognizer);
         for (auto box : boxes) { auto line=ReadLine(recognizer,classifier,image,box,dictionary,budget); if (line.confidence>=0.5 && !line.text.empty()) lines.push_back(std::move(line)); }
       }
-      CheckDeadline(deadline); return ParseScoreboard(std::move(lines),image.width,image.height);
+      CheckDeadline(deadline); return build_attributes ? ParseGunAttributes(lines,image.width,image.height) : ParseScoreboard(std::move(lines),image.width,image.height);
     } catch (const Ort::Exception&) { CheckDeadline(deadline); Unavailable(); }
   }
 };
 LocalOcr::LocalOcr(std::filesystem::path directory, std::chrono::milliseconds timeout) : impl_(std::make_unique<Impl>(std::move(directory),timeout)) {}
 LocalOcr::~LocalOcr() = default;
 Json LocalOcr::Recognize(const std::vector<unsigned char>& image, const std::string& mime) { return impl_->Recognize(image,mime); }
+Json LocalOcr::RecognizeBuildAttributes(const std::vector<unsigned char>& image, const std::string& mime) { return impl_->Recognize(image,mime,true); }
 } // namespace pwtools

@@ -296,6 +296,7 @@ export interface DesktopBridge {
   updateBuildCode(id: string, input: WeaponBuildCodeInput): Promise<WeaponBuildCode>;
   deleteBuildCode(id: string): Promise<void>;
   lookupBuildCode(input: WeaponBuildCodeInput): Promise<BuildCodeLookup>;
+  recognizeBuildCodeAttributes(image: BuildAttributeImage): Promise<BuildAttributeCandidate>;
   listRentalAccounts(): Promise<{ items: RentalAccount[] }>;
   createRentalAccount(input: RentalAccountInput): Promise<RentalAccount>;
   listRentalSessions(): Promise<{ items: RentalSession[] }>;
@@ -358,20 +359,40 @@ declare global {
   interface Window { pwtools?: DesktopBridge }
 }
 
-export interface WeaponBuildCodeInput { code: string; weapon_name: string; mode: '烽火地带' | '全面战场'; note: string }
+export interface BuildAttributeValues {
+  damage?: number | null; armor_damage?: number | null; range_m?: number | null;
+  recoil_control?: number | null; handling?: number | null; stability?: number | null; hip_fire?: number | null;
+  fire_rate_rpm?: number | null; capacity?: number | null; fire_modes?: ('全自动' | '单发' | '点射')[] | null;
+  muzzle_velocity_mps?: number | null; sound_distance_m?: number | null; price?: number | null;
+}
+export interface BuildIdentity { weapon_name: string; mode: '烽火地带' | '全面战场'; core_code: string }
+export interface ManualBuildAttributes {
+  identity: BuildIdentity; values: BuildAttributeValues; source: 'manual' | 'ocr_confirmed'; recognized_at?: string | null;
+  confirmed_at: string;
+}
+export type ManualBuildAttributeInput = Omit<ManualBuildAttributes, 'confirmed_at'> & { confirmed: boolean };
+export interface BuildAttributeCandidate {
+  status: 'completed' | 'no_text' | 'no_fields'; weapon_name: string | null; values: BuildAttributeValues;
+  confidences: Partial<Record<keyof BuildAttributeValues, number>>; warnings: string[]; missing: string[];
+}
+export interface BuildAttributeImage { name: string; content_type: string; data_base64: string }
+export interface WeaponBuildCodeInput { code: string; weapon_name: string; mode: '烽火地带' | '全面战场'; note: string; manual_attributes?: ManualBuildAttributeInput | null; record_id?: string }
 export interface BuildCodeAttributes {
   source: string;
   fetched_at: string;
   provider_id: number | null;
   price: number | null;
-  properties: { name: string; value: number; change: string }[];
+  properties: { name: string; value: number; change: string; unit?: string }[];
+  snapshot_source?: 'manual' | 'ocr_confirmed'; recognized_at?: string | null; details?: BuildAttributeValues;
 }
 export type BuildCodeLookupStatus = 'matched' | 'unmatched' | 'unavailable' | 'not_configured';
 export interface BuildCodeLookup { status: BuildCodeLookupStatus; attributes: BuildCodeAttributes | null }
-export interface WeaponBuildCode extends WeaponBuildCodeInput {
+export interface WeaponBuildCode extends Omit<WeaponBuildCodeInput, 'manual_attributes'> {
   id: string;
   attributes: BuildCodeAttributes | null;
   lookup_status: BuildCodeLookupStatus;
   created_at: string;
   updated_at: string;
+  manual_attributes?: ManualBuildAttributes | null;
+  provider_attributes?: BuildCodeAttributes | null;
 }

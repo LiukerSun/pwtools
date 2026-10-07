@@ -19,6 +19,7 @@ public:
   LocalOcr(const LocalOcr&) = delete;
   LocalOcr& operator=(const LocalOcr&) = delete;
   nlohmann::json Recognize(const std::vector<unsigned char>& image, const std::string& mime);
+  nlohmann::json RecognizeBuildAttributes(const std::vector<unsigned char>& image, const std::string& mime);
 
 private:
   struct Impl;

@@ -14,6 +14,7 @@
 #include <cstring>
 #include <exception>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <utility>
 #include <unordered_set>
@@ -29,6 +30,7 @@ constexpr wchar_t OverlayUrl[] = L"https://pwtools.local/capture.html";
 constexpr wchar_t ContentSecurityPolicy[] = L"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; frame-src 'none'";
 constexpr UINT_PTR StartTimer = 1;
 constexpr UINT_PTR ExpiryTimer = 2;
+constexpr UINT_PTR BackgroundTimer = 3;
 constexpr UINT CompleteMessage = WM_APP + 51;
 constexpr UINT CaptureDelayMs = 180;
 constexpr UINT CaptureTimeoutMs = 300000;
@@ -273,6 +275,9 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
   uint64_t generation = 0;
   std::vector<BYTE> background;
   std::vector<RECT> windowBounds;
+  struct FrozenFrame { std::vector<BYTE> bytes; std::vector<RECT> windows; };
+  std::future<FrozenFrame> backgroundJob;
+  std::string waitingReady;
   std::optional<ScreenCaptureResult> pendingResult;
 
   State(HWND window, ICoreWebView2Environment* webEnvironment, const std::filesystem::path& renderer,
@@ -308,7 +313,9 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
       if (!overlay) CaptureFailure();
       if (originalVisible && !originalIconic) ShowWindow(mainWindow, SW_MINIMIZE);
       DwmFlush();
-      if (!SetTimer(overlay, StartTimer, CaptureDelayMs, nullptr) || !SetTimer(overlay, ExpiryTimer, CaptureTimeoutMs, nullptr)) CaptureFailure();
+      const UINT delay = originalVisible && !originalIconic ? CaptureDelayMs : 1;
+      if (!SetTimer(overlay, StartTimer, delay, nullptr) || !SetTimer(overlay, ExpiryTimer, CaptureTimeoutMs, nullptr)) CaptureFailure();
+      PrepareController();
     } catch (...) {
       auto error = std::current_exception(); Stop(false, {});
       if (originalVisible && !originalIconic && IsWindow(mainWindow) && restore) restore();
@@ -333,7 +340,8 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
     finishing = true; active = false; ++generation;
     auto callback = std::move(completion);
     pendingResult.reset(); std::vector<BYTE>().swap(background); windowBounds.clear();
-    if (overlay) { KillTimer(overlay, StartTimer); KillTimer(overlay, ExpiryTimer); }
+    if (overlay) { KillTimer(overlay, StartTimer); KillTimer(overlay, ExpiryTimer); KillTimer(overlay, BackgroundTimer); }
+    backgroundJob = {}; waitingReady.clear();
     if (controller) controller->Close(); view.Reset(); controller.Reset();
     if (overlay) { HWND target = std::exchange(overlay, nullptr); DestroyWindow(target); }
     shown = ready = backgroundServed = false;
@@ -343,6 +351,19 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
     }
   }
   void Fail() { QueueCompletion({std::nullopt, "CAPTURE_FAILED", "截图界面未能载入，请稍后重试。"}); }
+
+  void SendBackground(const std::string& id) {
+    auto image = Base64(background); std::vector<BYTE>().swap(background); backgroundServed = true;
+    auto targets = json::array();
+    for (const auto& bounds : windowBounds) targets.push_back({{"x", bounds.left}, {"y", bounds.top},
+      {"width", bounds.right - bounds.left}, {"height", bounds.bottom - bounds.top}});
+    windowBounds.clear();
+    POINT cursor{}; json pointer = nullptr;
+    if (GetCursorPos(&cursor)) pointer = {{"x", cursor.x - desktop.left}, {"y", cursor.y - desktop.top}};
+    Post({{"id", id}, {"ok", true}, {"data", {{"content_type", "image/png"}, {"data_base64", std::move(image)},
+      {"width", desktop.right - desktop.left}, {"height", desktop.bottom - desktop.top},
+      {"windows", std::move(targets)}, {"cursor", std::move(pointer)}}}});
+  }
 
   void Message(ICoreWebView2WebMessageReceivedEventArgs* event) {
     LPWSTR source = nullptr; if (FAILED(event->get_Source(&source))) return;
@@ -360,18 +381,9 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
           !request.contains("args") || !request["args"].is_array()) return;
       const auto method = request["method"].get<std::string>(); const auto& args = request["args"];
       if (method == "captureOverlayReady") {
-        if (!args.empty() || backgroundServed || background.empty()) throw ApiFailure("INVALID_INPUT", "截图初始化参数不正确。");
-        auto image = Base64(background); std::vector<BYTE>().swap(background); backgroundServed = true;
-        auto targets = json::array();
-        for (const auto& bounds : windowBounds) targets.push_back({{"x", bounds.left}, {"y", bounds.top},
-          {"width", bounds.right - bounds.left}, {"height", bounds.bottom - bounds.top}});
-        windowBounds.clear();
-        POINT cursor{};
-        json pointer = nullptr;
-        if (GetCursorPos(&cursor)) pointer = {{"x", cursor.x - desktop.left}, {"y", cursor.y - desktop.top}};
-        Post({{"id", id}, {"ok", true}, {"data", {{"content_type", "image/png"}, {"data_base64", std::move(image)},
-              {"width", desktop.right - desktop.left}, {"height", desktop.bottom - desktop.top},
-              {"windows", std::move(targets)}, {"cursor", std::move(pointer)}}}});
+        if (!args.empty() || backgroundServed || !waitingReady.empty()) throw ApiFailure("INVALID_INPUT", "截图初始化参数不正确。");
+        if (background.empty()) waitingReady = id;
+        else SendBackground(id);
         return;
       }
       if (method == "captureOverlayShow") {
@@ -464,8 +476,26 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
 
   void Initialize() {
     DwmFlush();
-    windowBounds = testPattern ? std::vector<RECT>{} : SnapshotWindowBounds(desktop);
-    background = FreezeDesktop(desktop, testPattern);
+    // PNG compression must not hold the window message loop. The controller
+    // starts earlier and can load the capture UI while this frame is prepared.
+    const RECT bounds = desktop; const bool pattern = testPattern;
+    backgroundJob = std::async(std::launch::async, [bounds, pattern] {
+      CaptureCheck(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+      struct ComScope { ~ComScope() { CoUninitialize(); } } com;
+      auto windows = pattern ? std::vector<RECT>{} : SnapshotWindowBounds(bounds);
+      return FrozenFrame{FreezeDesktop(bounds, pattern), std::move(windows)};
+    });
+    if (!SetTimer(overlay, BackgroundTimer, 8, nullptr)) CaptureFailure();
+  }
+
+  void ReadBackground() {
+    if (!backgroundJob.valid() || backgroundJob.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) return;
+    KillTimer(overlay, BackgroundTimer);
+    auto frame = backgroundJob.get(); background = std::move(frame.bytes); windowBounds = std::move(frame.windows);
+    if (!waitingReady.empty()) SendBackground(std::exchange(waitingReady, {}));
+  }
+
+  void PrepareController() {
     const auto weak = weak_from_this(); const auto token = generation;
     const HRESULT status = environment->CreateCoreWebView2Controller(overlay,
         Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>([weak, token](HRESULT result, ICoreWebView2Controller* created) -> HRESULT {
@@ -491,6 +521,12 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
     switch (message) {
       case WM_TIMER:
         if (wParam == ExpiryTimer) { state->QueueCompletion({}); return 0; }
+        if (wParam == BackgroundTimer) {
+          try { state->ReadBackground(); }
+          catch (const ApiFailure& failure) { state->QueueCompletion({std::nullopt, failure.code, failure.what()}); }
+          catch (...) { state->Fail(); }
+          return 0;
+        }
         if (wParam == StartTimer) {
           KillTimer(window, StartTimer);
           try { state->Initialize(); }

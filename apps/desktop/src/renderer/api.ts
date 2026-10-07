@@ -78,6 +78,7 @@ const browserBridge: DesktopBridge = {
   updateBuildCode: (id, input) => request(`/weapon-build-codes/${ledgerId(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),
   deleteBuildCode: id => request(`/weapon-build-codes/${ledgerId(id)}`, { method: 'DELETE' }),
   lookupBuildCode: input => request('/weapon-build-codes/lookup', { method: 'POST', body: JSON.stringify(input) }),
+  recognizeBuildCodeAttributes: image => request('/weapon-build-codes/recognize-attributes', { method: 'POST', body: JSON.stringify(image) }, 80_000),
   listRentalAccounts: () => request('/rental-accounts'),
   createRentalAccount: input => request('/rental-accounts', { method: 'POST', body: JSON.stringify(input) }),
   listRentalSessions: () => request('/rental-sessions'),

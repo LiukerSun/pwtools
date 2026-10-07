@@ -11,7 +11,7 @@ test('改枪码录入、属性查询、筛选、编辑、复制和删除', async
   await dialog.getByLabel(/^武器名称/).fill('汤姆逊冲锋枪');
   await dialog.getByLabel('备注', { exact: true }).fill('测试近战方案');
   const lookup = page.waitForResponse(response => response.url().endsWith('/weapon-build-codes/lookup'));
-  await dialog.getByRole('button', { name: '查询属性', exact: true }).click();
+  await dialog.getByRole('button', { name: '查询目录属性', exact: true }).click();
   expect((await lookup).status()).toBe(200);
   await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeEnabled();
   await dialog.getByRole('button', { name: '保存', exact: true }).click();

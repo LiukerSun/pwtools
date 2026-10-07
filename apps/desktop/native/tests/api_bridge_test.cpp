@@ -186,17 +186,32 @@ private:
 void Run(const std::filesystem::path& directory) {
   Fixture fixture;
   bool fail_local = false;
+  bool expire_attributes = false;
+  ApiBridge* active_bridge = nullptr;
   ApiBridge bridge(fixture.Url() + "/", directory, [&](const std::vector<unsigned char>& bytes, const std::string& mime) {
     Check(bytes == std::vector<unsigned char>({1, 2, 3}) && mime == "image/png", "local OCR image bytes changed");
     if (fail_local) throw ApiFailure("LOCAL_OCR_UNAVAILABLE", "fixture model unavailable");
     return Json{{"outcome", "unknown"}, {"players", Json::array()}, {"raw_text", "本地识别"}, {"warnings", Json::array()}};
+  }, [&](const std::vector<unsigned char>& bytes, const std::string& mime) {
+    Check(bytes == std::vector<unsigned char>({1, 2, 3}) && mime == "image/png", "attribute OCR image bytes changed");
+    if (expire_attributes) active_bridge->Execute("logout", Json::array());
+    return Json{{"status", "completed"}, {"values", Json{{"damage", 39}}}};
   });
+  active_bridge = &bridge;
   Check(bridge.ApiUrl() == fixture.Url(), "API URL normalization failed");
   Check(bridge.PersistentSession(), "DPAPI availability check failed");
   for (const auto url : {"http://example.com/api", "https://name:password@example.com/api", "https://example.com/api?x=1", "https://example.com/api#fragment", "file:///api"}) Reject([&] { ApiBridge rejected(url, directory); }, "INVALID_CONFIG");
   Reject([&] { bridge.Execute("me", Json::array()); }, "UNAUTHORIZED");
   const Json credentials = {{"email", "native-a@example.test"}, {"password", "native-test-password"}};
   Check(bridge.Execute("login", Json::array({credentials}))["email"] == credentials["email"], "login did not return user");
+  const Json attribute_image{{"name", "panel.png"}, {"content_type", "image/png"}, {"data_base64", "AQID"}};
+  Check(bridge.Execute("recognizeBuildCodeAttributes", Json::array({attribute_image}))["values"]["damage"] == 39, "attribute OCR result changed");
+  Check(fixture.Last().method == "GET" && fixture.Last().path == "/api/me" && fixture.Last().body.empty(), "native attribute recognition uploaded an image");
+  auto invalid_attribute_image = attribute_image;
+  invalid_attribute_image["content_type"] = "image/svg+xml";
+  Reject([&] { bridge.Execute("recognizeBuildCodeAttributes", Json::array({invalid_attribute_image})); }, "INVALID_IMAGE");
+  invalid_attribute_image = attribute_image; invalid_attribute_image["data_base64"] = "AR==";
+  Reject([&] { bridge.Execute("recognizeBuildCodeAttributes", Json::array({invalid_attribute_image})); }, "INVALID_IMAGE");
   {
     ApiBridge restored(fixture.Url(), directory);
     Check(restored.Execute("me", Json::array())["email"] == credentials["email"], "encrypted session did not restore");
@@ -345,6 +360,8 @@ void Run(const std::filesystem::path& directory) {
   Reject([&] { bridge.Execute("uploadMatch", Json::array({Json{{"name", "x.svg"}, {"content_type", "image/svg+xml"}, {"data_base64", "AQID"}}})); }, "INVALID_IMAGE");
   fixture.RedirectNext(); Reject([&] { bridge.Execute("health", Json::array()); }, "NETWORK_ERROR");
   fixture.ErrorNext(); Reject([&] { bridge.Execute("getOrder", Json::array({id})); }, "FORBIDDEN");
+  expire_attributes = true;
+  Reject([&] { bridge.Execute("recognizeBuildCodeAttributes", Json::array({attribute_image})); }, "UNAUTHORIZED");
   bridge.Execute("logout", Json::array());
   Reject([&] { bridge.Execute("me", Json::array()); }, "UNAUTHORIZED");
   ApiBridge logged_out(fixture.Url(), directory); Reject([&] { logged_out.Execute("me", Json::array()); }, "UNAUTHORIZED");

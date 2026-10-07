@@ -106,6 +106,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn attributes_use_special_route_and_classify_failures() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_clone = count.clone();
+        let app=Router::new().route("/recognize-build-attributes",post(move || {
+            let counter=count_clone.clone(); async move {
+                let attempt=counter.fetch_add(1,Ordering::SeqCst);
+                if attempt==0 {return (StatusCode::SERVICE_UNAVAILABLE,[("retry-after","1")]).into_response();}
+                Json(json!({"status":"completed","weapon_name":"M7战斗步枪","values":{"damage":39},"confidences":{"damage":0.99},"warnings":[],"missing":["handling"]})).into_response()
+            }
+        }));
+        let (service, server) = serve(app).await;
+        let result = service
+            .recognize_build_attributes(Bytes::from_static(b"test image"), "image/png")
+            .await
+            .ok()
+            .unwrap();
+        assert_eq!(result["values"]["damage"], 39);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        server.abort();
+        for (status, expected) in [
+            (StatusCode::GATEWAY_TIMEOUT, "OCR_TIMEOUT"),
+            (StatusCode::INTERNAL_SERVER_ERROR, "OCR_UNAVAILABLE"),
+        ] {
+            let (service, server) = serve(Router::new().route(
+                "/recognize-build-attributes",
+                post(move || async move { status }),
+            ))
+            .await;
+            let error = service
+                .recognize_build_attributes(Bytes::from_static(b"image"), "image/png")
+                .await
+                .err()
+                .unwrap()
+                .into_response();
+            let bytes = http_body_util::BodyExt::collect(error.into_body())
+                .await
+                .unwrap()
+                .to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["error"]["code"], expected);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
     async fn parallel_requests_are_queued_for_single_ocr_worker() {
         let worker = Arc::new(SingleWorker::default());
         let app = Router::new()
@@ -513,10 +558,95 @@ impl OcrService {
         unreachable!("the final attempt always returns");
     }
 
+    pub async fn recognize_build_attributes(
+        &self,
+        bytes: Bytes,
+        content_type: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        let _permit = tokio::time::timeout(MAX_QUEUE_WAIT, self.workers.clone().acquire_owned())
+            .await
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "OCR_BUSY",
+                    "识别服务正忙，请稍后重试",
+                )
+            })?
+            .map_err(|_| ApiError::internal("OCR worker unavailable"))?;
+        let mut url = self.url.clone();
+        url.set_path(&format!("{}-build-attributes", url.path()));
+        let result = tokio::time::timeout(MAX_RECOGNITION_TIME, async {
+            for attempt in 0..=MAX_BUSY_RETRIES {
+                match self
+                    .call_raw(bytes.clone(), content_type, url.clone())
+                    .await
+                {
+                    Err(OcrError::Busy(delay))
+                        if attempt < MAX_BUSY_RETRIES && delay <= Duration::from_secs(5) =>
+                    {
+                        tokio::time::sleep(delay).await
+                    }
+                    result => return result,
+                }
+            }
+            unreachable!()
+        })
+        .await;
+        let body = match result {
+            Ok(Ok(body)) => body,
+            Ok(Err(OcrError::Busy(_))) => {
+                return Err(ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "OCR_BUSY",
+                    "识别服务正忙，请稍后重试或手工填写",
+                ));
+            }
+            Err(_) | Ok(Err(OcrError::Timeout)) => {
+                return Err(ApiError::new(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "OCR_TIMEOUT",
+                    "属性识别超时，请裁剪面板后重试或手工填写",
+                ));
+            }
+            Ok(Err(OcrError::Unavailable)) => {
+                return Err(ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "OCR_UNAVAILABLE",
+                    "属性识别暂时不可用，可继续手工填写",
+                ));
+            }
+        };
+        let value = serde_json::from_slice(&body).map_err(|_| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "OCR_UNAVAILABLE",
+                "识别服务返回格式不正确",
+            )
+        })?;
+        crate::build_attributes::sanitize_candidate(value).map_err(|_| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "OCR_UNAVAILABLE",
+                "识别服务返回内容不正确",
+            )
+        })
+    }
+
     async fn call(&self, bytes: Bytes, content_type: &str) -> Result<Recognition, OcrError> {
+        let body = self.call_raw(bytes, content_type, self.url.clone()).await?;
+        let raw: OcrResponse = serde_json::from_slice(&body).map_err(|_| OcrError::Unavailable)?;
+        Recognition::from_response(raw).map_err(|_| OcrError::Unavailable)
+    }
+
+    async fn call_raw(
+        &self,
+        bytes: Bytes,
+        content_type: &str,
+        url: Url,
+    ) -> Result<Vec<u8>, OcrError> {
         let mut response = self
             .client
-            .post(self.url.clone())
+            .post(url)
             .header("content-type", content_type)
             .body(bytes)
             .send()
@@ -548,7 +678,6 @@ impl OcrService {
             }
             body.extend_from_slice(&chunk);
         }
-        let raw: OcrResponse = serde_json::from_slice(&body).map_err(|_| OcrError::Unavailable)?;
-        Recognition::from_response(raw).map_err(|_| OcrError::Unavailable)
+        Ok(body)
     }
 }

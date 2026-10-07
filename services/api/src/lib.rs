@@ -1,5 +1,6 @@
 pub mod account_archive;
 mod auth;
+mod build_attributes;
 mod error;
 mod ledger;
 mod matches;
@@ -214,6 +215,10 @@ pub fn router(state: AppState, allowed_origins: Vec<HeaderValue>) -> Router {
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(RequestBodyLimitLayer::new(1024 * 1024));
     let image_json_routes = Router::new()
+        .route(
+            "/api/weapon-build-codes/recognize-attributes",
+            post(weapon_build_codes::recognize_attributes),
+        )
         .route("/api/matches/preview-local", post(matches::preview_local))
         .route("/api/matches/confirm", post(matches::confirm_image))
         .layer(DefaultBodyLimit::max(18 * 1024 * 1024))

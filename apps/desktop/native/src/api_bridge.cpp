@@ -376,12 +376,14 @@ struct ApiBridge::Impl {
   std::uint64_t revision = 0, auth_intent = 0;
   std::atomic<bool> persistent{false};
   LocalRecognizer local_recognizer;
+  LocalRecognizer attribute_recognizer;
 
-  Impl(std::string value, const std::filesystem::path& directory, LocalRecognizer recognizer)
-      : url(ParseUrl(value)), entropy(Hash(url.canonical)), local_recognizer(std::move(recognizer)) {
-    if (!local_recognizer) {
+  Impl(std::string value, const std::filesystem::path& directory, LocalRecognizer recognizer, LocalRecognizer attributes)
+      : url(ParseUrl(value)), entropy(Hash(url.canonical)), local_recognizer(std::move(recognizer)), attribute_recognizer(std::move(attributes)) {
+    if (!local_recognizer || !attribute_recognizer) {
       auto local = std::make_shared<LocalOcr>();
-      local_recognizer = [local](const Bytes& image, const std::string& mime) { return local->Recognize(image, mime); };
+      if(!local_recognizer) local_recognizer = [local](const Bytes& image, const std::string& mime) { return local->Recognize(image, mime); };
+      if(!attribute_recognizer) attribute_recognizer = [local](const Bytes& image, const std::string& mime) { return local->RecognizeBuildAttributes(image, mime); };
     }
     session_path = directory / ("session-native-" + Hex(entropy).substr(0, 16) + ".bin");
     std::error_code error;
@@ -518,6 +520,18 @@ struct ApiBridge::Impl {
       if (!current.token.empty()) static_cast<void>(Request("/auth/logout", L"POST", nullptr, true, 15000, &current));
       ClearIf(current); return nullptr;
     }
+    if (method == "recognizeBuildCodeAttributes") {
+      Arguments(args,1,1); Object(first,kMaxImageJsonRequest); StringField(first,"name",255); StringField(first,"content_type",30);
+      const auto type=first["content_type"].get<std::string>();
+      if(type!="image/png" && type!="image/jpeg" && type!="image/webp")throw ApiFailure("INVALID_IMAGE","只支持 PNG、JPEG 和 WebP 图片。");
+      const auto bytes=DecodeImage(first["data_base64"]);
+      const auto snapshot=Current();
+      static_cast<void>(Request("/me",L"GET",nullptr,true,15000,&snapshot));
+      const auto result=attribute_recognizer(bytes,type);
+      const auto current=Current();
+      if(current.revision!=snapshot.revision || current.token!=snapshot.token)throw ApiFailure("UNAUTHORIZED","登录状态已改变，请重新打开属性面板。");
+      return result;
+    }
     if (method == "uploadMatch") {
       Arguments(args, 1, 1); if (!first.is_object() || !first.contains("name") || !first.contains("content_type") || !first.contains("data_base64")) throw ApiFailure("INVALID_IMAGE", "截图数据不正确。");
       std::string name, type;
@@ -638,8 +652,8 @@ struct ApiBridge::Impl {
   }
 };
 
-ApiBridge::ApiBridge(std::string api_url, std::filesystem::path data_directory, LocalRecognizer recognizer)
-    : impl_(std::make_unique<Impl>(std::move(api_url), data_directory, std::move(recognizer))) {}
+ApiBridge::ApiBridge(std::string api_url, std::filesystem::path data_directory, LocalRecognizer recognizer, LocalRecognizer attributes)
+    : impl_(std::make_unique<Impl>(std::move(api_url), data_directory, std::move(recognizer), std::move(attributes))) {}
 ApiBridge::~ApiBridge() = default;
 Json ApiBridge::Execute(const std::string& method, const Json& args) {
   try { return impl_->Execute(method, args); }

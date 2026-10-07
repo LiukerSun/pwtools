@@ -57,6 +57,13 @@ body,
   pointer-events: none;
 }
 
+.capture-overlay[data-toolbar-direction] .screenshots-operations {
+  transform: translate(var(--capture-toolbar-x), var(--capture-toolbar-y)) !important;
+}
+.capture-overlay[data-toolbar-direction="right"] .screenshots-operations-buttons {
+  flex-direction: row-reverse;
+}
+
 .capture-hint,
 .capture-error {
   position: fixed;

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 
-from engine import create_engine, recognize
+from engine import create_engine, recognize, recognize_build_attributes
 from image_input import MAX_BYTES, MIME_FORMATS, ImageInputError, decode_image as decode_input
 
 TIMEOUT_SECONDS = 30
@@ -19,7 +19,7 @@ def decode_image(data: bytes, mime: str):
         raise HTTPException(error.status, str(error)) from error
 
 
-def create_app(engine_factory=create_engine, recognition=recognize) -> FastAPI:
+def create_app(engine_factory=create_engine, recognition=recognize, attribute_recognition=recognize_build_attributes) -> FastAPI:
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="local-ocr")
 
     @asynccontextmanager
@@ -38,6 +38,7 @@ def create_app(engine_factory=create_engine, recognition=recognize) -> FastAPI:
         return {"status": "ready", "engine": "rapidocr-onnx-cpu", "busy": application.state.busy.locked()}
 
     @application.post("/recognize")
+    @application.post("/recognize-build-attributes")
     async def recognize_image(request: Request):
         mime = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         if mime not in MIME_FORMATS:
@@ -72,7 +73,8 @@ def create_app(engine_factory=create_engine, recognition=recognize) -> FastAPI:
             def work():
                 decoded = decode_image(data, mime)
                 try:
-                    return recognition(application.state.engine, decoded)
+                    function = attribute_recognition if request.url.path == "/recognize-build-attributes" else recognition
+                    return function(application.state.engine, decoded)
                 finally:
                     decoded.close()
             future = asyncio.get_running_loop().run_in_executor(executor, work)

@@ -40,7 +40,7 @@ def read_lines(engine: RapidOCR, image: np.ndarray) -> list[OCRLine]:
             for box, text, score in zip(result.boxes, result.txts, result.scores, strict=True)]
 
 
-def recognize(engine: RapidOCR, image: Image.Image) -> dict:
+def recognize_lines(engine: RapidOCR, image: Image.Image):
     width, height = image.size
     # Cap inference dimensions without changing image geometry proportions.
     scale = min(1.0, 2560 / max(width, height))
@@ -49,4 +49,13 @@ def recognize(engine: RapidOCR, image: Image.Image) -> dict:
     if scale < 1:
         image_bgr = cv2.resize(image_bgr, (round(width * scale), round(height * scale)), interpolation=cv2.INTER_AREA)
     lines = read_lines(engine, image_bgr)
-    return parse_scoreboard(lines, image_bgr.shape[1], image_bgr.shape[0])
+    return lines, image_bgr.shape[1], image_bgr.shape[0]
+
+
+def recognize(engine: RapidOCR, image: Image.Image) -> dict:
+    return parse_scoreboard(*recognize_lines(engine, image))
+
+
+def recognize_build_attributes(engine: RapidOCR, image: Image.Image) -> dict:
+    from gun_attributes import parse_gun_attributes
+    return parse_gun_attributes(*recognize_lines(engine, image))

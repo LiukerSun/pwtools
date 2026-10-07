@@ -1,3 +1,4 @@
+use crate::build_attributes::{self, AttributeChange};
 use crate::{
     AppState,
     auth::AuthenticatedUser,
@@ -16,8 +17,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-const COLUMNS: &str =
-    "id,weapon_name,mode,code,note,attributes,lookup_status,created_at,updated_at";
+const COLUMNS: &str = "id,weapon_name,mode,code,note,attributes,manual_attributes,lookup_status,created_at,updated_at";
 const PROVIDER_URL: &str = "https://orzice.com/workApi/v1/sjz_api/gun_gqm_v2";
 
 #[derive(Clone)]
@@ -168,6 +168,8 @@ impl BuildCodeProvider {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildCodeInput {
+    #[serde(default)]
+    record_id: Option<Uuid>,
     code: String,
     #[serde(default)]
     weapon_name: String,
@@ -175,6 +177,8 @@ pub struct BuildCodeInput {
     mode: String,
     #[serde(default)]
     note: String,
+    #[serde(default, deserialize_with = "build_attributes::attribute_change")]
+    manual_attributes: AttributeChange,
 }
 struct CleanInput {
     code: String,
@@ -182,6 +186,7 @@ struct CleanInput {
     weapon_name: String,
     mode: String,
     note: String,
+    manual_attributes: AttributeChange,
 }
 fn valid_core(code: &str) -> bool {
     (8..=64).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_alphanumeric())
@@ -223,6 +228,7 @@ fn clean(input: BuildCodeInput) -> Result<CleanInput, ApiError> {
         weapon_name: weapon.into(),
         mode: mode.into(),
         note: note.into(),
+        manual_attributes: input.manual_attributes,
     })
 }
 
@@ -299,9 +305,47 @@ pub struct BuildCode {
     code: String,
     note: String,
     attributes: Option<Value>,
+    manual_attributes: Option<Value>,
+    #[sqlx(skip)]
+    provider_attributes: Option<Value>,
     lookup_status: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+impl BuildCode {
+    fn identity(&self) -> Value {
+        build_attributes::identity(
+            &self.weapon_name,
+            &self.mode,
+            self.code.rsplit('-').next().unwrap_or("").trim(),
+        )
+    }
+    fn display(mut self) -> Self {
+        let identity = self.identity();
+        self.manual_attributes = self.manual_attributes.filter(|s| s["identity"] == identity);
+        self.provider_attributes = self.attributes.clone();
+        if let Some(manual) = &self.manual_attributes {
+            self.attributes = Some(build_attributes::effective(manual));
+        }
+        self
+    }
+}
+impl CleanInput {
+    fn identity(&self) -> Value {
+        build_attributes::identity(&self.weapon_name, &self.mode, &self.core_code)
+    }
+    fn manual(&self, previous: Option<&BuildCode>) -> Result<Option<Value>, ApiError> {
+        match &self.manual_attributes {
+            AttributeChange::Missing => Ok(previous
+                .filter(|p| p.identity() == self.identity())
+                .and_then(|p| p.manual_attributes.clone())
+                .filter(|s| s["identity"] == self.identity())),
+            AttributeChange::Present(value) if value.is_null() => Ok(None),
+            AttributeChange::Present(value) => {
+                build_attributes::snapshot(value, &self.identity()).map(Some)
+            }
+        }
+    }
 }
 #[derive(Serialize)]
 pub struct BuildCodeList {
@@ -319,28 +363,85 @@ fn path_id(path: Result<Path<Uuid>, PathRejection>) -> Result<Uuid, ApiError> {
         .map_err(|_| ApiError::validation("改枪码编号不正确"))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttributeImage {
+    name: String,
+    content_type: String,
+    data_base64: String,
+}
+pub async fn recognize_attributes(
+    State(state): State<AppState>,
+    _session: AuthenticatedUser,
+    ApiJson(input): ApiJson<AttributeImage>,
+) -> Result<Json<Value>, ApiError> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    if input.name.chars().count() > 255
+        || input.data_base64.len() > crate::ocr::MAX_IMAGE_BYTES * 4 / 3 + 4
+    {
+        return Err(ApiError::validation("图片名称过长或超过 12 MiB"));
+    }
+    let bytes = axum::body::Bytes::from(
+        STANDARD
+            .decode(&input.data_base64)
+            .map_err(|_| ApiError::validation("图片编码不正确"))?,
+    );
+    state
+        .ocr
+        .validate_image(bytes.clone(), &input.content_type)
+        .await?;
+    Ok(Json(
+        state
+            .ocr
+            .recognize_build_attributes(bytes, &input.content_type)
+            .await?,
+    ))
+}
+
 pub async fn list(
     State(state): State<AppState>,
     session: AuthenticatedUser,
 ) -> Result<Json<BuildCodeList>, ApiError> {
-    let items = sqlx::query_as(&format!(
+    let items: Vec<BuildCode> = sqlx::query_as(&format!(
         "SELECT {COLUMNS} FROM weapon_build_codes WHERE user_id=$1 ORDER BY updated_at DESC,id DESC"
     ))
     .bind(session.user.id)
     .fetch_all(&state.pool)
     .await
     .map_err(|_| ApiError::internal("build code listing failed"))?;
-    Ok(Json(BuildCodeList { items }))
+    Ok(Json(BuildCodeList {
+        items: items.into_iter().map(BuildCode::display).collect(),
+    }))
 }
 pub async fn lookup(
     State(state): State<AppState>,
-    _session: AuthenticatedUser,
+    session: AuthenticatedUser,
     ApiJson(input): ApiJson<BuildCodeInput>,
 ) -> Result<Json<Lookup>, ApiError> {
+    let record_id = input.record_id;
+    if let Some(id) = record_id {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM weapon_build_codes WHERE id=$1 AND user_id=$2)",
+        )
+        .bind(id)
+        .bind(session.user.id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|_| ApiError::internal("build code lookup failed"))?;
+        if !exists {
+            return Err(missing());
+        }
+    }
     let input = clean(input)?;
-    Ok(Json(
-        state.build_code_provider.lookup(&state.pool, &input).await,
-    ))
+    let found = state.build_code_provider.lookup(&state.pool, &input).await;
+    if let Some(id) = record_id
+        && !matches!(found.status.as_str(), "unavailable" | "not_configured")
+    {
+        sqlx::query("UPDATE weapon_build_codes SET attributes=$1,lookup_status=$2 WHERE id=$3 AND user_id=$4 AND weapon_name=$5 AND mode=$6 AND core_code=$7")
+            .bind(&found.attributes).bind(&found.status).bind(id).bind(session.user.id).bind(&input.weapon_name).bind(&input.mode).bind(&input.core_code)
+            .execute(&state.pool).await.map_err(|_|ApiError::internal("build code lookup update failed"))?;
+    }
+    Ok(Json(found))
 }
 pub async fn create(
     State(state): State<AppState>,
@@ -348,11 +449,19 @@ pub async fn create(
     ApiJson(input): ApiJson<BuildCodeInput>,
 ) -> Result<(StatusCode, Json<BuildCode>), ApiError> {
     let input = clean(input)?;
-    let found = state.build_code_provider.lookup(&state.pool, &input).await;
-    let result = sqlx::query_as(&format!("INSERT INTO weapon_build_codes(id,user_id,weapon_name,mode,code,core_code,note,attributes,lookup_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING {COLUMNS}"))
+    let manual = input.manual(None)?;
+    let found = if manual.is_some() {
+        Lookup {
+            status: "unmatched".into(),
+            attributes: None,
+        }
+    } else {
+        state.build_code_provider.lookup(&state.pool, &input).await
+    };
+    let result: BuildCode = sqlx::query_as(&format!("INSERT INTO weapon_build_codes(id,user_id,weapon_name,mode,code,core_code,note,attributes,lookup_status,manual_attributes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING {COLUMNS}"))
         .bind(Uuid::new_v4()).bind(session.user.id).bind(input.weapon_name).bind(input.mode).bind(input.code).bind(input.core_code).bind(input.note).bind(found.attributes).bind(found.status)
-        .fetch_one(&state.pool).await.map_err(|_| ApiError::internal("build code creation failed"))?;
-    Ok((StatusCode::CREATED, Json(result)))
+        .bind(manual).fetch_one(&state.pool).await.map_err(|_| ApiError::internal("build code creation failed"))?;
+    Ok((StatusCode::CREATED, Json(result.display())))
 }
 pub async fn update(
     State(state): State<AppState>,
@@ -371,7 +480,24 @@ pub async fn update(
     .map_err(|_| ApiError::internal("build code lookup failed"))?
     .ok_or_else(missing)?;
     let input = clean(input)?;
-    let mut found = state.build_code_provider.lookup(&state.pool, &input).await;
+    let manual = input.manual(Some(&previous))?;
+    let same = previous.identity() == input.identity();
+    let mut found = if manual.is_some() {
+        Lookup {
+            status: if same {
+                previous.lookup_status.clone()
+            } else {
+                "unmatched".into()
+            },
+            attributes: if same {
+                previous.attributes.clone()
+            } else {
+                None
+            },
+        }
+    } else {
+        state.build_code_provider.lookup(&state.pool, &input).await
+    };
     // A provider outage must not erase a previously fetched snapshot when only notes change.
     if matches!(found.status.as_str(), "unavailable" | "not_configured")
         && previous.weapon_name == input.weapon_name
@@ -382,10 +508,10 @@ pub async fn update(
         found.attributes = previous.attributes;
         found.status = previous.lookup_status;
     }
-    let result = sqlx::query_as(&format!("UPDATE weapon_build_codes SET weapon_name=$3,mode=$4,code=$5,core_code=$6,note=$7,attributes=$8,lookup_status=$9,updated_at=now() WHERE user_id=$1 AND id=$2 RETURNING {COLUMNS}"))
+    let result: BuildCode = sqlx::query_as(&format!("UPDATE weapon_build_codes SET weapon_name=$3,mode=$4,code=$5,core_code=$6,note=$7,attributes=$8,lookup_status=$9,manual_attributes=$10,updated_at=now() WHERE user_id=$1 AND id=$2 RETURNING {COLUMNS}"))
         .bind(session.user.id).bind(id).bind(input.weapon_name).bind(input.mode).bind(input.code).bind(input.core_code).bind(input.note).bind(found.attributes).bind(found.status)
-        .fetch_optional(&state.pool).await.map_err(|_| ApiError::internal("build code update failed"))?.ok_or_else(missing)?;
-    Ok(Json(result))
+        .bind(manual).fetch_optional(&state.pool).await.map_err(|_| ApiError::internal("build code update failed"))?.ok_or_else(missing)?;
+    Ok(Json(result.display()))
 }
 pub async fn delete(
     State(state): State<AppState>,
@@ -409,10 +535,12 @@ mod tests {
     use super::*;
     fn input(code: &str) -> BuildCodeInput {
         BuildCodeInput {
+            record_id: None,
             code: code.into(),
             weapon_name: "汤姆逊冲锋枪".into(),
             mode: "烽火地带".into(),
             note: String::new(),
+            manual_attributes: AttributeChange::Missing,
         }
     }
     #[test]

@@ -38,6 +38,7 @@ test('all desktop methods use matching RPC names and JSON arguments', async () =
     ['updateBuildCode', () => bridge.updateBuildCode('code-id', { code: 'ABCDEFGH', weapon_name: 'M7', mode: '烽火地带', note: '' }), ['code-id', { code: 'ABCDEFGH', weapon_name: 'M7', mode: '烽火地带', note: '' }]],
     ['deleteBuildCode', () => bridge.deleteBuildCode('code-id'), ['code-id']],
     ['lookupBuildCode', () => bridge.lookupBuildCode({ code: 'ABCDEFGH', weapon_name: 'M7', mode: '烽火地带', note: '' }), [{ code: 'ABCDEFGH', weapon_name: 'M7', mode: '烽火地带', note: '' }]],
+    ['recognizeBuildCodeAttributes', () => bridge.recognizeBuildCodeAttributes({ name: 'gun.png', content_type: 'image/png', data_base64: 'AAEC' }), [{ name: 'gun.png', content_type: 'image/png', data_base64: 'AAEC' }]],
     ['listRentalAccounts', () => bridge.listRentalAccounts(), []],
     ['createRentalAccount', () => bridge.createRentalAccount(rentalAccount), [rentalAccount]],
     ['listRentalSessions', () => bridge.listRentalSessions(), []],
@@ -197,6 +198,10 @@ test('ordinary calls expire at 20 seconds and OCR calls at 110 seconds', async c
     const uploadRejected = assert.rejects(upload, { code: 'TIMEOUT' });
     context.mock.timers.tick(110_000);
     await uploadRejected;
+    const attributes = native.bridge.recognizeBuildCodeAttributes({ name: 'panel.png', content_type: 'image/png', data_base64: 'AQID' });
+    const attributesRejected = assert.rejects(attributes, { code: 'TIMEOUT' });
+    context.mock.timers.tick(110_000);
+    await attributesRejected;
   } finally { native.dispose(); }
 });
 

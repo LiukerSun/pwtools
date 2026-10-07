@@ -23,7 +23,7 @@ public:
 class ApiBridge {
 public:
   using LocalRecognizer = std::function<nlohmann::json(const std::vector<unsigned char>&, const std::string&)>;
-  ApiBridge(std::string api_url, std::filesystem::path data_directory, LocalRecognizer recognizer = {});
+  ApiBridge(std::string api_url, std::filesystem::path data_directory, LocalRecognizer recognizer = {}, LocalRecognizer attribute_recognizer = {});
   ~ApiBridge();
   ApiBridge(const ApiBridge&) = delete;
   ApiBridge& operator=(const ApiBridge&) = delete;

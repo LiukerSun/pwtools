@@ -1,6 +1,7 @@
 #include "local_ocr.hpp"
 #include "api_bridge.hpp"
 #include "scoreboard.hpp"
+#include "gun_attributes.hpp"
 #include <windows.h>
 #include <psapi.h>
 
@@ -76,7 +77,25 @@ int wmain(int argc, wchar_t** argv) {
   try {
     Check(argc == 2, "local OCR runtime directory required");
     CheckScoreboardOutcomes();
+    {
+      std::ifstream stream(PWTOOLS_GUN_FIXTURE_PATH);
+      Json fixture; stream >> fixture;
+      for(const auto& test:fixture["cases"]) {
+        std::vector<pwtools::OcrLine> lines;
+        for(const auto& line:test["lines"]) lines.push_back({line["x0"],line["y0"],line["x1"],line["y1"],line["text"],line["confidence"]});
+        const auto result=pwtools::ParseGunAttributes(lines,fixture["width"],fixture["height"]);
+        Check(result["values"]==test["values"] && result["status"]==test["status"] && result["warnings"].size()==test["warnings"].get<size_t>(),"shared gun panel fixture mismatch");
+        Check(!result.contains("raw_text"),"gun panel must not expose raw OCR text");
+      }
+    }
     pwtools::LocalOcr ocr(argv[1]);
+    if(const auto sample=_wgetenv(L"PWTOOLS_GUN_OCR_SAMPLE")) {
+      const auto result=ocr.RecognizeBuildAttributes(Read(sample),"image/png");
+      std::cout << "Gun panel actual inference: " << result.dump(-1,' ',true) << '\n';
+      Check(result["values"]["damage"]==39 && result["values"]["handling"]==38 && result["values"]["fire_rate_rpm"]==649,"actual M7 gun panel inference failed");
+      PROCESS_MEMORY_COUNTERS counters{};
+      if(GetProcessMemoryInfo(GetCurrentProcess(),&counters,sizeof(counters)))std::cout<<"Gun released / peak working set MiB: "<<counters.WorkingSetSize/(1024*1024)<<" / "<<counters.PeakWorkingSetSize/(1024*1024)<<'\n';
+    }
     // Exercise the actual native decoder and inference without opening a window.
     const std::vector<unsigned char> png{
       137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,2,0,0,0,144,119,83,222,

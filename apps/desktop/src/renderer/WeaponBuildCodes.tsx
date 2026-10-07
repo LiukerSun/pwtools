@@ -6,13 +6,17 @@ import type { BuildCodeAttributes, BuildCodeLookup, WeaponBuildCode, WeaponBuild
 import { api, errorInfo } from './api';
 import { parseBuildCode, type BuildMode } from './buildCode';
 import './build-codes.css';
+import BuildAttributeEditor from './BuildAttributeEditor';
+import { initialAttributes, hasMainAttributes, validAttributes, personalInput, type AttributeDraft } from './buildAttributes';
 
 type Props = { onError: (error: unknown) => boolean; onNavigationStateChange: (state: { dirty: boolean; busy: boolean }) => void };
 const emptyDraft = (): WeaponBuildCodeInput => ({ code: '', weapon_name: '', mode: '烽火地带', note: '' });
 const statusText = { matched: '已匹配属性', unmatched: '未收录此方案', unavailable: '属性查询暂不可用，可稍后重试', not_configured: '属性服务尚未配置' };
 
 function Attributes({ value }: { value: BuildCodeAttributes }) {
-  return <div className="build-attributes"><dl>{value.properties.map(p => <div key={p.name}><dt>{p.name}</dt><dd>{p.value}<small>{p.change !== '-' ? p.change : ''}</small></dd></div>)}</dl><div className="build-source"><span>{value.source} · {new Date(value.fetched_at).toLocaleString('zh-CN')}</span>{value.price !== null && <span>参考价 {(value.price / 10000).toFixed(1)} 万</span>}</div></div>;
+  return <div className="build-attributes"><dl>{value.properties.map(p => <div key={p.name}><dt>{p.name}</dt><dd>{p.value}<small>{p.unit}{p.change !== '-' ? p.change : ''}</small></dd></div>)}</dl>
+    {value.details && <details className="build-extra"><summary>更多属性</summary><dl>{([['capacity', '容量', '发'], ['muzzle_velocity_mps', '枪口初速', '米/秒'], ['sound_distance_m', '枪声传播距离', '米']] as const).map(([key, label, unit]) => value.details![key] != null && <div key={key}><dt>{label}</dt><dd>{value.details![key]}<small>{unit}</small></dd></div>)}{value.details.fire_modes?.length ? <div><dt>开火模式</dt><dd>{value.details.fire_modes.join('/')}</dd></div> : null}</dl></details>}
+    <div className="build-source"><span>{value.source} · {new Date(value.fetched_at).toLocaleString('zh-CN')}</span>{value.price !== null && <span>{value.snapshot_source ? '截图参考价' : '参考价'} {(value.price / 10000).toFixed(1)} 万</span>}</div></div>;
 }
 
 export default function WeaponBuildCodes({ onError, onNavigationStateChange }: Props) {
@@ -27,12 +31,17 @@ export default function WeaponBuildCodes({ onError, onNavigationStateChange }: P
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState<WeaponBuildCode | null>(null);
   const [discard, setDiscard] = useState(false);
+  const [personal, setPersonal] = useState<AttributeDraft>(() => initialAttributes());
+  const [previewDirty, setPreviewDirty] = useState(false);
+  const [recognizing, setRecognizing] = useState(false);
+  const attributeBaseline = useRef('');
   const baseline = useRef('');
   const inFlight = useRef(false);
   const alive = useRef(true);
   const parsed = parseBuildCode(draft.code);
-  const dirty = editor !== null && JSON.stringify(draft) !== baseline.current;
-  useLayoutEffect(() => { onNavigationStateChange({ dirty, busy }); }, [dirty, busy, onNavigationStateChange]);
+  const identity = { weapon_name: draft.weapon_name.trim(), mode: draft.mode, core_code: parsed.core };
+  const dirty = editor !== null && (JSON.stringify(draft) !== baseline.current || JSON.stringify(personal) !== attributeBaseline.current || previewDirty);
+  useLayoutEffect(() => { onNavigationStateChange({ dirty, busy: busy || recognizing }); }, [dirty, busy, recognizing, onNavigationStateChange]);
   useEffect(() => {
     alive.current = true;
     void api.listBuildCodes().then(result => { if (alive.current) setItems(result.items); }).catch(err => { if (alive.current && !onError(err)) setError(errorInfo(err).message); }).finally(() => { if (alive.current) setLoading(false); });
@@ -41,6 +50,8 @@ export default function WeaponBuildCodes({ onError, onNavigationStateChange }: P
   const open = (item: WeaponBuildCode | 'new') => {
     const next = item === 'new' ? emptyDraft() : { code: item.code, weapon_name: item.weapon_name, mode: item.mode, note: item.note };
     baseline.current = JSON.stringify(next); setDraft(next); setEditor(item); setError(''); setLookup(null);
+    const attributes = initialAttributes(item === 'new' ? null : item.manual_attributes);
+    attributeBaseline.current = JSON.stringify(attributes); setPersonal(attributes); setPreviewDirty(false); setRecognizing(false);
   };
   const close = () => { if (!inFlight.current) { if (dirty) setDiscard(true); else setEditor(null); } };
   const patch = (values: Partial<WeaponBuildCodeInput>) => { setDraft(current => ({ ...current, ...values })); setLookup(null); setError(''); };
@@ -48,12 +59,15 @@ export default function WeaponBuildCodes({ onError, onNavigationStateChange }: P
     const result = parseBuildCode(value);
     patch({ code: value, ...(result.weapon ? { weapon_name: result.weapon, mode: result.mode as BuildMode } : {}) });
   };
-  const valid = !parsed.error && !!draft.code.trim() && !!draft.weapon_name.trim();
+  const codeValid = !parsed.error && !!draft.code.trim() && !!draft.weapon_name.trim();
+  const valid = codeValid && (!personal.changed || personal.clear || (hasMainAttributes(personal.values) && validAttributes(personal.values) && personal.confirmed)) && (!previewDirty || !hasMainAttributes(personal.values) || personal.confirmed) && !recognizing;
   const save = async () => {
     if (inFlight.current || !editor || !valid) return;
     inFlight.current = true; setBusy(true); setError('');
     try {
-      const item = editor === 'new' ? await api.createBuildCode(draft) : await api.updateBuildCode(editor.id, draft);
+      const manual = personalInput(personal, identity);
+      const input = { ...draft, ...(manual !== undefined ? { manual_attributes: manual } : {}) };
+      const item = editor === 'new' ? await api.createBuildCode(input) : await api.updateBuildCode(editor.id, input);
       if (!alive.current) return;
       setItems(current => [item, ...current.filter(other => other.id !== item.id)]); setEditor(null);
       notifications.show({ message: '改枪码已保存', color: 'teal' });
@@ -61,9 +75,9 @@ export default function WeaponBuildCodes({ onError, onNavigationStateChange }: P
     finally { inFlight.current = false; if (alive.current) setBusy(false); }
   };
   const check = async () => {
-    if (inFlight.current || !valid) return;
+    if (inFlight.current || !codeValid) return;
     inFlight.current = true; setBusy(true); setError('');
-    try { const result = await api.lookupBuildCode(draft); if (alive.current) setLookup(result); }
+    try { const result = await api.lookupBuildCode({ ...draft, ...(editor && editor !== 'new' ? { record_id: editor.id } : {}) }); if (alive.current) setLookup(result); }
     catch (err) { if (alive.current && !onError(err)) setError(errorInfo(err).message); }
     finally { inFlight.current = false; if (alive.current) setBusy(false); }
   };
@@ -90,9 +104,10 @@ export default function WeaponBuildCodes({ onError, onNavigationStateChange }: P
         <Textarea label="改枪码" required autosize minRows={2} maxRows={4} placeholder="完整改枪码或核心码" value={draft.code} onChange={event => codeChanged(event.currentTarget.value)} error={draft.code ? parsed.error : undefined} disabled={busy} />
         <div className="build-form-row"><TextInput label="武器名称" required maxLength={100} placeholder="核心码需补充武器名称" value={draft.weapon_name} onChange={event => patch({ weapon_name: event.currentTarget.value })} readOnly={!!parsed.weapon} disabled={busy} /><Select label="适用模式" required allowDeselect={false} data={['烽火地带', '全面战场']} value={draft.mode} onChange={value => patch({ mode: value as BuildMode })} disabled={busy || !!parsed.mode} /></div>
         <Textarea label="备注" maxLength={2000} autosize minRows={2} maxRows={5} placeholder="用途、配装特点或精校说明" value={draft.note} onChange={event => patch({ note: event.currentTarget.value })} disabled={busy} />
+        {editor && <BuildAttributeEditor key={editor === 'new' ? 'new' : editor.id} value={personal} identity={identity} disabled={busy} onChange={setPersonal} onPreviewChange={setPreviewDirty} onBusyChange={setRecognizing} onError={onError} />}
         {lookup && (lookup.attributes ? <Attributes value={lookup.attributes} /> : <Alert color="blue">{statusText[lookup.status]}，仍可保存改枪码。</Alert>)}
         {error && <Alert color="red" role="alert">{error}</Alert>}
-        <div className="build-form-actions"><Button variant="light" disabled={!valid || busy} onClick={() => void check()}>查询属性</Button><div><Button variant="default" disabled={busy} onClick={close}>取消</Button><Button type="submit" loading={busy} disabled={!valid}>保存</Button></div></div>
+        <div className="build-form-actions"><Button variant="light" disabled={!codeValid || busy} onClick={() => void check()}>查询目录属性</Button><div><Button variant="default" disabled={busy} onClick={close}>取消</Button><Button type="submit" loading={busy} disabled={!valid}>保存</Button></div></div>
       </form>
     </Modal>
     <Modal opened={deleting !== null} onClose={() => !busy && setDeleting(null)} title="删除改枪码" centered size="sm" closeOnEscape={!busy} closeOnClickOutside={!busy} withCloseButton={!busy}><p>确认删除「{deleting?.weapon_name}」的方案？删除后无法恢复。</p>{error && <Alert color="red" role="alert">{error}</Alert>}<div className="build-dialog-actions"><Button variant="default" disabled={busy} onClick={() => setDeleting(null)}>取消</Button><Button color="red" loading={busy} onClick={() => void remove()}>确认删除</Button></div></Modal>

@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import Screenshots from 'react-screenshots';
 import { readCaptureWindows, type CaptureBounds, type CapturePoint } from './captureSelection';
 import { useCaptureSelection } from './useCaptureSelection';
+import { useCaptureToolbar } from './useCaptureToolbar';
 // 0.6.1 publishes its complete stylesheet under this exported dist path.
 // The Vite adapter removes missing stylesheet imports from the library source.
 import 'react-screenshots/dist/static/css/index.23cabfe1.css';
@@ -120,6 +121,7 @@ function CaptureOverlay() {
   const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
   const root = useRef<HTMLDivElement>(null);
   const selection = useCaptureSelection(root, viewport, state === 'ready');
+  useCaptureToolbar(root, selection.toolbarAnchor, viewport);
   const { loadWindows, selectHovered, reset: resetSelection, hasSelection } = selection;
   const channel = useRef<ReturnType<typeof createCaptureChannel> | null>(null);
   const alive = useRef(true);

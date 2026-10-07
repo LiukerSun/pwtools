@@ -224,6 +224,8 @@ async fn run(pool: PgPool) {
     .1;
     assert_eq!(mode_record["lookup_status"], "matched");
     assert_eq!(calls.load(Ordering::SeqCst), 4, "mode cache isolated");
+    run_attributes(&app, &pool, token, other).await;
+    run_attribute_preview(&pool, token).await;
     sqlx::query("UPDATE weapon_build_code_catalog SET fetched_at=now()-interval '7 hours'")
         .execute(&pool)
         .await
@@ -278,4 +280,307 @@ async fn run(pool: PgPool) {
         StatusCode::NOT_FOUND
     );
     server.abort();
+}
+
+async fn run_attribute_preview(pool: &PgPool, token: &str) {
+    use axum::routing::post;
+    let count = Arc::new(AtomicUsize::new(0));
+    let called = count.clone();
+    let mock=Router::new().route("/recognize-build-attributes",post(move || {
+        let called=called.clone();async move {called.fetch_add(1,Ordering::SeqCst);
+        Json(json!({"status":"completed","weapon_name":"M7战斗步枪","values":{"damage":39},"confidences":{"damage":0.99},"warnings":[],"missing":["handling"]}))}
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    let oss_calls = Arc::new(AtomicUsize::new(0));
+    let observed = oss_calls.clone();
+    let oss_mock = Router::new().fallback(move || {
+        let observed = observed.clone();
+        async move {
+            observed.fetch_add(1, Ordering::SeqCst);
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    });
+    let oss_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let oss_url = format!("http://{}", oss_listener.local_addr().unwrap());
+    let oss_server =
+        tokio::spawn(async move { axum::serve(oss_listener, oss_mock).await.unwrap() });
+    let storage = pwtools_api::storage::Storage::from_oss(
+        pwtools_api::storage::OssConfig::new(
+            &oss_url,
+            "fixture-bucket",
+            "cn-beijing",
+            "fixturekey".into(),
+            "fixturesecret".into(),
+            None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let app = router(
+        AppState::with_services(pool.clone(), &url, storage)
+            .await
+            .unwrap(),
+        vec![],
+    );
+    let counts = "SELECT jsonb_build_array((SELECT count(*) FROM weapon_build_codes),(SELECT count(*) FROM matches),(SELECT count(*) FROM object_storage_jobs),(SELECT count(*) FROM account_oss_archives))";
+    let before: Value = sqlx::query_scalar(counts).fetch_one(pool).await.unwrap();
+    let input = json!({"name":"panel.png","content_type":"image/png","data_base64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC"});
+    let path = "/api/weapon-build-codes/recognize-attributes";
+    assert_eq!(
+        call(&app, "POST", path, Some(input.clone()), None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let response = call(&app, "POST", path, Some(input.clone()), Some(token)).await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+    assert_eq!(response.1["values"]["damage"], 39);
+    assert!(response.1.get("raw_text").is_none());
+    let mut invalid = input.clone();
+    invalid["content_type"] = json!("image/gif");
+    assert_eq!(
+        call(&app, "POST", path, Some(invalid), Some(token)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut invalid = input.clone();
+    invalid["data_base64"] = json!("broken");
+    assert_eq!(
+        call(&app, "POST", path, Some(invalid), Some(token)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    use base64::Engine;
+    use image::ImageEncoder;
+    let mut oversized_pixels = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut oversized_pixels)
+        .write_image(
+            &vec![0; 8001 * 5000],
+            8001,
+            5000,
+            image::ExtendedColorType::L8,
+        )
+        .unwrap();
+    let mut invalid = input.clone();
+    invalid["data_base64"] =
+        json!(base64::engine::general_purpose::STANDARD.encode(oversized_pixels));
+    assert_eq!(
+        call(&app, "POST", path, Some(invalid), Some(token)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut invalid = input;
+    invalid["data_base64"] = json!("A".repeat(12 * 1024 * 1024 * 4 / 3 + 8));
+    assert_eq!(
+        call(&app, "POST", path, Some(invalid), Some(token)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        1,
+        "invalid images must not enter inference"
+    );
+    let after: Value = sqlx::query_scalar(counts).fetch_one(pool).await.unwrap();
+    assert_eq!(
+        before, after,
+        "attribute preview must not write records or queues"
+    );
+    assert_eq!(
+        oss_calls.load(Ordering::SeqCst),
+        0,
+        "attribute preview must never call OSS"
+    );
+    oss_server.abort();
+    server.abort();
+}
+
+async fn run_attributes(app: &Router, pool: &PgPool, token: &str, other: &str) {
+    let mut payload = input("ABCDEFGH");
+    let manual = json!({"identity":{"weapon_name":"汤姆逊冲锋枪","mode":"烽火地带","core_code":"ABCDEFGH"},"values":{"damage":0,"handling":38,"capacity":30,"fire_modes":["全自动","单发"],"price":852355},"source":"manual","recognized_at":null,"confirmed":true});
+    payload["manual_attributes"] = manual.clone();
+    let created = call(
+        app,
+        "POST",
+        "/api/weapon-build-codes",
+        Some(payload.clone()),
+        Some(token),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::CREATED, "{}", created.1);
+    assert_eq!(created.1["attributes"]["properties"][0]["value"], 0);
+    assert!(created.1["provider_attributes"].is_null());
+    let saved = created.1["manual_attributes"].clone();
+    let id = created.1["id"].as_str().unwrap();
+    let path = format!("/api/weapon-build-codes/{id}");
+    assert_eq!(
+        call(app, "PATCH", &path, Some(payload.clone()), Some(other))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(app, "DELETE", &path, None, Some(other)).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let login = call(
+        app,
+        "POST",
+        "/api/auth/login",
+        Some(json!({"email":"code-a@example.test","password":"long-build-code-password"})),
+        None,
+    )
+    .await;
+    let reloaded = call(
+        app,
+        "GET",
+        "/api/weapon-build-codes",
+        None,
+        login.1["token"].as_str(),
+    )
+    .await;
+    assert_eq!(
+        reloaded.1["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == id)
+            .unwrap()["manual_attributes"],
+        saved
+    );
+    let mut note = input("汤姆逊冲锋枪-烽火地带-ABCDEFGH");
+    note["note"] = json!("仅改备注");
+    let updated = call(app, "PATCH", &path, Some(note.clone()), Some(token)).await;
+    assert_eq!(updated.1["manual_attributes"], saved);
+    for invalid in [
+        json!({}),
+        json!({"price":100}),
+        json!({"damage":-1}),
+        json!({"damage":39,"capacity":1.5}),
+        json!({"damage":39,"fire_modes":["unknown"]}),
+        json!({"damage":39,"hidden":1}),
+    ] {
+        let mut wrong = payload.clone();
+        wrong["manual_attributes"]["values"] = invalid;
+        assert_eq!(
+            call(app, "PATCH", &path, Some(wrong), Some(token)).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    let mut wrong = payload.clone();
+    wrong["manual_attributes"]["identity"]["core_code"] = json!("OTHER123");
+    assert_eq!(
+        call(app, "PATCH", &path, Some(wrong), Some(token)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut wrong = payload.clone();
+    wrong["manual_attributes"]["confirmed"] = json!(false);
+    assert_eq!(
+        call(app, "PATCH", &path, Some(wrong), Some(token)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let provider = call(
+        app,
+        "POST",
+        "/api/weapon-build-codes",
+        Some(input("6L79CCC0BK4JN1CPUVQAH")),
+        Some(token),
+    )
+    .await
+    .1;
+    let provider_path = format!(
+        "/api/weapon-build-codes/{}",
+        provider["id"].as_str().unwrap()
+    );
+    let mut attached = input("6L79CCC0BK4JN1CPUVQAH");
+    attached["manual_attributes"] = manual;
+    attached["manual_attributes"]["identity"]["core_code"] = json!("6L79CCC0BK4JN1CPUVQAH");
+    let attached = call(app, "PATCH", &provider_path, Some(attached), Some(token))
+        .await
+        .1;
+    assert_eq!(attached["attributes"]["properties"][0]["value"], 0);
+    assert_eq!(attached["provider_attributes"], provider["attributes"]);
+    let mut query = input("6L79CCC0BK4JN1CPUVQAH");
+    query["record_id"] = provider["id"].clone();
+    assert_eq!(
+        call(
+            app,
+            "POST",
+            "/api/weapon-build-codes/lookup",
+            Some(query.clone()),
+            Some(other)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            app,
+            "POST",
+            "/api/weapon-build-codes/lookup",
+            Some(query),
+            Some(token)
+        )
+        .await
+        .1["status"],
+        "matched"
+    );
+    let mut clear = input("6L79CCC0BK4JN1CPUVQAH");
+    clear["manual_attributes"] = Value::Null;
+    let cleared = call(app, "PATCH", &provider_path, Some(clear), Some(token))
+        .await
+        .1;
+    assert!(cleared["manual_attributes"].is_null());
+    assert_eq!(cleared["attributes"], provider["attributes"]);
+    let changed = call(app, "PATCH", &path, Some(input("OTHER123")), Some(token)).await;
+    assert!(changed.1["manual_attributes"].is_null());
+    let restored = call(app, "PATCH", &path, Some(payload), Some(token))
+        .await
+        .1;
+    assert!(!restored["manual_attributes"].is_null());
+    for (weapon, mode) in [("其他武器", "烽火地带"), ("汤姆逊冲锋枪", "全面战场")]
+    {
+        let mut changed = input("ABCDEFGH");
+        changed["weapon_name"] = json!(weapon);
+        changed["mode"] = json!(mode);
+        assert!(
+            call(app, "PATCH", &path, Some(changed), Some(token))
+                .await
+                .1["manual_attributes"]
+                .is_null()
+        );
+        let mut restore = input("ABCDEFGH");
+        restore["manual_attributes"] = json!({"identity":saved["identity"],"values":saved["values"],"source":"manual","confirmed":true});
+        assert!(
+            !call(app, "PATCH", &path, Some(restore), Some(token))
+                .await
+                .1["manual_attributes"]
+                .is_null()
+        );
+    }
+    // An older API may edit identity while leaving the new column untouched.
+    sqlx::query("UPDATE weapon_build_codes SET code='OTHER123',core_code='OTHER123' WHERE id=$1")
+        .bind(Uuid::parse_str(id).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    let list = call(app, "GET", "/api/weapon-build-codes", None, Some(token))
+        .await
+        .1;
+    assert!(
+        list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == id)
+            .unwrap()["manual_attributes"]
+            .is_null()
+    );
+    assert_eq!(
+        call(app, "DELETE", &path, None, Some(token)).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        call(app, "DELETE", &provider_path, None, Some(token))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
 }

@@ -13,6 +13,7 @@ export function useCaptureSelection(root: RefObject<HTMLDivElement | null>, view
   const [selectionBounds, setSelectionBounds] = useState<CaptureBounds | null>();
   const [hasSelection, setHasSelection] = useState(false);
   const [selecting, setSelecting] = useState(false);
+  const [toolbarAnchor, setToolbarAnchor] = useState<CapturePoint | null>(null);
   const windows = useRef<CaptureBounds[]>([]);
   const hover = useRef<CaptureBounds | null>(null);
   const selected = useRef(false);
@@ -38,6 +39,7 @@ export function useCaptureSelection(root: RefObject<HTMLDivElement | null>, view
   const commit = useCallback((bounds: CaptureBounds | null) => {
     selected.current = bounds !== null;
     setHasSelection(bounds !== null);
+    setToolbarAnchor(bounds ? { ...pointer.current } : null);
     // A new command identity also permits choosing the same window again.
     setSelectionBounds(bounds ? { ...bounds } : null);
     showHover(bounds ? null : captureWindowAt(windows.current, pointer.current));
@@ -93,6 +95,9 @@ export function useCaptureSelection(root: RefObject<HTMLDivElement | null>, view
 
   const pointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
     const active = press.current;
+    if (!active && selected.current && event.button === 0 && !(event.target instanceof Element && event.target.closest('button, input, textarea, .screenshots-operations'))) {
+      setToolbarAnchor({ x: event.clientX, y: event.clientY });
+    }
     if (!active || event.pointerId !== active.id) return;
     event.preventDefault(); event.stopPropagation();
     pointer.current = { x: event.clientX, y: event.clientY };
@@ -110,6 +115,6 @@ export function useCaptureSelection(root: RefObject<HTMLDivElement | null>, view
   }, [reset]);
 
   useEffect(() => stopFrame, [stopFrame]);
-  return { hovered, selectionBounds, hasSelection, selecting, loadWindows, boundsChanged, selectHovered, reset,
+  return { hovered, selectionBounds, hasSelection, selecting, toolbarAnchor, loadWindows, boundsChanged, selectHovered, reset,
     pointerDown, pointerMove, pointerUp, pointerCancelled };
 }
