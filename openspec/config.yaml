@@ -1,0 +1,49 @@
+schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+context: |
+  PWTools 是面向陪玩从业者的私人老板账本，先支持 Windows 桌面客户端。
+
+  Tech stack:
+  - 桌面宿主: Win32 C++20 + WebView2 Evergreen（MSVC、CMake、NSIS 安装包，无 Electron）
+  - 前端: React 19 + TypeScript + Mantine 9 + Vite 7
+  - 本机 OCR: C++ + Windows WIC + ONNX Runtime CPU + PP-OCRv6 small（无 Python/OpenCV）
+  - API: Rust + Axum 0.8 + Tokio + SQLx 0.8，PostgreSQL 18，SQL 迁移随启动执行
+  - 存储: 阿里云 OSS 私有桶（原图 + record.json + 账本版本归档），PostgreSQL 是权威数据源
+  - 服务端 OCR: RapidOCR/Python，仅供浏览器预览与旧客户端
+  - 部署: Docker Compose（api/postgres/ocr）+ Openresty HTTPS
+
+  Domain:
+  - 核心域: 老板 → 订单（小时单/护航单/单局单，各自进度口径，不能统一按金额相加）→ 流水（记一场）
+  - 金额场次保存原值、假账扣除（必填，无假账填 0）与净值；截图确认后才入账
+  - 领域术语以 CONTEXT.md 为准（陪玩、老板、净带出、保底追加、转单、租号等）
+  - 数据按账号隔离；客户端不接触 OSS 凭证
+
+  Conventions:
+  - 所有面向用户与文档的文字使用中文
+  - 规格/spec 使用中文撰写，需求用「必须（SHALL）」标注
+  - Conventional commits（feat:/fix:/docs: 等）
+  - 版本为递增三段数字；release-notes.json 的 channel 区分 stable/beta 双更新通道
+  - README 兼作发布日志；openspec/specs/ 是行为规格的权威来源
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+rules:
+  proposal:
+    - 使用中文撰写，What Changes 标明影响的已有能力规格路径
+    - 涉及金额、入账、退款的变更必须在 Impact 中说明对账本余额口径的影响
+  tasks:
+    - 任务包含验证方式（对应测试命令或可观察行为），参考 README「检查与测试」一节的命令
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+operations:
+  apply:
+    guidance:
+      - 实现完成后运行 README「检查与测试」中与改动面对应的测试，汇报实际结果
+      - 不提交 .env、OSS 密钥、数据库备份与业务截图
+  archive:
+    guidance:
+      - 归档前确认 delta 中的需求已合入主规格并重新通过 openspec validate --specs --strict
