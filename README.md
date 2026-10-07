@@ -30,7 +30,7 @@
 - 对局记录旁按需加载 OSS 生成的 WebP 缩略图（216×122 像素以内），点击后才读取完整原图，支持 Esc 关闭与分别重试；已完成和已归档订单也可查看。
 - 已确认截图的原图长期保存到私有 OSS；OCR 行、识别文本、人工校对结果和订单账本保存到 PostgreSQL，并自动归档到 OSS，按账号隔离。未确认截图取消后不保留；已入账记录保留「修改校对」与「删除误录对局」，不再提供保存草稿或撤销入账。
 
-账号、老板资料及备注、订单、个人模板和每场记录通过 API 保存于服务端数据库，等待保存成功后才更新界面；同一账号在独立客户端重新登录后可查看。本地保留外观、关闭方式与快捷键偏好，以及登录会话；安装目录另外包含原生 OCR 推理库和模型，识别过程不将原图写入临时文件。安装包默认连接 `https://pwtools.liukersun.com/api`，开发环境默认使用本机服务。生产 API 已更新至 0.9.39-beta，提供转单、实际收付款、租号分析、订单结算归档、截图确认保存与 OSS 缩略图接口。邮箱仅作为登录标识，当前没有邮箱验证、找回密码或支付流程。
+账号、老板资料及备注、订单、个人模板和每场记录通过 API 保存于服务端数据库，等待保存成功后才更新界面；同一账号在独立客户端重新登录后可查看。本地保留外观、关闭方式与快捷键偏好，以及登录会话；安装目录另外包含原生 OCR 推理库和模型，识别过程不将原图写入临时文件。安装包默认连接 `https://pwtools.liukersun.com/api`，开发环境默认使用本机服务。生产 API 已更新至 0.9.40-beta，提供转单、实际收付款、租号分析、订单结算归档、截图确认保存与 OSS 缩略图接口。邮箱仅作为登录标识，当前没有邮箱验证、找回密码或支付流程。
 
 ## 技术选型
 
@@ -174,7 +174,7 @@ npm run build
 npm run package:win
 ```
 
-Windows 安装包生成在 `apps/desktop/release/`，当前测试版的文件名为 `PWTools-Setup-0.9.39.exe`，应用可执行文件为 `PWTools.exe`，卸载程序为 `Uninstall-PWTools.exe`。文件与默认安装路径均不带空格；默认安装到 `%LOCALAPPDATA%\Programs\PWToolsNative`，与旧 Electron 客户端分开。程序文件位于 `apps/desktop/release/native-win-x64/`。0.9.39 已包含转单功能及监狱地图 OCR 修复，转单配套 API 已同步上线。安装包不包含 Docker 后端或数据库，通过 HTTPS 访问 API。[本地测试安装包](apps/desktop/release/PWTools-Setup-0.9.39.exe)。安装包、同名 `.sha256` 校验文件和 `updates/windows-x64/beta/latest.json` 测试更新清单均保留在本地。
+Windows 安装包生成在 `apps/desktop/release/`，当前测试版的文件名为 `PWTools-Setup-0.9.40.exe`，应用可执行文件为 `PWTools.exe`，卸载程序为 `Uninstall-PWTools.exe`。文件与默认安装路径均不带空格；默认安装到 `%LOCALAPPDATA%\Programs\PWToolsNative`，与旧 Electron 客户端分开。程序文件位于 `apps/desktop/release/native-win-x64/`。0.9.40 新增改枪码管理和属性查询，配套 API 与数据库迁移已同步上线，保留转单及监狱地图 OCR 修复。安装包不包含 Docker 后端或数据库，通过 HTTPS 访问 API。[本地测试安装包](apps/desktop/release/PWTools-Setup-0.9.40.exe)。安装包、同名 `.sha256` 校验文件和 `updates/windows-x64/beta/latest.json` 测试更新清单均保留在本地。
 
 制作安装包需要 NSIS 3 的 `makensis.exe`，可安装到默认位置或加入 `PATH`；脚本也可复用本机既有的 NSIS 缓存。当前未配置 Windows 代码签名。
 
@@ -186,7 +186,7 @@ Windows 安装包生成在 `apps/desktop/release/`，当前测试版的文件名
 
 0.9.23 测试版在「设置 → 版本更新」增加「参与测试体验」，默认关闭，按本机资料目录保存。开启后同时检查正式与测试通道，选择版本号更高的版本；关闭后只检查正式通道，清除之前的测试版更新候选。下载或安装过程中不能切换。关闭不会卸载当前测试版或自动降级，后续有更高版本的正式版时会正常提示。
 
-0.9.22 及更早版本尚无此开关，需要先手动安装一次 [0.9.39 测试版](https://pwtools.liukersun.com/api/updates/windows-x64/beta/PWTools-Setup-0.9.39.exe)。正式通道仍保持 0.9.22。
+0.9.22 及更早版本尚无此开关，需要先手动安装一次 [0.9.40 测试版](https://pwtools.liukersun.com/api/updates/windows-x64/beta/PWTools-Setup-0.9.40.exe)。正式通道仍保持 0.9.22。
 
 0.9.15 及更早版本没有内置更新器，需要先手动安装一次 [0.9.22](https://pwtools.liukersun.com/api/updates/windows-x64/PWTools-Setup-0.9.22.exe)；0.9.16 可通过已有更新功能升级。此后客户端每次启动从当前 API 地址检查更新，发现新版弹出版本号、更新内容及「立即更新 / 暂不更新」。只有选择更新才下载安装包；暂不更新、关闭提示或按 Esc 均可继续使用，本次启动不再重复提示同一版本，下次启动仍会检查和提醒。「设置 → 版本更新」始终可重新发起更新。已是最新版或检查失败时不会自动弹窗。
 
@@ -304,6 +304,12 @@ cargo run --manifest-path services/api/Cargo.toml --bin pwtools-api
 原生桌面版的识别由客户端处理，本机 Rust 开发无需启动 OCR 服务。浏览器预览与旧客户端仍使用服务端 OCR；Compose 默认不向宿主机映射 OCR，按照 [OCR 开发说明](services/ocr/README.md) 启动本机服务。没有 OCR 时仍能保存原图和人工校对。
 
 ## 检查与测试
+
+2026-10-07 已发布 0.9.40 测试版：新增私人改枪码管理、完整码/核心码录入、搜索筛选、复制、编辑、删除和数据帝属性查询。属性保存来源、时间与参考价，未收录或上游故障仍可保存，故障时编辑备注保留已有属性。Token 仅在后端环境配置，改枪码与属性快照仅存数据库。
+
+类型检查、Windows 构建、15项解析/桥接测试、原生 API/OCR fixture、31项 Rust 单测、改枪码 PostgreSQL 集成、浏览器 E2E 与 Clippy 通过。0.9.40 安装包为 31,496,079 字节，SHA-256 为 `aaca7d863b2702222f3b7ea284a9269520276d915fffafdd79b262f36e83e398`；更新器 fixture 及公网完整下载、版本、大小与哈希校验通过，正式通道保持 0.9.22。
+
+生产 API 为 `pwtools-api:0.9.40-beta`，`202610070002` 改枪码迁移成功、健康状态正常。部署前数据库备份、原配置和源码保留于 `/opt/pwtools/releases/0.9.40-beta/`，OCR 与 PostgreSQL 容器保持不变。公网合成会话已验证真实八项属性、保存/列表/修改/删除、401 鉴权与跨账号隔离，测试账号已清理且未生成账号归档。全仓格式检查仍有已有 `rentals.rs:444` 格式差异，新增 Rust 文件格式通过。
 
 2026-10-07 已发布 0.9.39 测试版：上线转单测算、协商进度、确认转出、实际收付款结账、部分退款、免单、确认退款及未收付款转单撤销，保留转单历史并联动租号收益分析；同时保留 0.9.38 的监狱地图 OCR 修复。
 
