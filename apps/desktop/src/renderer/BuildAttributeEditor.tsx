@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Checkbox, FileButton, MultiSelect, NumberInput, Modal } from '@mantine/core';
 import { Clipboard, ImagePlus, ScanLine } from 'lucide-react';
-import type { BuildAttributeCandidate, BuildIdentity } from '../shared/contracts';
+import type { BuildAttributeCandidate, BuildIdentity, BuildScreenshotImport } from '../shared/contracts';
 import { api, errorInfo, ClientError } from './api';
 import { attributeFields, blobToBase64, initialAttributes, mergeCandidates, type AttributeDraft } from './buildAttributes';
 
@@ -9,8 +9,9 @@ type Props = {
   value: AttributeDraft; identity: BuildIdentity; disabled: boolean;
   onChange: (value: AttributeDraft) => void; onPreviewChange: (dirty: boolean) => void;
   onBusyChange: (busy: boolean) => void; onError: (error: unknown) => boolean;
+  screenshotImport?: BuildScreenshotImport | null;
 };
-export default function BuildAttributeEditor({ value, identity, disabled, onChange, onPreviewChange, onBusyChange, onError }: Props) {
+export default function BuildAttributeEditor({ value, identity, disabled, onChange, onPreviewChange, onBusyChange, onError, screenshotImport }: Props) {
   const [image, setImage] = useState<File | null>(null);
   const [url, setUrl] = useState('');
   const [candidate, setCandidate] = useState<BuildAttributeCandidate | null>(null);
@@ -24,12 +25,24 @@ export default function BuildAttributeEditor({ value, identity, disabled, onChan
   const current = useRef(value); current.current = value;
   const key = JSON.stringify(identity);
   const oldKey = useRef(key);
+  const importedIdentity = useRef(!!screenshotImport);
+  useEffect(() => {
+    if (!screenshotImport) return;
+    const file = new File([new Uint8Array(screenshotImport.image.data)], screenshotImport.image.name, { type: screenshotImport.image.content_type });
+    setImage(file); setCandidate(screenshotImport.candidate);
+    setNotice(screenshotImport.candidate.status === 'completed' ? '截图已自动识别，请补填改枪码并核对属性后保存。' : '截图已带入，可重新识别或手工填写属性。');
+  }, [screenshotImport]);
   useEffect(() => {
     alive.current = true;
     return () => { alive.current = false; generation.current++; onBusyChange(false); };
   }, []);
   useEffect(() => {
     if (oldKey.current === key) return;
+    if (importedIdentity.current && !current.current.confirmed) {
+      oldKey.current = key;
+      onChange({ ...current.current, confirmed: false }); return;
+    }
+    importedIdentity.current = false;
     oldKey.current = key; generation.current++; setImage(null); setCandidate(null); setBusy(false); onBusyChange(false); onPreviewChange(false);
     onChange({ ...initialAttributes(), changed: true, clear: true });
     setNotice('方案已改变，请重新录入并确认对应属性。');

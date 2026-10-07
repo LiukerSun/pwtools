@@ -167,6 +167,7 @@ async function installImportFixture(app: NativeApplication) {
       listMatches: async () => ({ items: [], total: 0, page: 1, page_size: 8 }),
       listRentalSessions: async () => ({ items: [] }),
       captureScreen: async () => { state.captureCalls++; await bridge.windowControl('restore'); return { name: 'screenshot.png', content_type: 'image/png', data: new Uint8Array(bytes) }; },
+      classifyScreenshot: async () => ({ kind: 'match', attributes: { status: 'no_fields', weapon_name: null, values: {}, confidences: {}, warnings: [], missing: [] } }),
       uploadMatch: async (input: MatchUploadInput) => { state.uploads.push({ name: input.name, order_id: input.order_id, data: Array.from(input.data) }); return { record, duplicate: false }; },
       matchImage: async () => ({ content_type: 'image/png', data: new Uint8Array(bytes) }),
       updateMatch: async (id: string, input: MatchUpdateInput) => { state.updates.push({ id, input }); return { ...record, ...input }; },
@@ -196,7 +197,7 @@ test('自定义快捷键持久化，后台截图后选择订单并只上传一�
     await page.getByRole('button', { name: '登录', exact: true }).click();
     await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     await page.getByRole('navigation').getByRole('button', { name: '设置', exact: true }).click();
-    const input = page.getByLabel('导入战绩快捷键', { exact: true });
+    const input = page.getByLabel('截图快捷键', { exact: true });
     await input.press('Control+Alt+Shift+F9');
     await expect(input).toHaveValue('Ctrl + Alt + Shift + F9');
     await page.getByRole('button', { name: '保存快捷键', exact: true }).click();
@@ -495,4 +496,87 @@ test('刚登录且订单尚未载入时，快捷键通知仍打开导入并等�
     await app?.close().catch(() => {});
     await cleanupDirectory(directory);
   }
+});
+
+
+test('截图自动分类到改枪码、首次绑定保留属性和不确定时手动选择', async () => {
+  const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
+  let app: NativeApplication | undefined;
+  try {
+    app = await NativeApplication.launch(directory, UNREACHABLE_API);
+    const page = app.page;
+    await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+    await installImportFixture(app);
+    await page.evaluate(() => {
+      window.pwtools!.listBuildCodes = async () => ({ items: [] });
+      window.pwtools!.classifyScreenshot = async () => ({ kind: 'build_attributes', attributes: { status: 'completed', weapon_name: 'M7战斗步枪', values: { damage: 39, handling: 38, recoil_control: 61 }, confidences: {}, warnings: [], missing: [] } });
+    });
+    await page.getByLabel(/^邮箱/).fill('hotkey-fixture@example.test');
+    await page.getByLabel(/^密码/).fill('Isolated-hotkey-password!');
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
+    await page.evaluate(shortcut => window.pwtools!.setImportHotkey(shortcut), PRIMARY);
+    await app.notifyRegisteredHotkey(PRIMARY);
+    const dialog = page.getByRole('dialog', { name: '添加改枪码', exact: true });
+    await expect(dialog).toBeVisible();
+    await expect(page.getByRole('dialog', { name: '导入战绩', exact: true })).not.toBeVisible();
+    await expect(dialog.getByLabel('基础伤害', { exact: true })).toHaveValue('39');
+    // Typing the initial code, including partial values, must preserve the imported candidate.
+    await dialog.getByLabel(/^改枪码/).pressSequentially('6LHDKCC036I65F2DQBEVD');
+    await expect(dialog.getByLabel('基础伤害', { exact: true })).toHaveValue('39');
+    await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeDisabled();
+    await dialog.getByLabel('我已核对，并确认这些属性与当前改枪码对应', { exact: true }).check();
+    await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeEnabled();
+    expect((await fixtureState(app)).uploads).toEqual([]);
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('dialog', { name: '放弃未保存修改', exact: true }).getByRole('button', { name: '放弃修改', exact: true }).click();
+    await page.evaluate(() => { window.pwtools!.classifyScreenshot = async () => ({ kind: 'unknown', attributes: { status: 'no_fields', weapon_name: null, values: {}, confidences: {}, warnings: [], missing: [] } }); });
+    await app.notifyRegisteredHotkey(PRIMARY);
+    const choice = page.getByRole('dialog', { name: '选择截图用途', exact: true });
+    await expect(choice).toBeVisible();
+    await choice.getByRole('button', { name: '订单战绩', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '导入战绩', exact: true })).toBeVisible();
+    expect((await fixtureState(app)).uploads).toEqual([]);
+    expect((await fixtureState(app)).unexpected).toEqual([]);
+  } finally { await app?.close(); await cleanupDirectory(directory); }
+});
+
+
+test('分类等待阻止重复截图，识别失败保留原图供手动补录', async () => {
+  const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
+  let app: NativeApplication | undefined;
+  try {
+    app = await NativeApplication.launch(directory, UNREACHABLE_API);
+    const page = app.page;
+    await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+    await installImportFixture(app);
+    await page.evaluate(() => {
+      window.pwtools!.listBuildCodes = async () => ({ items: [] });
+      window.pwtools!.classifyScreenshot = () => new Promise((_, reject) => {
+        (window as unknown as { failClassification: () => void }).failClassification = () => reject({ code: 'LOCAL_OCR_UNAVAILABLE', message: 'isolated failure' });
+      });
+    });
+    await page.getByLabel(/^邮箱/).fill('hotkey-fixture@example.test');
+    await page.getByLabel(/^密码/).fill('Isolated-hotkey-password!');
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
+    await page.evaluate(shortcut => window.pwtools!.setImportHotkey(shortcut), PRIMARY);
+    await app.notifyRegisteredHotkey(PRIMARY);
+    await expect(page.getByRole('dialog', { name: '正在识别截图类型', exact: true })).toBeVisible();
+    await app.notifyRegisteredHotkey(PRIMARY);
+    expect((await fixtureState(app)).captureCalls).toBe(1);
+    await page.evaluate(() => (window as unknown as { failClassification: () => void }).failClassification());
+    const choice = page.getByRole('dialog', { name: '选择截图用途', exact: true });
+    await expect(choice).toBeVisible();
+    await choice.getByRole('button', { name: '改枪码属性', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '添加改枪码', exact: true });
+    await expect(dialog.getByText('截图已带入，可重新识别或手工填写属性。', { exact: true })).toBeVisible();
+    await expect(dialog.locator('img')).toHaveJSProperty('naturalWidth', 1);
+    await dialog.getByLabel(/^改枪码/).fill('M7战斗步枪-烽火地带-6LHDKCC036I65F2DQBEVD');
+    await dialog.getByLabel('基础伤害', { exact: true }).fill('39');
+    await dialog.getByLabel('我已核对，并确认这些属性与当前改枪码对应', { exact: true }).check();
+    await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeEnabled();
+    expect((await fixtureState(app)).uploads).toEqual([]);
+    expect((await fixtureState(app)).unexpected).toEqual([]);
+  } finally { await app?.close(); await cleanupDirectory(directory); }
 });

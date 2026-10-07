@@ -2,14 +2,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Alert, Badge, Button, Loader, Modal, Select, Textarea, TextInput } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { Copy, Crosshair, Pencil, Plus, Search, Trash2 } from 'lucide-react';
-import type { BuildCodeAttributes, BuildCodeLookup, WeaponBuildCode, WeaponBuildCodeInput } from '../shared/contracts';
+import type { BuildCodeAttributes, BuildCodeLookup, BuildScreenshotImport, WeaponBuildCode, WeaponBuildCodeInput } from '../shared/contracts';
 import { api, errorInfo } from './api';
 import { parseBuildCode, type BuildMode } from './buildCode';
 import './build-codes.css';
 import BuildAttributeEditor from './BuildAttributeEditor';
 import { initialAttributes, hasMainAttributes, validAttributes, personalInput, type AttributeDraft } from './buildAttributes';
 
-type Props = { onError: (error: unknown) => boolean; onNavigationStateChange: (state: { dirty: boolean; busy: boolean }) => void };
+type Props = { onError: (error: unknown) => boolean; onNavigationStateChange: (state: { dirty: boolean; busy: boolean }) => void; screenshotImport?: BuildScreenshotImport | null; onScreenshotHandled?: () => void };
 const emptyDraft = (): WeaponBuildCodeInput => ({ code: '', weapon_name: '', mode: '烽火地带', note: '' });
 const statusText = { matched: '已匹配属性', unmatched: '未收录此方案', unavailable: '属性查询暂不可用，可稍后重试', not_configured: '属性服务尚未配置' };
 
@@ -25,7 +25,7 @@ function Attributes({ value }: { value: BuildCodeAttributes }) {
     </details></div>;
 }
 
-export default function WeaponBuildCodes({ onError, onNavigationStateChange }: Props) {
+export default function WeaponBuildCodes({ onError, onNavigationStateChange, screenshotImport, onScreenshotHandled }: Props) {
   const [items, setItems] = useState<WeaponBuildCode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -40,12 +40,15 @@ export default function WeaponBuildCodes({ onError, onNavigationStateChange }: P
   const [personal, setPersonal] = useState<AttributeDraft>(() => initialAttributes());
   const [previewDirty, setPreviewDirty] = useState(false);
   const [recognizing, setRecognizing] = useState(false);
+  const [importedScreenshot, setImportedScreenshot] = useState<BuildScreenshotImport | null>(null);
+  const seenScreenshot = useRef(0);
   const attributeBaseline = useRef('');
   const baseline = useRef('');
   const inFlight = useRef(false);
   const alive = useRef(true);
   const parsed = parseBuildCode(draft.code);
   const identity = { weapon_name: draft.weapon_name.trim(), mode: draft.mode, core_code: parsed.core };
+  useEffect(() => { if (editor === null && importedScreenshot) setImportedScreenshot(null); }, [editor]);
   const dirty = editor !== null && (JSON.stringify(draft) !== baseline.current || JSON.stringify(personal) !== attributeBaseline.current || previewDirty);
   useLayoutEffect(() => { onNavigationStateChange({ dirty, busy: busy || recognizing }); }, [dirty, busy, recognizing, onNavigationStateChange]);
   useEffect(() => {
@@ -54,11 +57,22 @@ export default function WeaponBuildCodes({ onError, onNavigationStateChange }: P
     return () => { alive.current = false; };
   }, [onError]);
   const open = (item: WeaponBuildCode | 'new') => {
+    setImportedScreenshot(null);
     const next = item === 'new' ? emptyDraft() : { code: item.code, weapon_name: item.weapon_name, mode: item.mode, note: item.note };
     baseline.current = JSON.stringify(next); setDraft(next); setEditor(item); setError(''); setLookup(null);
     const attributes = initialAttributes(item === 'new' ? null : item.manual_attributes);
     attributeBaseline.current = JSON.stringify(attributes); setPersonal(attributes); setPreviewDirty(false); setRecognizing(false);
   };
+  useEffect(() => {
+    if (!screenshotImport || seenScreenshot.current === screenshotImport.id) return;
+    seenScreenshot.current = screenshotImport.id;
+    open('new');
+    const next = { ...emptyDraft(), weapon_name: screenshotImport.candidate.weapon_name ?? '' };
+    setDraft(next); baseline.current = JSON.stringify(next);
+    setPersonal({ ...initialAttributes(), values: screenshotImport.candidate.values, source: 'ocr_confirmed', recognized_at: new Date().toISOString(), changed: hasMainAttributes(screenshotImport.candidate.values) });
+    setImportedScreenshot(screenshotImport); setPreviewDirty(true);
+    onScreenshotHandled?.();
+  }, [screenshotImport, onScreenshotHandled]);
   const close = () => { if (!inFlight.current) { if (dirty) setDiscard(true); else setEditor(null); } };
   const patch = (values: Partial<WeaponBuildCodeInput>) => { setDraft(current => ({ ...current, ...values })); setLookup(null); setError(''); };
   const codeChanged = (value: string) => {
@@ -110,7 +124,7 @@ export default function WeaponBuildCodes({ onError, onNavigationStateChange }: P
         <Textarea label="改枪码" required autosize minRows={2} maxRows={4} placeholder="完整改枪码或核心码" value={draft.code} onChange={event => codeChanged(event.currentTarget.value)} error={draft.code ? parsed.error : undefined} disabled={busy} />
         <div className="build-form-row"><TextInput label="武器名称" required maxLength={100} placeholder="核心码需补充武器名称" value={draft.weapon_name} onChange={event => patch({ weapon_name: event.currentTarget.value })} readOnly={!!parsed.weapon} disabled={busy} /><Select label="适用模式" required allowDeselect={false} data={['烽火地带', '全面战场']} value={draft.mode} onChange={value => patch({ mode: value as BuildMode })} disabled={busy || !!parsed.mode} /></div>
         <Textarea label="备注" maxLength={2000} autosize minRows={2} maxRows={5} placeholder="用途、配装特点或精校说明" value={draft.note} onChange={event => patch({ note: event.currentTarget.value })} disabled={busy} />
-        {editor && <BuildAttributeEditor key={editor === 'new' ? 'new' : editor.id} value={personal} identity={identity} disabled={busy} onChange={setPersonal} onPreviewChange={setPreviewDirty} onBusyChange={setRecognizing} onError={onError} />}
+        {editor && <BuildAttributeEditor key={editor === 'new' ? 'new' : editor.id} value={personal} identity={identity} disabled={busy} onChange={setPersonal} onPreviewChange={setPreviewDirty} onBusyChange={setRecognizing} onError={onError} screenshotImport={importedScreenshot} />}
         {lookup && (lookup.attributes ? <Attributes value={lookup.attributes} /> : <Alert color="blue">{statusText[lookup.status]}，仍可保存改枪码。</Alert>)}
         {error && <Alert color="red" role="alert">{error}</Alert>}
         <div className="build-form-actions"><Button variant="light" disabled={!codeValid || busy} onClick={() => void check()}>查询目录属性</Button><div><Button variant="default" disabled={busy} onClick={close}>取消</Button><Button type="submit" loading={busy} disabled={!valid}>保存</Button></div></div>

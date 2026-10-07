@@ -297,6 +297,7 @@ export interface DesktopBridge {
   deleteBuildCode(id: string): Promise<void>;
   lookupBuildCode(input: WeaponBuildCodeInput): Promise<BuildCodeLookup>;
   recognizeBuildCodeAttributes(image: BuildAttributeImage): Promise<BuildAttributeCandidate>;
+  classifyScreenshot(image: BuildAttributeImage): Promise<ScreenshotClassification>;
   listRentalAccounts(): Promise<{ items: RentalAccount[] }>;
   createRentalAccount(input: RentalAccountInput): Promise<RentalAccount>;
   listRentalSessions(): Promise<{ items: RentalSession[] }>;
@@ -376,6 +377,8 @@ export interface BuildAttributeCandidate {
   confidences: Partial<Record<keyof BuildAttributeValues, number>>; warnings: string[]; missing: string[];
 }
 export interface BuildAttributeImage { name: string; content_type: string; data_base64: string }
+export interface ScreenshotClassification { kind: 'match' | 'build_attributes' | 'unknown'; attributes: BuildAttributeCandidate }
+export interface BuildScreenshotImport { id: number; image: MatchUploadInput; candidate: BuildAttributeCandidate }
 export interface WeaponBuildCodeInput { code: string; weapon_name: string; mode: '烽火地带' | '全面战场'; note: string; manual_attributes?: ManualBuildAttributeInput | null; record_id?: string }
 export interface BuildCodeAttributes {
   source: string;

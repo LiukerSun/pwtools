@@ -45,6 +45,7 @@ Json Value(const Field& field, std::string text) {
  if((key=="capacity" || key=="price" || key=="fire_rate_rpm") && std::floor(number)!=number)return nullptr;
  return std::floor(number)==number?Json(static_cast<int64_t>(number)):Json(number);
 }
+
 }
 Json ParseGunAttributes(const std::vector<OcrLine>& lines, double, double) {
  Json values=Json::object(), confidence=Json::object(),warnings=Json::array(),missing=Json::array(),weapon=nullptr;
@@ -72,5 +73,16 @@ Json ParseGunAttributes(const std::vector<OcrLine>& lines, double, double) {
  }
  const auto status=lines.empty()?"no_text":missing.size()<8?"completed":"no_fields";
  return Json{{"status",status},{"weapon_name",weapon},{"values",values},{"confidences",confidence},{"warnings",warnings},{"missing",missing}};
+}
+Json ClassifyScreenshot(const std::vector<OcrLine>& lines, double width, double height) {
+ const auto attributes=ParseGunAttributes(lines,width,height);
+ const auto match=ParseScoreboard(lines,width,height);
+ const auto& values=attributes["values"];
+ unsigned field_count=0;
+ for(const auto key:{"damage","armor_damage","range_m","recoil_control","handling","stability","hip_fire"}) if(values.contains(key) && attributes["confidences"].value(key,0.0)>=.8)++field_count;
+ const bool gun=field_count>=3 && (values.contains("recoil_control") || values.contains("handling") || values.contains("stability") || values.contains("hip_fire"));
+ bool scoreboard=false;
+ for(const auto& player:match["players"]) if(player["outcome"]!="unknown" && player["amount"].is_number())scoreboard=true;
+ return Json{{"kind",gun==scoreboard?"unknown":gun?"build_attributes":"match"},{"attributes",attributes},{"match",match}};
 }
 }

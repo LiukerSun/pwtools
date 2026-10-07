@@ -3,7 +3,7 @@ import { Alert, Button, createTheme, InputWrapper, Loader, MantineProvider, Menu
 import { useForm } from '@mantine/form';
 import { Notifications, notifications } from '@mantine/notifications';
 import { BookOpen, Calculator, ChevronDown, ChevronRight, Gamepad2, KeyRound, LogOut, Mail, Maximize2, Minus, Moon, PanelLeftClose, PanelLeftOpen, Settings2, Sun, X } from 'lucide-react';
-import type { AppInfo, ImportHotkey, MatchUploadInput, User } from '../shared/contracts';
+import type { AppInfo, BuildScreenshotImport, ImportHotkey, MatchUploadInput, ScreenshotClassification, User } from '../shared/contracts';
 import { api, errorInfo, isDesktop, isSessionError } from './api';
 import BossLedger from './BossLedger';
 import HafuRateCalculator from './HafuRateCalculator';
@@ -13,6 +13,7 @@ import ClubRecruitment from './ClubRecruitment';
 import { emptyHafuRateInput, type HafuRateInput } from './hafuRate';
 import { StartupUpdatePrompt, UpdateNotice, UpdateSettings, useAppUpdates, type AppUpdates } from './AppUpdates';
 import ImportShortcut, { initialImportHotkey, storeImportHotkey } from './ImportShortcut';
+import { blobToBase64 } from './buildAttributes';
 
 type PageId = 'dashboard' | 'rentals' | 'build-codes' | 'hafu-rate' | 'settings';
 type ThemeMode = 'dark' | 'light';
@@ -142,7 +143,7 @@ export default function App() {
     setImportRequest(value => value + 1);
     if (!userRef.current) {
       void api.windowControl('restore').catch(() => {});
-      notifications.show({ title: '请先登录', message: '登录后继续截图并选择订单导入战绩', color: 'blue' });
+      notifications.show({ title: '请先登录', message: '登录后继续截图，自动识别订单战绩或枪支属性', color: 'blue' });
     }
   }), []);
   useEffect(() => {
@@ -326,7 +327,12 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
   const [ledgerVisit, setLedgerVisit] = useState(0);
   const [ledgerImportRequest, setLedgerImportRequest] = useState(0);
   const [ledgerImportImage, setLedgerImportImage] = useState<MatchUploadInput | null>(null);
+  const [buildScreenshot, setBuildScreenshot] = useState<BuildScreenshotImport | null>(null);
+  const [unclassified, setUnclassified] = useState<{ image: MatchUploadInput; result: ScreenshotClassification | null } | null>(null);
+  const screenshotSequence = useRef(0);
+  const handleBuildScreenshot = useCallback(() => setBuildScreenshot(null), []);
   const [capturing, setCapturing] = useState(false);
+  const [classifying, setClassifying] = useState(false);
   const captureBusyRef = useRef(false);
   const mountedRef = useRef(true);
   const importFlowRef = useRef(false);
@@ -357,7 +363,7 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
   const requestImport = useCallback(() => {
     // An active selection owns the screen; another hotkey must not restore
     // the main window over it or start a second capture.
-    if (captureBusyRef.current || installingUpdateRef.current) return;
+    if (captureBusyRef.current || installingUpdateRef.current || unclassified) return;
     const navigation = (pageRef.current === 'dashboard' || pageRef.current === 'rentals' || pageRef.current === 'build-codes') ? ledgerNavigationRef.current : { dirty: false, busy: false };
     if (navigation.busy || signingOutRef.current) { restoreForImport(); notifications.show({ message: '请等待保存或识别完成', color: 'orange' }); return; }
     if (importFlowRef.current) { restoreForImport(); notifications.show({ message: '请继续完成当前战绩导入', color: 'blue' }); return; }
@@ -368,6 +374,23 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
       try {
         const image = isDesktop ? await api.captureScreen() : null;
         if (!mountedRef.current || (isDesktop && !image)) return;
+        if (image) {
+          restoreForImport();
+          setClassifying(true);
+          let result: ScreenshotClassification;
+          try { result = await api.classifyScreenshot({ name: image.name, content_type: image.content_type, data_base64: await blobToBase64(new Blob([new Uint8Array(image.data)], { type: image.content_type })) }); }
+          catch (error: unknown) {
+            if (!mountedRef.current || onError(error)) return;
+            notifications.show({ title: '自动分类未完成', message: '可手动选择截图用途，继续导入。', color: 'orange' });
+            setUnclassified({ image, result: null }); return;
+          }
+          if (!mountedRef.current) return;
+          if (result.kind === 'unknown') { setUnclassified({ image, result }); return; }
+          if (result.kind === 'build_attributes') {
+            setBuildScreenshot({ id: ++screenshotSequence.current, image, candidate: result.attributes });
+            setPage('build-codes'); return;
+          }
+        }
         // Keep the current draft until a selection succeeds, including when
         // the user cancels after accepting the draft guard.
         importFlowRef.current = true;
@@ -381,12 +404,12 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
         notifications.show({ title: '截图未完成', message: errorInfo(error).message, color: 'red' });
       } finally {
         captureBusyRef.current = false;
-        if (mountedRef.current) setCapturing(false);
+        if (mountedRef.current) { setCapturing(false); setClassifying(false); }
       }
     };
     if (navigation.dirty) { restoreForImport(); pendingCaptureRef.current = true; setPendingClose(false); setPendingUpdate(false); setPendingNavigation(() => () => void capture()); return; }
     void capture();
-  }, [restoreForImport]);
+  }, [restoreForImport, onError, unclassified]);
   useEffect(() => {
     if (!importRequest || seenImportRequest.current === importRequest) return;
     seenImportRequest.current = importRequest;
@@ -484,12 +507,24 @@ function Workspace({ user, onSignedOut, onError, theme, onThemeChange, appInfo, 
         <UpdateNotice updates={updates} onOpen={() => navigatePage('settings')} /><div className="page-transition" key={page}>
           {page === 'dashboard' && <BossLedger key={ledgerVisit} onError={onError} onNavigationStateChange={reportLedgerNavigation} importRequest={ledgerImportRequest} initialImportImage={ledgerImportImage} importBusy={capturing} onImportFlowChange={reportImportFlow} />}
           {page === 'rentals' && <RentalManager onError={onError} onNavigationStateChange={reportLedgerNavigation} />}
-          {page === 'build-codes' && <WeaponBuildCodes onError={onError} onNavigationStateChange={reportLedgerNavigation} />}
+          {page === 'build-codes' && <WeaponBuildCodes onError={onError} onNavigationStateChange={reportLedgerNavigation} screenshotImport={buildScreenshot} onScreenshotHandled={handleBuildScreenshot} />}
           {page === 'hafu-rate' && <HafuRateCalculator input={hafuRateInput} onChange={setHafuRateInput} />}
           {page === 'settings' && <Settings updates={updates} onInstallUpdate={installUpdate} theme={theme} onThemeChange={onThemeChange} appInfo={appInfo} onLogout={() => runNavigation(() => void logout())} signingOut={signingOut} email={user.email} closeBehavior={closeBehavior} onCloseBehaviorChange={onCloseBehaviorChange} importHotkey={importHotkey} hotkeyError={hotkeyError} hotkeyBusy={hotkeyBusy} onImportHotkeyChange={onImportHotkeyChange} onHotkeyEditingChange={onHotkeyEditingChange} />}
         </div>
       </main>
     </div>
+    <Modal opened={classifying} onClose={() => {}} title="正在识别截图类型" centered size="sm" withCloseButton={false} closeOnEscape={false} closeOnClickOutside={false}><Loader size="sm" /><p>正在区分订单战绩与改枪码属性…</p></Modal>
+    <Modal opened={unclassified !== null} onClose={() => setUnclassified(null)} title="选择截图用途" centered size="sm">
+      <p>没有明确识别到截图类型，请选择要导入的模块。</p>
+      <div className="build-dialog-actions"><Button variant="default" onClick={() => setUnclassified(null)}>取消</Button><Button variant="light" onClick={() => {
+        if (!unclassified) return;
+        importFlowRef.current = true; setLedgerImportImage(unclassified.image); setLedgerVisit(value => value + 1); setLedgerImportRequest(value => value + 1); setPage('dashboard'); setUnclassified(null);
+      }}>订单战绩</Button><Button onClick={() => {
+        if (!unclassified) return;
+        setBuildScreenshot({ id: ++screenshotSequence.current, image: unclassified.image, candidate: unclassified.result?.attributes ?? { status: 'no_fields', weapon_name: null, values: {}, confidences: {}, warnings: [], missing: [] } });
+        setPage('build-codes'); setUnclassified(null);
+      }}>改枪码属性</Button></div>
+    </Modal>
     <Modal classNames={{ content: 'navigation-guard-modal' }} opened={pendingNavigation !== null} onClose={() => { pendingCaptureRef.current = false; setPendingNavigation(null); }} title="尚有未保存修改" centered size="sm" zIndex={400}>
       <p>离开将丢弃未保存内容。</p>
       <div className="navigation-guard-actions"><Button variant="default" onClick={() => { pendingCaptureRef.current = false; setPendingNavigation(null); }}>继续填写</Button><Button onClick={() => {

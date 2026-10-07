@@ -39,6 +39,7 @@ test('all desktop methods use matching RPC names and JSON arguments', async () =
     ['deleteBuildCode', () => bridge.deleteBuildCode('code-id'), ['code-id']],
     ['lookupBuildCode', () => bridge.lookupBuildCode({ code: 'ABCDEFGH', weapon_name: 'M7', mode: '烽火地带', note: '' }), [{ code: 'ABCDEFGH', weapon_name: 'M7', mode: '烽火地带', note: '' }]],
     ['recognizeBuildCodeAttributes', () => bridge.recognizeBuildCodeAttributes({ name: 'gun.png', content_type: 'image/png', data_base64: 'AAEC' }), [{ name: 'gun.png', content_type: 'image/png', data_base64: 'AAEC' }]],
+    ['classifyScreenshot', () => bridge.classifyScreenshot({ name: 'capture.png', content_type: 'image/png', data_base64: 'AAEC' }), [{ name: 'capture.png', content_type: 'image/png', data_base64: 'AAEC' }]],
     ['listRentalAccounts', () => bridge.listRentalAccounts(), []],
     ['createRentalAccount', () => bridge.createRentalAccount(rentalAccount), [rentalAccount]],
     ['listRentalSessions', () => bridge.listRentalSessions(), []],

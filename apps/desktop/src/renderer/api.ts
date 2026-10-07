@@ -79,6 +79,7 @@ const browserBridge: DesktopBridge = {
   deleteBuildCode: id => request(`/weapon-build-codes/${ledgerId(id)}`, { method: 'DELETE' }),
   lookupBuildCode: input => request('/weapon-build-codes/lookup', { method: 'POST', body: JSON.stringify(input) }),
   recognizeBuildCodeAttributes: image => request('/weapon-build-codes/recognize-attributes', { method: 'POST', body: JSON.stringify(image) }, 80_000),
+  classifyScreenshot: async () => { throw new ClientError('DESKTOP_ONLY', '截图自动分类仅在桌面应用中可用。'); },
   listRentalAccounts: () => request('/rental-accounts'),
   createRentalAccount: input => request('/rental-accounts', { method: 'POST', body: JSON.stringify(input) }),
   listRentalSessions: () => request('/rental-sessions'),

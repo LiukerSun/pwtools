@@ -51,8 +51,8 @@ export default function ImportShortcut({ shortcut, error, busy, onSave, onEditin
   return <section className="panel settings-section">
     <div className="section-heading"><h2>快捷导入</h2></div>
     <div className="settings-hotkey">
-      <p>在其他程序中按快捷键，单击选择窗口或按住拖动框选，再选择订单导入。按 Esc 取消截图；截图确认后才开始识别。</p>
-      <TextInput label="导入战绩快捷键" description="点击输入框后按下组合键。建议 Ctrl + Alt + A。" value={importHotkeyText(draft)} readOnly disabled={busy} onFocus={() => onEditingChange(true)} onBlur={() => onEditingChange(false)} onKeyDown={capture} error={inputError} />
+      <p>在其他程序中按快捷键，单击选择窗口或按住拖动框选，确认后会自动识别截图类型，战绩进入订单导入，枪支属性进入改枪码管理；无法判断时可手动选择。按 Esc 取消截图。</p>
+      <TextInput label="截图快捷键" description="点击输入框后按下组合键。建议 Ctrl + Alt + A。" value={importHotkeyText(draft)} readOnly disabled={busy} onFocus={() => onEditingChange(true)} onBlur={() => onEditingChange(false)} onKeyDown={capture} error={inputError} />
       {error && <Alert color="orange" title="快捷键未生效">{error}</Alert>}
       <div className="settings-hotkey-actions"><span>当前：{importHotkeyText(shortcut)}</span><Button variant="default" disabled={busy || !shortcut} onClick={() => void onSave(null)}>清除快捷键</Button><Button loading={busy} disabled={Boolean(inputError)} onClick={() => void onSave(draft)}>保存快捷键</Button></div>
     </div>

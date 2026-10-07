@@ -79,7 +79,7 @@ export function createNativeBridge(webview: NativeWebView): {
       const timer = setTimeout(() => {
         if (!pending.delete(id)) return;
         reject(new NativeBridgeError('TIMEOUT', '操作超时，请确认保存结果后重试。'));
-      }, method === 'captureScreen' ? screenCaptureTimeout : method === 'uploadMatch' || method === 'recognizeMatch' || method === 'confirmMatch' || method === 'recognizeBuildCodeAttributes' ? ocrTimeout : ordinaryTimeout);
+      }, method === 'captureScreen' ? screenCaptureTimeout : method === 'uploadMatch' || method === 'recognizeMatch' || method === 'confirmMatch' || method === 'recognizeBuildCodeAttributes' || method === 'classifyScreenshot' ? ocrTimeout : ordinaryTimeout);
       pending.set(id, { resolve: value => resolve(value as T), reject, timer });
       try {
         webview.postMessage({ id, method, args });
@@ -132,6 +132,7 @@ export function createNativeBridge(webview: NativeWebView): {
     deleteBuildCode: id => invoke('deleteBuildCode', [id]),
     lookupBuildCode: input => invoke('lookupBuildCode', [input]),
     recognizeBuildCodeAttributes: image => invoke('recognizeBuildCodeAttributes', [image]),
+    classifyScreenshot: image => invoke('classifyScreenshot', [image]),
     health: () => invoke('health'),
     register: input => invoke('register', [input]),
     login: input => invoke('login', [input]),

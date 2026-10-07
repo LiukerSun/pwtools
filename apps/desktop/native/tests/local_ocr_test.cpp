@@ -78,6 +78,16 @@ int wmain(int argc, wchar_t** argv) {
     Check(argc == 2, "local OCR runtime directory required");
     CheckScoreboardOutcomes();
     {
+      const auto gun=std::vector<pwtools::OcrLine>{Line("基础伤害39",10,20),Line("后坐力控制61",10,80),Line("操控速度38",10,140)};
+      Check(pwtools::ClassifyScreenshot(gun,1000,800)["kind"]=="build_attributes","gun screenshot must classify by distinct labels");
+      const auto rows=std::vector<pwtools::OcrLine>{Line("带出价值",485,498,115,41),Line("击败干员",752,499,115,40),Line("撤离成功",261,583,92,31),Line("队员1",261,615),Line("3,314,221",488,598,150,39),Line("撤离成功",261,727,92,31),Line("队员2",261,759),Line("1,867,449",488,742,150,39)};
+      Check(pwtools::ClassifyScreenshot(rows,2560,1440)["kind"]=="match","scoreboard must classify by player rows");
+      auto mixed=rows; mixed.insert(mixed.end(),gun.begin(),gun.end());
+      Check(pwtools::ClassifyScreenshot(mixed,2560,1440)["kind"]=="unknown","mixed screenshot needs a choice");
+      Check(pwtools::ClassifyScreenshot({Line("价格852355",10,20)},1000,800)["kind"]=="unknown","price alone is not a gun panel");
+      Check(pwtools::ClassifyScreenshot({},1000,800)["kind"]=="unknown","blank screenshot needs a choice");
+    }
+    {
       std::ifstream stream(PWTOOLS_GUN_FIXTURE_PATH);
       Json fixture; stream >> fixture;
       for(const auto& test:fixture["cases"]) {
@@ -91,6 +101,7 @@ int wmain(int argc, wchar_t** argv) {
     pwtools::LocalOcr ocr(argv[1]);
     if(const auto sample=_wgetenv(L"PWTOOLS_GUN_OCR_SAMPLE")) {
       const auto result=ocr.RecognizeBuildAttributes(Read(sample),"image/png");
+      Check(ocr.Classify(Read(sample),"image/png")["kind"]=="build_attributes","actual gun panel classification failed");
       std::cout << "Gun panel actual inference: " << result.dump(-1,' ',true) << '\n';
       Check(result["values"]["damage"]==39 && result["values"]["handling"]==38 && result["values"]["fire_rate_rpm"]==649,"actual M7 gun panel inference failed");
       PROCESS_MEMORY_COUNTERS counters{};

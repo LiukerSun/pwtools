@@ -377,13 +377,20 @@ struct ApiBridge::Impl {
   std::atomic<bool> persistent{false};
   LocalRecognizer local_recognizer;
   LocalRecognizer attribute_recognizer;
+  LocalRecognizer screenshot_classifier;
+  std::mutex recognition_mutex;
+  std::string recognition_hash;
+  Json cached_recognition;
+  std::uint64_t recognition_revision=0;
+  std::chrono::steady_clock::time_point recognition_expiry;
 
-  Impl(std::string value, const std::filesystem::path& directory, LocalRecognizer recognizer, LocalRecognizer attributes)
-      : url(ParseUrl(value)), entropy(Hash(url.canonical)), local_recognizer(std::move(recognizer)), attribute_recognizer(std::move(attributes)) {
-    if (!local_recognizer || !attribute_recognizer) {
+  Impl(std::string value, const std::filesystem::path& directory, LocalRecognizer recognizer, LocalRecognizer attributes, LocalRecognizer classifier)
+      : url(ParseUrl(value)), entropy(Hash(url.canonical)), local_recognizer(std::move(recognizer)), attribute_recognizer(std::move(attributes)), screenshot_classifier(std::move(classifier)) {
+    if (!local_recognizer || !attribute_recognizer || !screenshot_classifier) {
       auto local = std::make_shared<LocalOcr>();
       if(!local_recognizer) local_recognizer = [local](const Bytes& image, const std::string& mime) { return local->Recognize(image, mime); };
       if(!attribute_recognizer) attribute_recognizer = [local](const Bytes& image, const std::string& mime) { return local->RecognizeBuildAttributes(image, mime); };
+      if(!screenshot_classifier) screenshot_classifier = [local](const Bytes& image, const std::string& mime) { return local->Classify(image, mime); };
     }
     session_path = directory / ("session-native-" + Hex(entropy).substr(0, 16) + ".bin");
     std::error_code error;
@@ -402,6 +409,7 @@ struct ApiBridge::Impl {
     std::lock_guard lock(session_mutex);
     if (current.revision != revision || current.token != token) return;
     Erase(token); ++revision; DeleteFileW(session_path.c_str());
+    std::lock_guard recognition_lock(recognition_mutex); cached_recognition=nullptr; recognition_hash.clear();
   }
   std::uint64_t BeginLogin() { std::lock_guard lock(session_mutex); return ++auth_intent; }
   void SaveToken(std::string value, std::uint64_t intent) {
@@ -487,7 +495,15 @@ struct ApiBridge::Impl {
     return result;
   }
 
-  Json LocalResult(const Bytes& bytes, const std::string& mime) {
+  Json LocalResult(const Bytes& bytes, const std::string& mime, const Snapshot& snapshot) {
+    const auto hash=Hex(Hash(std::string_view(reinterpret_cast<const char*>(bytes.data()),bytes.size())))+mime;
+    {
+      std::lock_guard lock(recognition_mutex);
+      if(recognition_revision==snapshot.revision && recognition_hash==hash && std::chrono::steady_clock::now()<recognition_expiry) {
+        auto result=std::move(cached_recognition); recognition_hash.clear(); return result;
+      }
+      cached_recognition=nullptr; recognition_hash.clear();
+    }
     try { return local_recognizer(bytes, mime); }
     catch (...) { return nullptr; } // The saved original remains available for manual entry or retry.
   }
@@ -520,16 +536,24 @@ struct ApiBridge::Impl {
       if (!current.token.empty()) static_cast<void>(Request("/auth/logout", L"POST", nullptr, true, 15000, &current));
       ClearIf(current); return nullptr;
     }
-    if (method == "recognizeBuildCodeAttributes") {
+    if (method == "recognizeBuildCodeAttributes" || method == "classifyScreenshot") {
       Arguments(args,1,1); Object(first,kMaxImageJsonRequest); StringField(first,"name",255); StringField(first,"content_type",30);
       const auto type=first["content_type"].get<std::string>();
       if(type!="image/png" && type!="image/jpeg" && type!="image/webp")throw ApiFailure("INVALID_IMAGE","只支持 PNG、JPEG 和 WebP 图片。");
       const auto bytes=DecodeImage(first["data_base64"]);
       const auto snapshot=Current();
       static_cast<void>(Request("/me",L"GET",nullptr,true,15000,&snapshot));
-      const auto result=attribute_recognizer(bytes,type);
+      auto result=method=="classifyScreenshot"?screenshot_classifier(bytes,type):attribute_recognizer(bytes,type);
       const auto current=Current();
       if(current.revision!=snapshot.revision || current.token!=snapshot.token)throw ApiFailure("UNAUTHORIZED","登录状态已改变，请重新打开属性面板。");
+      if(method=="classifyScreenshot") {
+        std::lock_guard lock(recognition_mutex);
+        recognition_hash=Hex(Hash(std::string_view(reinterpret_cast<const char*>(bytes.data()),bytes.size())))+type;
+        recognition_revision=snapshot.revision; recognition_expiry=std::chrono::steady_clock::now()+std::chrono::minutes(5);
+        if(result.at("kind")=="build_attributes") { cached_recognition=nullptr; recognition_hash.clear(); }
+        else cached_recognition=result.at("match");
+        result.erase("match");
+      }
       return result;
     }
     if (method == "uploadMatch") {
@@ -543,7 +567,7 @@ struct ApiBridge::Impl {
       if (order_id.empty()) Invalid();
       const auto snapshot = Current();
       Json payload = first;
-      payload["recognition"] = LocalResult(bytes, type);
+      payload["recognition"] = LocalResult(bytes, type, snapshot);
       return Request("/matches/preview-local", L"POST", &payload, true, 70000, &snapshot);
     }
     if (method == "confirmMatch") {
@@ -573,7 +597,7 @@ struct ApiBridge::Impl {
       const auto response = Send(path + (thumbnail ? "/thumbnail" : "/image"), L"GET", {}, "", "", true, method == "recognizeMatch" ? 20000 : 15000, thumbnail ? 256 * 1024 : kMaxImage, &snapshot);
       const auto type = response.content_type.empty() ? "image/png" : response.content_type;
       if (type != "image/png" && type != "image/jpeg" && type != "image/webp") throw ApiFailure("INVALID_IMAGE", "服务返回的截图格式不正确。");
-      if (method == "recognizeMatch") return SaveLocalResult(path, response.body, LocalResult(response.body, type), snapshot);
+      if (method == "recognizeMatch") return SaveLocalResult(path, response.body, LocalResult(response.body, type, snapshot), snapshot);
       return Json{{"content_type", type}, {"data_base64", EncodeImage(response.body)}};
     }
     if (method == "updateMatch") { Arguments(args, 2, 2); const auto id = Uuid(first); MatchBody(second); return Request("/matches/" + id, L"PATCH", &second); }
@@ -652,8 +676,8 @@ struct ApiBridge::Impl {
   }
 };
 
-ApiBridge::ApiBridge(std::string api_url, std::filesystem::path data_directory, LocalRecognizer recognizer, LocalRecognizer attributes)
-    : impl_(std::make_unique<Impl>(std::move(api_url), data_directory, std::move(recognizer), std::move(attributes))) {}
+ApiBridge::ApiBridge(std::string api_url, std::filesystem::path data_directory, LocalRecognizer recognizer, LocalRecognizer attributes, LocalRecognizer classifier)
+    : impl_(std::make_unique<Impl>(std::move(api_url), data_directory, std::move(recognizer), std::move(attributes), std::move(classifier))) {}
 ApiBridge::~ApiBridge() = default;
 Json ApiBridge::Execute(const std::string& method, const Json& args) {
   try { return impl_->Execute(method, args); }

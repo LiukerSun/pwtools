@@ -187,8 +187,10 @@ void Run(const std::filesystem::path& directory) {
   Fixture fixture;
   bool fail_local = false;
   bool expire_attributes = false;
+  unsigned local_calls=0;
   ApiBridge* active_bridge = nullptr;
   ApiBridge bridge(fixture.Url() + "/", directory, [&](const std::vector<unsigned char>& bytes, const std::string& mime) {
+    ++local_calls;
     Check(bytes == std::vector<unsigned char>({1, 2, 3}) && mime == "image/png", "local OCR image bytes changed");
     if (fail_local) throw ApiFailure("LOCAL_OCR_UNAVAILABLE", "fixture model unavailable");
     return Json{{"outcome", "unknown"}, {"players", Json::array()}, {"raw_text", "本地识别"}, {"warnings", Json::array()}};
@@ -196,6 +198,9 @@ void Run(const std::filesystem::path& directory) {
     Check(bytes == std::vector<unsigned char>({1, 2, 3}) && mime == "image/png", "attribute OCR image bytes changed");
     if (expire_attributes) active_bridge->Execute("logout", Json::array());
     return Json{{"status", "completed"}, {"values", Json{{"damage", 39}}}};
+  }, [&](const std::vector<unsigned char>&, const std::string&) {
+    if (expire_attributes) active_bridge->Execute("logout", Json::array());
+    return Json{{"kind","match"},{"attributes",Json::object()},{"match",Json{{"outcome","unknown"},{"players",Json::array()},{"raw_text","cached"},{"warnings",Json::array()}}}};
   });
   active_bridge = &bridge;
   Check(bridge.ApiUrl() == fixture.Url(), "API URL normalization failed");
@@ -328,6 +333,14 @@ void Run(const std::filesystem::path& directory) {
   fail_local = true;
   Check(bridge.Execute("uploadMatch", upload_args)["record"]["ocr_status"] == "failed", "model failure must return a temporary preview");
   fail_local = false;
+  const auto calls_before=local_calls;
+  const auto classification=bridge.Execute("classifyScreenshot",Json::array({attribute_image}));
+  Check(classification["kind"]=="match" && !classification.contains("match"),"classification must not expose scoreboard text");
+  Check(fixture.Last().path=="/api/me" && fixture.Last().body.empty(),"classification must not upload the image");
+  bridge.Execute("uploadMatch",upload_args);
+  Check(local_calls==calls_before && Json::parse(fixture.Last().body)["recognition"]["raw_text"]=="cached","classified screenshot must reuse OCR once");
+  bridge.Execute("uploadMatch",upload_args);
+  Check(local_calls==calls_before+1,"consumed classification result must not leak into subsequent uploads");
   fixture.CompletedDuplicateNext();
   const auto writes = fixture.LocalWrites();
   Check(bridge.Execute("uploadMatch", upload_args)["duplicate"] == true && fixture.LocalWrites() == writes,
@@ -361,6 +374,8 @@ void Run(const std::filesystem::path& directory) {
   fixture.RedirectNext(); Reject([&] { bridge.Execute("health", Json::array()); }, "NETWORK_ERROR");
   fixture.ErrorNext(); Reject([&] { bridge.Execute("getOrder", Json::array({id})); }, "FORBIDDEN");
   expire_attributes = true;
+  Reject([&] { bridge.Execute("classifyScreenshot", Json::array({attribute_image})); }, "UNAUTHORIZED");
+  bridge.Execute("login",Json::array({credentials}));
   Reject([&] { bridge.Execute("recognizeBuildCodeAttributes", Json::array({attribute_image})); }, "UNAUTHORIZED");
   bridge.Execute("logout", Json::array());
   Reject([&] { bridge.Execute("me", Json::array()); }, "UNAUTHORIZED");
