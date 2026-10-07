@@ -1,10 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Avatar, Button, Collapse, Loader, Menu, Modal, NumberInput, SegmentedControl, Textarea, TextInput } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { ArrowLeft, ArrowUpRight, BookOpen, Check, ChevronDown, ChevronRight, Clock3, ListFilter, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Target, Trash2, UsersRound, X } from 'lucide-react';
+import { ArrowLeft, ArrowRightLeft, ArrowUpRight, BookOpen, Check, ChevronDown, ChevronRight, Clock3, ListFilter, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Target, Trash2, UsersRound, X } from 'lucide-react';
 import type { Boss, BossInput, LedgerEntry, LedgerEntryKind, MatchUploadInput, ServiceOrder } from '../shared/contracts';
 import { api, errorInfo } from './api';
 import OrderSetup from './OrderSetup';
+import OrderSettlement, { SettlementHistory } from './OrderSettlement';
+import OrderTransfer, { TransferActions, TransferHistory, TransferSummary } from './OrderTransfer';
+import type { TransferDialogMode } from './OrderTransfer';
+import { currentTransfer } from './transferPresentation';
+import type { OrderSettlement as Settlement } from '../shared/contracts';
 import RoundEntry from './RoundEntry';
 import LedgerHistory from './LedgerHistory';
 import ScreenshotImport from './ScreenshotImport';
@@ -41,6 +46,7 @@ const entryQuantity = (entry: LedgerEntry): number => entry.kind === 'failure' ?
 function sumOrders(items: ServiceOrder[], field: 'completed_quantity' | 'remaining_quantity'): Quantities {
   const sums: Record<'hourly' | 'escort', bigint | null> = { hourly: 0n, escort: 0n };
   for (const order of items) {
+    if (field === 'remaining_quantity' && order.status === 'archived') continue;
     if (order.kind !== 'hourly' && order.kind !== 'escort') continue;
     const sum = sums[order.kind];
     if (sum === null) continue;
@@ -50,9 +56,13 @@ function sumOrders(items: ServiceOrder[], field: 'completed_quantity' | 'remaini
   }
   return { hourly: sums.hourly === null ? null : Number(sums.hourly), escort: sums.escort === null ? null : Number(sums.escort) };
 }
+function replaceSavedOrder(items: ServiceOrder[], saved: ServiceOrder): ServiceOrder[] {
+  return [...items.filter(order => order.id !== saved.id), saved].sort((a, b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id));
+}
 
 export default function BossLedger({ onError, initialBossId, initialOrderId, onNavigationStateChange, importRequest = 0, initialImportImage, importBusy = false, onImportFlowChange }: BossLedgerProps) {
   const mounted = useRef(true);
+  const orderMutationRevision = useRef(0);
   const [bosses, setBosses] = useState<Boss[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(initialBossId || null);
   const [boss, setBoss] = useState<Boss | null>(null);
@@ -68,6 +78,10 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
   const [orderKind, setOrderKind] = useState('all');
   const [refresh, setRefresh] = useState(0);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  const [settlement, setSettlement] = useState<{ order: ServiceOrder; mode: Settlement['mode'] | 'restore' } | null>(null);
+  const [settlementState, setSettlementState] = useState<NavigationState>(cleanState);
+  const [transferDialog, setTransferDialog] = useState<{ order: ServiceOrder; mode: TransferDialogMode } | null>(null);
+  const [transferState, setTransferState] = useState<NavigationState>(cleanState);
   const [completedOpen, setCompletedOpen] = useState(false);
   const [form, setForm] = useState<FormContext | null>(null);
   const [values, setValues] = useState<FormValues>(emptyValues);
@@ -92,8 +106,8 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
   const [deletion, setDeletion] = useState<Deletion | null>(null);
   const [deleteError, setDeleteError] = useState('');
   const dirty = Boolean(form && JSON.stringify(values) !== initialValues.current);
-  const navigationBusy = busy || importBusy || orderEditorState.busy || entryState.busy || importState.busy;
-  const navigationDirty = dirty || orderEditorState.dirty || entryState.dirty;
+  const navigationBusy = busy || settlementState.busy || transferState.busy || importBusy || orderEditorState.busy || entryState.busy || importState.busy;
+  const navigationDirty = dirty || settlementState.dirty || transferState.dirty || orderEditorState.dirty || entryState.dirty;
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useLayoutEffect(() => { onNavigationStateChange?.({ dirty: navigationDirty, busy: navigationBusy }); }, [navigationDirty, navigationBusy, onNavigationStateChange]);
@@ -111,22 +125,26 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
   }, [selectedId]);
   useEffect(() => {
     let alive = true; setListLoading(true); setListError('');
+    const revision = orderMutationRevision.current;
+    const isCurrent = () => alive && revision === orderMutationRevision.current;
     void Promise.all([api.listBosses(), api.listOrders()]).then(([response, orderResponse]) => {
-      if (!alive) return;
+      if (!isCurrent()) return;
       setBosses(response.items); setAllOrders(orderResponse.items);
       setSelectedId((current) => current && !response.items.some((item) => item.id === current) ? null : current);
-    }).catch((error: unknown) => { if (alive && !onError(error)) setListError(errorInfo(error).message); }).finally(() => { if (alive) setListLoading(false); });
+    }).catch((error: unknown) => { if (isCurrent() && !onError(error)) setListError(errorInfo(error).message); }).finally(() => { if (isCurrent()) setListLoading(false); });
     return () => { alive = false; };
   }, [refresh, onError]);
   useEffect(() => {
     let alive = true;
+    const revision = orderMutationRevision.current;
+    const isCurrent = () => alive && revision === orderMutationRevision.current;
     if (!selectedId) { setBoss(null); setOrders([]); setDetailLoading(false); return; }
     setDetailLoading(true); setDetailError('');
     void Promise.all([api.getBoss(selectedId), api.listOrders(selectedId)]).then(([nextBoss, response]) => {
-      if (!alive) return;
+      if (!isCurrent()) return;
       setBoss(nextBoss); setOrders(response.items.sort((a, b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id)));
       if (pendingAnchor.current && response.items.some((order) => order.id === pendingAnchor.current?.id && order.status === 'completed')) setCompletedOpen(true);
-    }).catch((error: unknown) => { if (alive && !onError(error)) setDetailError(errorInfo(error).message); }).finally(() => { if (alive) setDetailLoading(false); });
+    }).catch((error: unknown) => { if (isCurrent() && !onError(error)) setDetailError(errorInfo(error).message); }).finally(() => { if (isCurrent()) setDetailLoading(false); });
     return () => { alive = false; };
   }, [selectedId, refresh, onError]);
   useEffect(() => {
@@ -168,6 +186,8 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
   const completedByKind = useMemo(() => sumOrders(orders, 'completed_quantity'), [orders]);
   const activeOrders = orders.filter((order) => order.status === 'active');
   const completedOrders = orders.filter((order) => order.status === 'completed');
+  const transferredOrders = orders.filter((order) => currentTransfer(order));
+  const archivedOrders = orders.filter((order) => order.status === 'archived' && !currentTransfer(order));
   const patchValues = (patch: Partial<FormValues>) => setValues((current) => ({ ...current, ...patch }));
   const captureOrder = (id: string) => {
     const node = orderNodes.current.get(id); const scroller = modeRef.current?.closest('.page-main');
@@ -190,6 +210,18 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
     pendingAnchor.current = null; setHighlightId(null); setBoss(null); setOrders([]); setExpandedOrderId(null); setCompletedOpen(false); setSelectedId(id);
   };
   const refreshLedger = () => setRefresh((current) => current + 1);
+  const saveTransfer = (saved: ServiceOrder) => {
+    // A read started before this save must not replace the confirmed transfer state.
+    orderMutationRevision.current += 1;
+    captureOrder(saved.id);
+    setAllOrders(current => replaceSavedOrder(current, saved));
+    setOrders(current => replaceSavedOrder(selectedId === saved.boss_id ? current : allOrders.filter(order => order.boss_id === saved.boss_id), saved));
+    setBoss(current => current?.id === saved.boss_id ? current : bosses.find(item => item.id === saved.boss_id) ?? null);
+    setSelectedId(saved.boss_id); setExpandedOrderId(saved.id);
+    if (saved.status === 'completed') setCompletedOpen(true);
+    setTransferDialog(null); setTransferState(cleanState);
+    refreshLedger();
+  };
 
   async function submitForm(event: React.FormEvent) {
     event.preventDefault();
@@ -230,19 +262,27 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
 
   function renderOrder(order: ServiceOrder) {
     const expanded = expandedOrderId === order.id;
+    const transferred = currentTransfer(order);
     const summary = order.kind === 'single_round' ? `单场目标 ${quantityText(order.total_quantity, order.kind)}` : orderSummary(order);
     const progress = order.kind === 'single_round' ? `最佳单场 ${quantityText(order.best_round_quantity, order.kind)}` : `${order.status === 'completed' ? '约定' : '已完成'} ${quantityText(order.status === 'completed' ? order.total_quantity : order.completed_quantity, order.kind)}`;
     return <article className={`ledger-order ledger-order-compact ${order.status === 'completed' ? 'is-completed' : ''} ${highlightId === order.id ? 'is-highlighted' : ''}`} key={order.id} aria-label={`${order.title}订单`} ref={(node) => { if (node) orderNodes.current.set(order.id, node); else orderNodes.current.delete(order.id); }}>
       <div className="ledger-order-row">
         <button type="button" className="ledger-order-row-main" aria-label={`${order.title}场次账本`} aria-expanded={expanded} aria-controls={`ledger-history-${order.id}`} disabled={navigationBusy} onClick={() => setExpandedOrderId((current) => current === order.id ? null : order.id)}>
           <span className={`ledger-order-kind ${order.kind}`}>{order.kind === 'hourly' ? <Clock3 size={19} aria-hidden="true" /> : order.kind === 'single_round' ? <Target size={19} aria-hidden="true" /> : <ShieldCheck size={19} aria-hidden="true" />}<span>{orderLabels[order.kind]}</span></span>
-          <span className="ledger-order-row-copy">{!selectedId && <span className="ledger-order-boss">{order.boss_name}</span>}<span className="ledger-order-row-title"><strong>{order.title}</strong><span className={`ledger-order-status ${order.status}`}>{orderStateText(order)}</span></span><span className="ledger-order-row-meta">{progress}</span></span>
+          <span className="ledger-order-row-copy">{!selectedId && <span className="ledger-order-boss">{order.boss_name}</span>}<span className="ledger-order-row-title"><strong>{order.title}</strong><span className={`ledger-order-status ${transferred ? 'transferred' : order.status}`}>{orderStateText(order)}</span></span><span className="ledger-order-row-meta">{progress}</span></span>
           <span className="ledger-order-row-quantity">{summary}<ChevronDown size={15} className={expanded ? 'expanded' : ''} aria-hidden="true" /></span>
         </button>
-        <div className="ledger-order-row-actions"><Button size="sm" variant={order.status === 'completed' ? 'default' : 'filled'} leftSection={<Plus size={15} aria-hidden="true" />} disabled={navigationBusy || detailLoading} onClick={() => openEntry(order)}>记一场</Button><Menu position="bottom-end" shadow="md" withinPortal><Menu.Target><button type="button" className="ledger-more-button" aria-label={`${order.title}更多操作`} disabled={navigationBusy || detailLoading}><MoreHorizontal size={19} /></button></Menu.Target><Menu.Dropdown>{!selectedId && <Menu.Item leftSection={<UsersRound size={14} />} onClick={() => selectBoss(order.boss_id)}>查看老板资料</Menu.Item>}<Menu.Item leftSection={<SlidersHorizontal size={14} />} onClick={() => openEditor({ order })}>订单配置</Menu.Item>{(order.kind === 'hourly' || order.kind === 'escort') && <Menu.Item leftSection={<Pencil size={14} />} onClick={() => openForm({ type: 'adjustment', order })}>调整约定</Menu.Item>}<Menu.Item leftSection={<Plus size={14} />} onClick={() => openEditor({ order, saveAsTemplate: true })}>保存为个人模板</Menu.Item></Menu.Dropdown></Menu></div>
+        <div className="ledger-order-row-actions"><Button size="sm" variant={order.status === 'completed' ? 'default' : 'filled'} leftSection={<Plus size={15} aria-hidden="true" />} disabled={navigationBusy || detailLoading || order.status === 'archived'} onClick={() => openEntry(order)}>记一场</Button><Menu position="bottom-end" shadow="md" withinPortal><Menu.Target><button type="button" className="ledger-more-button" aria-label={`${order.title}更多操作`} disabled={navigationBusy || detailLoading}><MoreHorizontal size={19} /></button></Menu.Target><Menu.Dropdown>{!selectedId && <Menu.Item leftSection={<UsersRound size={14} />} onClick={() => selectBoss(order.boss_id)}>查看老板资料</Menu.Item>}<Menu.Item disabled={order.status === 'archived'} leftSection={<SlidersHorizontal size={14} />} onClick={() => openEditor({ order })}>订单配置</Menu.Item>{(order.kind === 'hourly' || order.kind === 'escort') && <Menu.Item disabled={order.status === 'archived'} leftSection={<Pencil size={14} />} onClick={() => openForm({ type: 'adjustment', order })}>调整约定</Menu.Item>}<Menu.Item leftSection={<Plus size={14} />} onClick={() => openEditor({ order, saveAsTemplate: true })}>保存为个人模板</Menu.Item></Menu.Dropdown></Menu></div>
       </div>
       <OrderProgress order={order} />
-      <Collapse expanded={expanded}><div id={`ledger-history-${order.id}`} className="ledger-history-wrap">{expanded && <><OrderFacts order={order} /><LedgerHistory order={order} refresh={refresh} disabled={navigationBusy} onError={onError} onOpenMatch={(matchId) => openEntry(order, matchId)} onDeleteEntry={(entry) => { setDeleteError(''); setDeletion({ type: 'manual', order, entry }); }} onDeleteMatch={(matchId, label, confirmed) => { setDeleteError(''); setDeletion({ type: 'screenshot', order, matchId, label, confirmed }); }} /></>}</div></Collapse>
+      <TransferSummary order={order} />
+      <div className="ledger-settlement-shortcuts">{transferred
+        ? <TransferActions order={order} disabled={navigationBusy} onOpen={mode => setTransferDialog({ order, mode })} />
+        : order.status === 'archived'
+        ? <Button variant="subtle" size="xs" disabled={navigationBusy} onClick={() => setSettlement({ order, mode: 'restore' })}>恢复订单</Button>
+        : <><Button variant="light" size="xs" leftSection={<ArrowRightLeft size={13} aria-hidden="true" />} disabled={navigationBusy} onClick={() => setTransferDialog({ order, mode: 'create' })}>转单</Button><Button variant="subtle" color="gray" size="xs" disabled={navigationBusy} onClick={() => setSettlement({ order, mode: 'waiver' })}>免单</Button><Button variant="subtle" color="orange" size="xs" disabled={navigationBusy} onClick={() => setSettlement({ order, mode: 'refund' })}>部分退款</Button>{order.remaining_quantity === 0 && <Button variant="subtle" size="xs" disabled={navigationBusy} onClick={() => setSettlement({ order, mode: 'completed' })}>结算归档</Button>}</>}
+      </div>
+      <Collapse expanded={expanded}><div id={`ledger-history-${order.id}`} className="ledger-history-wrap">{expanded && <><OrderFacts order={order} /><TransferHistory order={order} />{!transferred && <SettlementHistory order={order} />}<LedgerHistory order={order} refresh={refresh} disabled={navigationBusy} onError={onError} onOpenMatch={(matchId) => openEntry(order, matchId)} onDeleteEntry={(entry) => { setDeleteError(''); setDeletion({ type: 'manual', order, entry }); }} onDeleteMatch={(matchId, label, confirmed) => { setDeleteError(''); setDeletion({ type: 'screenshot', order, matchId, label, confirmed }); }} /></>}</div></Collapse>
     </article>;
   }
 
@@ -267,7 +307,7 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
 
       </section> : <section className="ledger-detail" aria-label="老板详情与订单" aria-busy={detailLoading}>
         <div className="ledger-detail-navigation">
-          <Button variant="subtle" size="xs" leftSection={<ArrowLeft size={14} />} disabled={navigationBusy} onClick={() => { pendingAnchor.current = null; setSelectedId(null); setExpandedOrderId(null); setCompletedOpen(false); }}>{view === 'orders' ? '返回进行中订单' : '返回所有老板'}</Button>
+          <Button variant="subtle" size="xs" leftSection={<ArrowLeft size={14} aria-hidden="true" />} disabled={navigationBusy} onClick={() => { pendingAnchor.current = null; setSelectedId(null); setExpandedOrderId(null); setCompletedOpen(false); }}>返回</Button>
           <div className="ledger-detail-actions">
             <Button variant="subtle" size="xs" aria-label="刷新老板订单" leftSection={<RefreshCw size={13} />} disabled={navigationBusy || detailLoading} onClick={refreshLedger}>刷新</Button>
           </div>
@@ -279,6 +319,8 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
             <section className={`ledger-boss-memo ledger-boss-memo-compact ${currentBoss.notes ? '' : 'is-empty'}`} aria-label="老板长期备注"><div><MessageSquare size={14} /><h3>老板备注</h3><button disabled={navigationBusy || detailLoading} onClick={() => openForm({ type: 'boss-edit', boss: currentBoss })}>编辑老板资料</button></div><p>{currentBoss.notes || '暂无备注'}</p></section>
             {orders.length === 0 ? <div className="ledger-order-empty"><BookOpen size={25} strokeWidth={1.4} /><h3>还没有订单</h3><Button size="sm" leftSection={<Plus size={14} />} disabled={navigationBusy || detailLoading} onClick={() => openEditor({ boss: currentBoss })}>建立第一笔订单</Button></div> : <>
               <section className="ledger-order-section" aria-label="进行中订单"><div className="ledger-orders-heading"><h3>进行中 <span>{activeOrders.length}</span></h3></div>{activeOrders.length ? <div className="ledger-orders ledger-orders-compact">{activeOrders.map(renderOrder)}</div> : <p className="ledger-no-active">暂无进行中订单</p>}</section>
+              {transferredOrders.length > 0 && <section className="ledger-transfer-section" aria-label="已转单订单"><div className="ledger-orders-heading"><h3>已转单 <span>{transferredOrders.length}</span></h3></div><div className="ledger-orders ledger-orders-compact">{transferredOrders.map(renderOrder)}</div></section>}
+              {archivedOrders.length > 0 && <section className="ledger-archive-section" aria-label="已归档订单"><div className="ledger-orders-heading"><h3>已归档 <span>{archivedOrders.length}</span></h3></div><div className="ledger-orders ledger-orders-compact">{archivedOrders.map(renderOrder)}</div></section>}
               {completedOrders.length > 0 && <section className="ledger-completed-section"><button type="button" className="ledger-completed-toggle" aria-expanded={completedOpen} aria-controls="completed-order-list" onClick={() => setCompletedOpen((value) => !value)}>已完成 <span>{completedOrders.length}</span><ChevronDown size={14} className={completedOpen ? 'expanded' : ''} /></button><Collapse expanded={completedOpen}><div id="completed-order-list" className="ledger-orders ledger-orders-compact" aria-label="已完成订单">{completedOrders.map(renderOrder)}</div></Collapse></section>}
             </>}
           </>}
@@ -286,6 +328,8 @@ export default function BossLedger({ onError, initialBossId, initialOrderId, onN
       </section>}
     </div>
 
+    {transferDialog && <OrderTransfer key={`${transferDialog.order.id}:${transferDialog.mode}`} order={transferDialog.order} mode={transferDialog.mode} onError={onError} onNavigationStateChange={setTransferState} onClose={() => { setTransferDialog(null); setTransferState(cleanState); refreshLedger(); }} onSaved={saveTransfer} />}
+    {settlement && <OrderSettlement order={settlement.order} mode={settlement.mode} onError={onError} onNavigationStateChange={setSettlementState} onClose={() => { setSettlement(null); setSettlementState(cleanState); refreshLedger(); }} onSaved={() => { setSelectedId(settlement.order.boss_id); setExpandedOrderId(settlement.order.id); setSettlement(null); setSettlementState(cleanState); refreshLedger(); }} />}
     {importOpened && <ScreenshotImport image={importImage} onError={onError} onNavigationStateChange={setImportState} onClose={() => { setImportOpened(false); setImportImage(null); setImportState(cleanState); }} onSelect={(order, image) => { setSelectedId(order.boss_id); pendingAnchor.current = { id: order.id, focus: true }; setEntryState(cleanState); setEntryTarget({ order, ...(image ? { initialImage: image } : {}), imported: true }); setImportOpened(false); setImportImage(null); setImportState(cleanState); }} />}
     {entryTarget && <RoundEntry order={entryTarget.order} matchId={entryTarget.matchId} initialImage={entryTarget.initialImage} onError={onError} onNavigationStateChange={setEntryState} onClose={() => { captureOrder(entryTarget.order.id); setEntryTarget(null); setEntryState(cleanState); refreshLedger(); }} onSaved={(id) => { captureOrder(id); setEntryTarget(null); setEntryState(cleanState); refreshLedger(); }} />}
     {orderEditor && <OrderSetup boss={orderEditor.boss} order={orderEditor.order} saveAsTemplate={orderEditor.saveAsTemplate} onError={onError} onNavigationStateChange={setOrderEditorState} onClose={() => { setOrderEditor(null); setOrderEditorState(cleanState); }} onSaved={(saved) => { if (saved) pendingAnchor.current = { id: saved.id, focus: true }; setOrderEditor(null); setOrderEditorState(cleanState); if (saved) refreshLedger(); }} />}

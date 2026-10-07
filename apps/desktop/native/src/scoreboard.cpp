@@ -31,8 +31,9 @@ std::size_t Length(std::string_view text) {
 }
 std::string Status(const std::string& text) {
   const auto value = Compact(text);
-  const bool success = value.find("撤离成功") != std::string::npos;
-  const bool failed = value.find("撤离失败") != std::string::npos || value.find("撤离失敗") != std::string::npos;
+  const bool success = value.find("撤离成功") != std::string::npos || value.find("越狱成功") != std::string::npos;
+  const bool failed = value.find("撤离失败") != std::string::npos || value.find("撤离失敗") != std::string::npos
+      || value.find("越狱失败") != std::string::npos || value.find("越狱失敗") != std::string::npos;
   return success != failed ? (success ? "success" : "failed") : "unknown";
 }
 bool OtherHeader(const std::string& text) {

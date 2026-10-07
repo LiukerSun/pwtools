@@ -11,18 +11,23 @@ case "$stage_id" in *[!a-f0-9]*|'') echo 'Invalid staging identifier' >&2; exit 
 target=/opt/1panel/www/sites/pwtools.liukersun.com/updates/windows-x64
 mode=${1:-publish}
 [ "$mode" = publish ] || [ "$mode" = configure ] || exit 1
+channel=${2:-stable}
+case "$channel" in stable) ;; beta) target="$target/beta" ;; *) echo 'Invalid update channel' >&2; exit 1;; esac
 # Serialize validation and publication so concurrent releases cannot overwrite
 # an immutable version or move the latest manifest backwards.
 exec 9>/opt/pwtools/updates/publish.lock
 flock -x 9
 
-python3 - "$stage" "$target" <<'PY'
+python3 - "$stage" "$target" "$channel" <<'PY'
 import hashlib, json, os, pathlib, re, sys
-stage, target = map(pathlib.Path, sys.argv[1:])
+stage, target = map(pathlib.Path, sys.argv[1:3])
+channel = sys.argv[3]
 source = stage / 'latest.json'
 if source.stat().st_size > 32768:
     raise SystemExit('Manifest is too large')
 release = json.loads(source.read_text(encoding='utf-8'))
+if release.get('channel', 'stable') != channel:
+    raise SystemExit('Manifest channel does not match publication target')
 version = release.get('version', '')
 if not re.fullmatch(r'(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})', version) or any(int(x) > 65535 for x in version.split('.')):
     raise SystemExit('Invalid stable version')

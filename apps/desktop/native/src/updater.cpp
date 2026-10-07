@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 #include <atomic>
+#include <fstream>
 
 namespace pwtools {
 namespace {
@@ -122,6 +123,28 @@ void SafeDirectory(const fs::path& directory) {
   }
 }
 
+bool ReadBetaPreference(const fs::path& path) {
+  try {
+    if (!fs::is_regular_file(fs::symlink_status(path)) || fs::file_size(path) > 512) return false;
+    std::ifstream input(path, std::ios::binary);
+    const auto value = json::parse(input);
+    return value.value("schema_version", 0) == 1 && value.value("beta_enabled", false);
+  } catch (...) { return false; }
+}
+
+void SaveBetaPreference(const fs::path& path, bool enabled) {
+  SafeDirectory(path.parent_path());
+  const auto body = json{{"schema_version", 1}, {"beta_enabled", enabled}}.dump();
+  auto temporary = path; temporary += L".tmp";
+  {
+    Handle file(CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    RegularHandle(file.value, 0);
+    DWORD written = 0;
+    if (!WriteFile(file.value, body.data(), static_cast<DWORD>(body.size()), &written, nullptr) || written != body.size() || !FlushFileBuffers(file.value)) FileFailure();
+  }
+  if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) FileFailure();
+}
+
 void PruneInstalledCache(const fs::path& directory, const std::string& currentVersion) {
   if (!fs::exists(directory)) return;
   SafeDirectory(directory);
@@ -146,7 +169,7 @@ struct Endpoint {
   std::wstring host, prefix;
   INTERNET_PORT port;
   bool secure;
-  explicit Endpoint(const std::string& api) {
+  explicit Endpoint(const std::string& api, bool beta = false) {
     const auto url = Wide(api);
     URL_COMPONENTS parts{sizeof(parts)};
     parts.dwHostNameLength = parts.dwUrlPathLength = parts.dwUserNameLength = parts.dwPasswordLength = parts.dwExtraInfoLength = static_cast<DWORD>(-1);
@@ -158,11 +181,12 @@ struct Endpoint {
     prefix.assign(parts.lpszUrlPath, parts.dwUrlPathLength);
     while (!prefix.empty() && prefix.back() == L'/') prefix.pop_back();
     prefix += L"/updates/windows-x64/";
+    if (beta) prefix += L"beta/";
   }
 };
 
 template <class Consume>
-void Download(const Endpoint& endpoint, const std::wstring& name, uint64_t limit, const std::atomic<bool>& stopped, Consume consume) {
+bool Download(const Endpoint& endpoint, const std::wstring& name, uint64_t limit, const std::atomic<bool>& stopped, Consume consume, bool optional = false) {
   Internet session(WinHttpOpen(L"PWTools-Updater", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
   if (!WinHttpSetTimeouts(session.value, 10000, 10000, 15000, 15000)) NetworkFailure();
   Internet connection(WinHttpConnect(session.value, endpoint.host.c_str(), endpoint.port, 0));
@@ -171,7 +195,9 @@ void Download(const Endpoint& endpoint, const std::wstring& name, uint64_t limit
   if (!WinHttpSetOption(request.value, WINHTTP_OPTION_DISABLE_FEATURE, &disable, sizeof(disable))) NetworkFailure();
   if (!WinHttpSendRequest(request.value, L"Cache-Control: no-cache\r\n", static_cast<DWORD>(-1), nullptr, 0, 0, 0) || !WinHttpReceiveResponse(request.value, nullptr)) NetworkFailure();
   DWORD status = 0, length = sizeof(status);
-  if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr, &status, &length, nullptr) || status != 200) NetworkFailure();
+  if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr, &status, &length, nullptr)) NetworkFailure();
+  if (optional && status == 404) return false;
+  if (status != 200) NetworkFailure();
   std::array<unsigned char, 64 * 1024> buffer{};
   uint64_t total = 0;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
@@ -184,6 +210,7 @@ void Download(const Endpoint& endpoint, const std::wstring& name, uint64_t limit
     if (total > limit) IntegrityFailure();
     consume(buffer.data(), read);
   }
+  return true;
 }
 
 void VerifyInstallerVersion(const fs::path& installer, const std::string& version) {
@@ -208,6 +235,7 @@ nlohmann::json ValidateUpdateManifest(const nlohmann::json& value) {
       !value.contains("sha256") || !value["sha256"].is_string() || !value.contains("notes") || !value["notes"].is_string() ||
       !value.contains("published_at") || !value["published_at"].is_string()) InvalidManifest();
   Version(value["version"].get<std::string>());
+  if (value.contains("channel") && value["channel"] != "stable" && value["channel"] != "beta") InvalidManifest();
   const auto size = value["size"].get<uint64_t>();
   const auto sha = value["sha256"].get<std::string>();
   if (size < 2 || size > MaxInstallerBytes || sha.size() != 64 || sha.find_first_not_of("0123456789abcdef") != std::string::npos ||
@@ -217,29 +245,53 @@ nlohmann::json ValidateUpdateManifest(const nlohmann::json& value) {
 
 struct Updater::Impl : std::enable_shared_from_this<Impl> {
   std::string api, current;
-  fs::path cache, install, installer;
+  fs::path cache, install, installer, preferences;
   mutable std::mutex mutex;
   std::atomic<bool> stopped{false};
   bool busy = false;
+  bool betaEnabled = false;
   json manifest;
   json state;
-  Impl(std::string url, std::string version, fs::path data, fs::path destination)
-      : api(std::move(url)), current(std::move(version)), cache(std::move(data) / L"Updates"), install(std::move(destination)),
-        state{{"phase", "idle"}, {"currentVersion", current}, {"latestVersion", nullptr}, {"downloadedBytes", 0}, {"totalBytes", 0}, {"notes", ""}, {"publishedAt", ""}, {"error", ""}} {}
+  Impl(std::string url, std::string version, fs::path data, fs::path destination, std::string channel)
+      : api(std::move(url)), current(std::move(version)), cache(data / L"Updates"), install(std::move(destination)), preferences(data / L"update-preferences.json"),
+        betaEnabled(ReadBetaPreference(preferences)),
+        state{{"phase", "idle"}, {"currentVersion", current}, {"currentChannel", channel}, {"betaEnabled", betaEnabled}, {"latestChannel", nullptr}, {"latestVersion", nullptr}, {"downloadedBytes", 0}, {"totalBytes", 0}, {"notes", ""}, {"publishedAt", ""}, {"error", ""}} {
+    if (channel != "stable" && channel != "beta") InvalidManifest();
+  }
+
+  // Caller holds mutex; changing the channel also invalidates any prior offer.
+  void BeginCheck() {
+    busy = true; state["phase"] = "checking"; state["error"] = ""; state["downloadedBytes"] = 0;
+    manifest = nullptr; installer.clear();
+    state["latestVersion"] = nullptr; state["latestChannel"] = nullptr; state["notes"] = ""; state["publishedAt"] = ""; state["totalBytes"] = 0;
+    try { std::thread([module = shared_from_this()] { module->Run(false); }).detach(); }
+    catch (...) { busy = false; state["phase"] = "error"; state["error"] = "更新检查未能启动，请稍后重试。"; }
+  }
 
   void Run(bool downloadApproved) {
     fs::path partial;
     try {
-      const Endpoint endpoint(api);
       json release;
       if (!downloadApproved) {
-        std::string body;
-        Download(endpoint, L"latest.json", MaxManifestBytes, stopped, [&body](const unsigned char* bytes, DWORD count) { body.append(reinterpret_cast<const char*>(bytes), count); });
-        release = ValidateUpdateManifest(json::parse(body));
+        bool includeBeta;
+        { std::lock_guard lock(mutex); includeBeta = betaEnabled; }
+        const auto fetch = [&](bool beta) -> json {
+          std::string body;
+          if (!Download(Endpoint(api, beta), L"latest.json", MaxManifestBytes, stopped, [&body](const unsigned char* bytes, DWORD count) { body.append(reinterpret_cast<const char*>(bytes), count); }, beta)) return nullptr;
+          auto candidate = ValidateUpdateManifest(json::parse(body));
+          if (candidate.value("channel", "stable") != (beta ? "beta" : "stable")) InvalidManifest();
+          return candidate;
+        };
+        release = fetch(false);
+        if (includeBeta) {
+          auto beta = fetch(true);
+          if (!beta.is_null() && IsNewerVersion(beta["version"].get<std::string>(), release["version"].get<std::string>())) release = std::move(beta);
+        }
         PruneInstalledCache(cache, current);
         std::lock_guard lock(mutex);
         manifest = release;
         state["latestVersion"] = release["version"];
+        state["latestChannel"] = release.value("channel", "stable");
         state["notes"] = release["notes"];
         state["publishedAt"] = release["published_at"];
         state["totalBytes"] = release["size"];
@@ -251,6 +303,7 @@ struct Updater::Impl : std::enable_shared_from_this<Impl> {
         std::lock_guard lock(mutex);
         release = manifest; // Download exactly the release the user was offered.
       }
+      const Endpoint endpoint(api, release.value("channel", "stable") == "beta");
       const auto version = release["version"].get<std::string>();
       const auto size = release["size"].get<uint64_t>();
       const auto hash = release["sha256"].get<std::string>();
@@ -301,18 +354,22 @@ struct Updater::Impl : std::enable_shared_from_this<Impl> {
   }
 };
 
-Updater::Updater(std::string api, std::string version, fs::path data, fs::path destination)
-    : impl_(std::make_shared<Impl>(std::move(api), std::move(version), std::move(data), std::move(destination))) {}
+Updater::Updater(std::string api, std::string version, fs::path data, fs::path destination, std::string channel)
+    : impl_(std::make_shared<Impl>(std::move(api), std::move(version), std::move(data), std::move(destination), std::move(channel))) {}
 Updater::~Updater() { impl_->stopped = true; }
 nlohmann::json Updater::State() const { std::lock_guard lock(impl_->mutex); return impl_->state; }
 void Updater::Check() {
   std::lock_guard lock(impl_->mutex);
   if (impl_->busy || impl_->stopped) return;
-  impl_->busy = true; impl_->state["phase"] = "checking"; impl_->state["error"] = ""; impl_->state["downloadedBytes"] = 0;
-  impl_->manifest = nullptr; impl_->installer.clear();
-  impl_->state["latestVersion"] = nullptr; impl_->state["notes"] = ""; impl_->state["totalBytes"] = 0;
-  try { std::thread([module = impl_] { module->Run(false); }).detach(); }
-  catch (...) { impl_->busy = false; impl_->state["phase"] = "error"; impl_->state["error"] = "更新检查未能启动，请稍后重试。"; }
+  impl_->BeginCheck();
+}
+void Updater::SetBetaParticipation(bool enabled) {
+  std::lock_guard lock(impl_->mutex);
+  if (impl_->busy || impl_->stopped) throw ApiFailure("UPDATE_BUSY", "请等待当前更新操作完成后再切换测试体验。");
+  if (impl_->betaEnabled == enabled) return;
+  SaveBetaPreference(impl_->preferences, enabled);
+  impl_->betaEnabled = enabled; impl_->state["betaEnabled"] = enabled;
+  impl_->BeginCheck();
 }
 void Updater::DownloadUpdate() {
   std::lock_guard lock(impl_->mutex);

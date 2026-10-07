@@ -26,7 +26,14 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 ::-webkit-scrollbar-thumb { border-radius: 8px; background: color-mix(in srgb, var(--subtle) 35%, transparent); }
 ::-webkit-scrollbar-thumb:hover { background: var(--subtle); }
 ::-webkit-scrollbar-track { background: transparent; }
-.titlebar { height: 38px; display: flex; align-items: center; justify-content: space-between; background: var(--titlebar); border-bottom: 1px solid var(--border); -webkit-app-region: drag; user-select: none; }
+.app-root { --titlebar-height: 38px; }
+.titlebar { height: var(--titlebar-height); display: flex; align-items: center; justify-content: space-between; background: var(--titlebar); border-bottom: 1px solid var(--border); -webkit-app-region: drag; user-select: none; }
+.titlebar-brand:is(a) { text-decoration: none; -webkit-app-region: no-drag; }
+.titlebar-brand:is(a):hover { color: var(--blue); }
+.titlebar-brand, .window-controls, .preview-label { flex-shrink: 0; }
+@media (max-width: 700px) {
+  .browser-app .preview-label { display: none; }
+}
 .titlebar-brand { padding-left: 17px; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
 .titlebar-brand > svg { color: var(--blue); }
 .titlebar-menu-button { align-self: stretch; padding-right: 12px; border: 0; background: transparent; -webkit-app-region: no-drag; transition: background var(--fast), color var(--fast); }
@@ -44,7 +51,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mint); display: inline-block; flex-shrink: 0; }
 .status-dot.error { background: #ed8390; }
 .status-dot.pending { background: var(--warm); }
-.workspace { height: calc(100dvh - 38px); display: flex; overflow: hidden; }
+.workspace { height: calc(100dvh - var(--titlebar-height)); display: flex; overflow: hidden; }
 .sidebar { width: 224px; flex-shrink: 0; padding: 24px 16px 16px; position: relative; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border); transition: width 360ms var(--motion); overflow: hidden; }
 .sidebar.collapsed { width: 80px; }
 .sidebar-brand-row { height: 42px; flex-shrink: 0; }
@@ -112,7 +119,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .settings-close-switch-description { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.8; }
 .settings-version { grid-column: 1 / -1; color: var(--subtle); font-size: 12px; }
 .theme-label { display: flex; align-items: center; justify-content: center; gap: 5px; }
-.auth-layout { min-height: calc(100dvh - 38px); display: grid; place-items: center; padding: 36px 24px; animation: auth-arrive 240ms var(--motion) both; }
+.auth-layout { min-height: calc(100dvh - var(--titlebar-height)); display: grid; place-items: center; padding: 36px 24px; animation: auth-arrive 240ms var(--motion) both; }
 @keyframes auth-arrive { from { opacity: .4; } to { opacity: 1; } }
 .auth-form-section { width: 100%; max-width: 420px; padding: 29px 30px; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; }
 .auth-brand { display: flex; align-items: center; gap: 13px; margin-bottom: 24px; }
@@ -130,7 +137,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .auth-session-note svg { flex-shrink: 0; margin-top: 3px; }
 .auth-connection { display: flex; align-items: center; gap: 7px; margin-top: 12px; color: var(--subtle); font-size: 12px; line-height: 1.7; }
 .inline-alert { margin-bottom: 18px; }
-.restore-screen { min-height: calc(100dvh - 38px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; color: var(--muted); background: var(--bg); }
+.restore-screen { min-height: calc(100dvh - var(--titlebar-height)); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; color: var(--muted); background: var(--bg); }
 .restore-screen p { font-size: 13px; }
 .mantine-Input-input { background: var(--input); border-color: var(--border-strong); color: var(--text); font-size: 14px; transition: border-color 180ms, box-shadow 180ms; }
 .mantine-Input-input:focus, .mantine-Input-input:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 10%, transparent); }
@@ -172,6 +179,15 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .settings-hotkey-actions > span { margin-right: auto; color: var(--subtle); font-size: 12px; }
 .screenshot-import { display: grid; gap: 18px; }
 .screenshot-import-loading { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; min-height: 52px; }
+.screenshot-import-option { display: grid; gap: 5px; min-width: 0; width: 100%; padding-block: 4px; overflow-wrap: anywhere; }
+.screenshot-import-option[data-disabled] { opacity: .5; }
+.screenshot-import-option-heading { display: flex; align-items: center; gap: 10px; }
+.screenshot-import-option-heading > strong { flex: 1; color: var(--text); font-size: 13px; font-weight: 600; }
+.screenshot-import-option-heading > svg { flex-shrink: 0; color: var(--blue); }
+.screenshot-import-order-meta { color: var(--muted); font-size: 12px; }
+.screenshot-import-progress { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 12px; line-height: 1.6; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.screenshot-import-progress > span:first-child { color: var(--text); }
+.screenshot-import-selected { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-soft); }
 .screenshot-import > .screenshot-import-source { color: var(--subtle); font-size: 12px; }
 .screenshot-import-preview { display: block; width: 100%; max-height: 170px; object-fit: contain; border: 1px solid var(--border); border-radius: 7px; background: var(--input); }
 .screenshot-import-actions { display: flex; justify-content: flex-end; gap: 9px; }

@@ -32,6 +32,7 @@ namespace {
 using Json = nlohmann::json;
 using Bytes = std::vector<unsigned char>;
 constexpr std::size_t kMaxImage = 12 * 1024 * 1024;
+constexpr std::size_t kMaxImageJsonRequest = 18 * 1024 * 1024;
 constexpr std::size_t kMaxJsonResponse = 32 * 1024 * 1024;
 constexpr std::int64_t kMaxQuantity = 9000000000000LL;
 constexpr std::int64_t kMaxSafeInteger = 9007199254740991LL;
@@ -117,8 +118,8 @@ std::string Pages(const Json& page, const Json& size, int default_size) {
   const auto count = Missing(size) ? default_size : Integer(size, 1, 100);
   return "page=" + std::to_string(first) + "&page_size=" + std::to_string(count);
 }
-void Object(const Json& value) {
-  if (!value.is_object() || value.dump().size() > 128 * 1024) Invalid();
+void Object(const Json& value, std::size_t maximum = 128 * 1024) {
+  if (!value.is_object() || value.dump().size() > maximum) Invalid();
 }
 void StringField(const Json& value, const char* key, std::size_t maximum, bool optional = false, bool nullable = false) {
   if (!value.contains(key)) { if (!optional) Invalid(); return; }
@@ -147,6 +148,10 @@ void OrderBody(const Json& value, bool is_template = false) {
   Choice(value, "failure_trigger", {"failed", "failed_below_standard", "below_standard"}, true);
   Choice(value, "failure_mode", {"manual", "fixed", "shortfall"}, true);
   NumberField(value, "failure_standard_quantity", 0, true);
+  NumberField(value, "price_cents", 0, true, true);
+  if (value.contains("participant_count") && !value["participant_count"].is_null()) Integer(value["participant_count"], 1, 100);
+  if (value.contains("commission_bps") && !value["commission_bps"].is_null()) Integer(value["commission_bps"], 0, 10000);
+  if (value.contains("default_rental_session_id")) OptionalId(value["default_rental_session_id"]);
   if (is_template) StringField(value, "name", 80);
 }
 void BossBody(const Json& value) {
@@ -160,6 +165,7 @@ void MatchBody(const Json& value) {
   NumberField(value, "failure_extra_amount", 0, true);
   StringField(value, "played_at", 128, false, true);
   if (value.contains("order_id")) static_cast<void>(Uuid(value["order_id"]));
+  if (value.contains("rental_session_id")) OptionalId(value["rental_session_id"]);
 }
 void EntryBody(const Json& value) {
   Object(value); Choice(value, "kind", {"progress", "failure", "adjustment"});
@@ -170,6 +176,7 @@ void EntryBody(const Json& value) {
   NumberField(value, "amount", 0, true, true); NumberField(value, "fake_amount", 0, true, true);
   NumberField(value, "failure_extra_amount", 0, true);
   Choice(value, "outcome", {"success", "failed"}, true);
+  if (value.contains("rental_session_id")) OptionalId(value["rental_session_id"]);
 }
 
 struct InternetHandle {
@@ -519,26 +526,17 @@ struct ApiBridge::Impl {
       if (type != "image/png" && type != "image/jpeg" && type != "image/webp") throw ApiFailure("INVALID_IMAGE", "只支持 PNG、JPEG 和 WebP 图片。");
       const auto bytes = DecodeImage(first["data_base64"]);
       const auto order_id = first.contains("order_id") ? OptionalId(first["order_id"]) : std::string{};
-      const auto headers = "X-File-Name: " + Encode(name) + "\r\n" + (order_id.empty() ? "" : "X-Order-Id: " + order_id + "\r\n");
+      if (order_id.empty()) Invalid();
       const auto snapshot = Current();
-      auto recognition = std::async(std::launch::async, [this, bytes, type] { return LocalResult(bytes, type); });
-      const auto response = Send("/matches/local", L"POST", bytes, type, headers, true, 70000, kMaxJsonResponse, &snapshot);
-      auto result = Json::parse(response.body.begin(), response.body.end(), nullptr, false);
-      if (!result.is_object() || !result.contains("record") || !result["record"].is_object() || !result.contains("duplicate") || !result["duplicate"].is_boolean()) {
-        throw ApiFailure("INVALID_RESPONSE", "服务返回的数据格式不正确。");
-      }
-      auto local = recognition.get();
-      // An interrupted first upload can be completed by retrying the same original.
-      // Completed duplicate records retain their existing OCR and manual results.
-      if (!result["duplicate"].get<bool>() || result["record"].value("ocr_status", "") != "completed") {
-        const auto path = "/matches/" + Uuid(result["record"].at("id"));
-        try { result["record"] = SaveLocalResult(path, bytes, std::move(local), snapshot); }
-        catch (const ApiFailure& failure) {
-          if (failure.code == "UNAUTHORIZED") throw;
-          result["record"]["warnings"] = Json::array({"原图已保存，本地识别结果尚未同步；请稍后重新识别，或手动填写。"});
-        }
-      }
-      return result;
+      Json payload = first;
+      payload["recognition"] = LocalResult(bytes, type);
+      return Request("/matches/preview-local", L"POST", &payload, true, 70000, &snapshot);
+    }
+    if (method == "confirmMatch") {
+      // Base64 originals use the same envelope limit as /matches/confirm; fields retain their own bounds.
+      Arguments(args, 1, 1); Object(first, kMaxImageJsonRequest); StringField(first, "name", 255); StringField(first, "content_type", 30);
+      static_cast<void>(DecodeImage(first.at("data_base64"))); Uuid(first.at("order_id")); MatchBody(first.at("input"));
+      return Request("/matches/confirm", L"POST", &first, true, 70000);
     }
     if (method == "listMatches") {
       Arguments(args, 0, 4); auto query = Pages(first, second, 20);
@@ -552,18 +550,48 @@ struct ApiBridge::Impl {
       Arguments(args, 1, 1); Object(first); StringField(first, "boss_id", 80); StringField(first, "boss_player_name", 80);
       return Request("/matches/settings", L"PATCH", &first);
     }
-    if (method == "getMatch" || method == "deleteMatch" || method == "recognizeMatch" || method == "matchImage") {
+    if (method == "getMatch" || method == "deleteMatch" || method == "recognizeMatch" || method == "matchImage" || method == "matchThumbnail") {
       Arguments(args, 1, 1); const auto path = "/matches/" + Uuid(first);
       if (method == "getMatch") return Request(path);
       if (method == "deleteMatch") return Request(path, L"DELETE");
       const auto snapshot = Current();
-      const auto response = Send(path + "/image", L"GET", {}, "", "", true, method == "recognizeMatch" ? 20000 : 15000, kMaxImage, &snapshot);
+      const auto thumbnail = method == "matchThumbnail";
+      const auto response = Send(path + (thumbnail ? "/thumbnail" : "/image"), L"GET", {}, "", "", true, method == "recognizeMatch" ? 20000 : 15000, thumbnail ? 256 * 1024 : kMaxImage, &snapshot);
       const auto type = response.content_type.empty() ? "image/png" : response.content_type;
       if (type != "image/png" && type != "image/jpeg" && type != "image/webp") throw ApiFailure("INVALID_IMAGE", "服务返回的截图格式不正确。");
       if (method == "recognizeMatch") return SaveLocalResult(path, response.body, LocalResult(response.body, type), snapshot);
       return Json{{"content_type", type}, {"data_base64", EncodeImage(response.body)}};
     }
     if (method == "updateMatch") { Arguments(args, 2, 2); const auto id = Uuid(first); MatchBody(second); return Request("/matches/" + id, L"PATCH", &second); }
+    if (method == "listRentalAccounts") { Arguments(args, 0, 0); return Request("/rental-accounts"); }
+    if (method == "listBuildCodes") { Arguments(args, 0, 0); return Request("/weapon-build-codes"); }
+    if (method == "deleteBuildCode") { Arguments(args, 1, 1); return Request("/weapon-build-codes/" + Uuid(first), L"DELETE"); }
+    if (method == "createBuildCode" || method == "lookupBuildCode" || method == "updateBuildCode") {
+      const bool updating = method == "updateBuildCode";
+      Arguments(args, updating ? 2 : 1, updating ? 2 : 1);
+      const auto& body = updating ? second : first;
+      Object(body); StringField(body, "code", 768); StringField(body, "weapon_name", 300); StringField(body, "note", 6000);
+      Choice(body, "mode", {"烽火地带", "全面战场"});
+      const auto path = updating ? "/weapon-build-codes/" + Uuid(first) : method == "lookupBuildCode" ? "/weapon-build-codes/lookup" : "/weapon-build-codes";
+      return Request(path, updating ? L"PATCH" : L"POST", &body);
+    }
+    if (method == "listRentalSessions") { Arguments(args, 0, 0); return Request("/rental-sessions"); }
+    if (method == "rentalAnalysis") { Arguments(args, 1, 1); return Request("/rental-sessions/" + Uuid(first) + "/analysis"); }
+    if (method == "createRentalAccount") {
+      Arguments(args, 1, 1); Object(first); Uuid(first.at("id")); StringField(first, "name", 80); StringField(first, "note", 2000);
+      return Request("/rental-accounts", L"POST", &first);
+    }
+    if (method == "createRentalSession") {
+      Arguments(args, 1, 1); Object(first); Uuid(first.at("id")); Uuid(first.at("account_id"));
+      NumberField(first, "coin_per_yuan", 1);
+      for (const auto key : {"aw_price", "helmet_price", "armor_price", "initial_coins", "deposit_cents"}) NumberField(first, key, 0);
+      StringField(first, "started_at", 128); StringField(first, "note", 2000);
+      return Request("/rental-sessions", L"POST", &first);
+    }
+    if (method == "returnRentalSession") {
+      Arguments(args, 2, 2); const auto id = Uuid(first); Object(second); NumberField(second, "final_cost_cents", 0); StringField(second, "returned_at", 128, true, true);
+      return Request("/rental-sessions/" + id + "/return", L"PATCH", &second);
+    }
     if (method == "listBosses") { Arguments(args, 0, 1); const auto search = Missing(first) ? std::string{} : Text(first, 200); return Request("/bosses?q=" + Encode(search)); }
     if (method == "getBoss") { Arguments(args, 1, 1); return Request("/bosses/" + Uuid(first)); }
     if (method == "createBoss") { Arguments(args, 1, 1); BossBody(first); return Request("/bosses", L"POST", &first); }
@@ -571,6 +599,33 @@ struct ApiBridge::Impl {
     if (method == "listOrders") { Arguments(args, 0, 1); const auto id = OptionalId(first); return Request("/orders" + (id.empty() ? std::string{} : "?boss_id=" + Encode(id))); }
     if (method == "getOrder") { Arguments(args, 1, 1); return Request("/orders/" + Uuid(first)); }
     if (method == "createOrder") { Arguments(args, 2, 2); const auto id = Uuid(first); OrderBody(second); return Request("/bosses/" + id + "/orders", L"POST", &second); }
+    if (method == "archiveOrder") {
+      Arguments(args, 2, 2); const auto id = Uuid(first); Object(second); Uuid(second.at("id"));
+      Choice(second, "mode", {"waiver", "refund", "completed"}); NumberField(second, "final_income_cents", 0);
+      StringField(second, "note", 1000); StringField(second, "expected_updated_at", 128);
+      return Request("/orders/" + id + "/archive", L"POST", &second);
+    }
+    if (method == "transferOrder") {
+      Arguments(args, 2, 2); const auto id = Uuid(first); Object(second); Uuid(second.at("id"));
+      BooleanField(second, "prepaid");
+      if (second.contains("progress_bps") && !second["progress_bps"].is_null()) Integer(second["progress_bps"], 0, 10000);
+      StringField(second, "note", 1000); StringField(second, "expected_updated_at", 128);
+      return Request("/orders/" + id + "/transfer", L"POST", &second);
+    }
+    if (method == "transferOrderAction") {
+      Arguments(args, 2, 2); const auto id = Uuid(first); Object(second); Uuid(second.at("id")); Uuid(second.at("transfer_id"));
+      Choice(second, "action", {"settle", "cancel", "refund", "confirm_refund"});
+      if (second["action"] == "settle") NumberField(second, "amount_cents", 0);
+      if (second["action"] == "refund") {
+        NumberField(second, "final_income_cents", 0); Choice(second, "mode", {"refund", "waiver"});
+      }
+      StringField(second, "note", 1000); StringField(second, "expected_updated_at", 128);
+      return Request("/orders/" + id + "/transfer-action", L"POST", &second);
+    }
+    if (method == "restoreOrder") {
+      Arguments(args, 2, 2); const auto id = Uuid(first); Object(second); Uuid(second.at("settlement_id"));
+      return Request("/orders/" + id + "/restore", L"POST", &second);
+    }
     if (method == "updateOrder") { Arguments(args, 2, 2); const auto id = Uuid(first); OrderBody(second); return Request("/orders/" + id, L"PATCH", &second); }
     if (method == "listOrderTemplates") { Arguments(args, 0, 0); return Request("/order-templates"); }
     if (method == "createOrderTemplate") { Arguments(args, 1, 1); OrderBody(first, true); return Request("/order-templates", L"POST", &first); }

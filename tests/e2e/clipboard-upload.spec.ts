@@ -50,6 +50,7 @@ async function openClipboardLedger(page: Page, options: { failUploadOnce?: boole
     const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' };
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
     const fulfill = (json: unknown) => route.fulfill({ json, headers });
+    if (pathname === '/api/rental-sessions') return fulfill({ items: [] });
     if (pathname === '/api/health') return fulfill({ status: 'ok', database: 'connected' });
     if (pathname === '/api/auth/login') return fulfill({
       token: `mock-clipboard-${accountId}`, user: { id: accountId, email: 'clipboard@example.test', created_at: timestamp },
@@ -63,7 +64,7 @@ async function openClipboardLedger(page: Page, options: { failUploadOnce?: boole
       const items = uploaded ? [record] : [];
       return fulfill({ items, total: items.length, page: 1, page_size: 8 });
     }
-    if (pathname === '/api/matches' && request.method() === 'POST') {
+    if (pathname === '/api/matches/preview' && request.method() === 'POST') {
       const sentHeaders = request.headers();
       uploads.push({ data: request.postDataBuffer(), contentType: sentHeaders['content-type'],
         orderId: sentHeaders['x-order-id'], name: decodeURIComponent(sentHeaders['x-file-name']) });
@@ -133,20 +134,20 @@ test('粘贴原图上传并沿用识别和预览，上传期间及已有原图�
     await expect(dialog.getByRole('combobox', { name: '撤离结果', exact: true })).toHaveValue('撤离成功');
     await expect(dialog.getByLabel(/^假账扣除/)).toHaveValue('100,000');
     await expect(dialog.getByRole('region', { name: '本场净值', exact: true }).locator('strong').last()).toHaveText('1,767,449');
-    await expect(dialog.getByRole('button', { name: '保存草稿', exact: true })).toBeEnabled();
+    await expect(dialog.getByRole('button', { name: '保存草稿', exact: true })).toHaveCount(0);
     const preview = dialog.getByRole('img', { name: '本场原始战绩截图', exact: true });
     await expect(preview).toBeVisible();
     await expect(preview).toHaveJSProperty('naturalWidth', 1);
-    await expect(dialog.getByText('粘贴战绩.png · 草稿', { exact: true })).toBeVisible();
-    expect(ledger.imageRequests()).toBe(1);
+    await expect(dialog.getByText('粘贴战绩.png · 确认入账后保存原图', { exact: true })).toBeVisible();
+    expect(ledger.imageRequests()).toBe(0);
     const originalPreview = await preview.getAttribute('src');
     await pasteScreenshot(dialog.getByRole('region', { name: '本场原图', exact: true }), '试图替换的原图.png');
     await finishBrowserTasks(page);
     expect(ledger.uploads).toHaveLength(1);
-    expect(ledger.imageRequests()).toBe(1);
+    expect(ledger.imageRequests()).toBe(0);
     await expect(preview).toHaveAttribute('src', originalPreview!);
     await expect(dialog.getByLabel(/^带出金额/)).toHaveValue('1,867,449');
-    await expect(dialog.getByText('粘贴战绩.png · 草稿', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('粘贴战绩.png · 确认入账后保存原图', { exact: true })).toBeVisible();
     expect(ledger.errors).toEqual([]);
     expect(ledger.unexpectedRequests).toEqual([]);
   } finally { ledger.releaseUpload(); }
@@ -175,18 +176,15 @@ test('普通文字粘贴及手工填写时的图片粘贴不触发截图上传',
   expect(ledger.unexpectedRequests).toEqual([]);
 });
 
-test('粘贴上传结果不确定时拒绝更换图片，并用首次原图重试识别', async ({ page }) => {
+test('临时识别失败可取消或用首次原图重试', async ({ page }) => {
   const ledger = await openClipboardLedger(page, { failUploadOnce: true });
   const dialog = await openRound(page, ledger.order.title, false);
   ledger.releaseUpload();
   await pasteScreenshot(dialog.getByLabel('截图上传区域', { exact: true }));
-  await expect(dialog.getByText('上传结果待核实', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('上传结果待核实', { exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: '重试上传', exact: true })).toBeEnabled();
   await dialog.getByLabel(/^假账扣除/).fill('200000');
-  await pasteScreenshot(dialog, '结果未核实时的另一张.png', 1, Buffer.concat([screenshot, Buffer.from('different screenshot')]));
-  await finishBrowserTasks(page);
-  expect(ledger.uploads).toHaveLength(1);
-  await expect(dialog.getByText('上传结果待核实', { exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeEnabled();
   await dialog.getByRole('button', { name: '重试上传', exact: true }).click();
   await expect(dialog.getByLabel(/^带出金额/)).toHaveValue('1,867,449');
   await expect(dialog.getByRole('combobox', { name: '撤离结果', exact: true })).toHaveValue('撤离成功');

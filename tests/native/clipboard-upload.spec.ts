@@ -75,6 +75,7 @@ test('打包 WebView2 内粘贴截图上传原图并显示识别和预览', asyn
         appInfo: async () => runtime,
         listBosses: async () => ({ items: [boss] }),
         getBoss: async () => boss,
+        listRentalSessions: async () => ({ items: [] }),
         listOrders: async () => ({ items: [order] }),
         getOrder: async () => order,
         listLedgerEntries: async () => ({ items: [], total: 0, page: 1, page_size: 8 }),
@@ -111,15 +112,15 @@ test('打包 WebView2 内粘贴截图上传原图并显示识别和预览', asyn
     expect(prevented).toBe(true);
     await expect(dialog.getByLabel(/^带出金额/)).toHaveValue('1,867,449');
     await expect(dialog.getByRole('combobox', { name: '撤离结果', exact: true })).toHaveValue('撤离成功');
-    await expect(dialog.getByRole('button', { name: '保存草稿', exact: true })).toBeEnabled();
+    await expect(dialog.getByRole('button', { name: '保存草稿', exact: true })).toHaveCount(0);
     await expect(dialog.getByRole('img', { name: '本场原始战绩截图', exact: true })).toHaveJSProperty('naturalWidth', 1);
-    await expect(dialog.getByText('原生粘贴战绩.png · 草稿', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('原生粘贴战绩.png · 确认入账后保存原图', { exact: true })).toBeVisible();
     const requests = await page.evaluate(() => (window as Window & {
       clipboardRequests?: { unexpected: string[]; uploads: { name: string; content_type: string; order_id?: string; data: number[] }[]; images: string[] };
     }).clipboardRequests);
     expect(requests).toEqual({ unexpected: [], uploads: [{
       name: '原生粘贴战绩.png', content_type: 'image/png', order_id: orderId, data: Array.from(screenshot),
-    }], images: [record.id] });
+    }], images: [] });
     expect(errors).toEqual([]);
     await testInfo.attach('native-clipboard-result', { body: JSON.stringify({ version: runtime.version,
       runtime: runtime.runtime, pngBytes: screenshot.length, recordId: record.id, requests }), contentType: 'application/json' });

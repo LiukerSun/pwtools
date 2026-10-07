@@ -24,7 +24,7 @@ test('浏览器预览按老板匹配截图并校对撤离失败', async ({ page 
   await page.clock.setFixedTime(new Date('2026-10-04T02:00:00Z'));
   const ledger = await openLedger(page);
   await expect(page.getByRole('navigation').getByRole('button', { name: '战绩记录', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('navigation').getByRole('button')).toHaveCount(3);
+  await expect(page.getByRole('navigation').getByRole('button')).toHaveCount(4);
   const boss = await ledger.post<Boss>('/bosses', {
     display_name: '截图验收老板', game_id: 'boss-web', game_name: '小桃知晚', notes: '每场确认后再记账',
   });
@@ -40,7 +40,7 @@ test('浏览器预览按老板匹配截图并校对撤离失败', async ({ page 
   const allowResponse = new Promise<void>(resolve => { releaseUpload = resolve; });
   let observeUpload!: (result: MatchUploadResponse) => void;
   const serverUpload = new Promise<MatchUploadResponse>(resolve => { observeUpload = resolve; });
-  await page.route('**/api/matches', async route => {
+  await page.route('**/api/matches/preview', async route => {
     const response = await route.fetch({ timeout: 100_000 });
     expect(response.ok()).toBe(true);
     observeUpload(await response.json() as MatchUploadResponse);
@@ -68,11 +68,9 @@ test('浏览器预览按老板匹配截图并校对撤离失败', async ({ page 
   await expect(dialog.getByLabel('备注', { exact: true })).toHaveValue('OCR 等待期间手工填写的备注');
   await expect(dialog.getByLabel('场次时间', { exact: true })).toHaveText(selectedSceneTime);
   const draftList = await ledger.get<{ items: MatchRecord[] }>('/matches?order_id=' + order.id);
-  expect(draftList.items).toHaveLength(1);
-  expect(draftList.items[0].boss_player_name).toBe('小桃知晚');
-  expect(draftList.items[0].player_name).toBe('小桃知晚');
-  expect(draftList.items[0].confirmed).toBe(false);
-  expect(draftList.items[0].id).toBe(uploaded.record.id);
+  expect(draftList.items).toHaveLength(0);
+  expect(uploaded.record.boss_player_name).toBe('小桃知晚');
+  expect(uploaded.record.confirmed).toBe(false);
   await selectOption(page, dialog.getByRole('combobox', { name: '撤离结果', exact: true }), '撤离成功');
   await dialog.getByLabel(/^带出金额/).fill('1867449');
   await dialog.getByLabel('备注', { exact: true }).fill('浏览器校对验收');
@@ -83,29 +81,11 @@ test('浏览器预览按老板匹配截图并校对撤离失败', async ({ page 
   expect((await ledger.get<ServiceOrder>('/orders/' + order.id)).record_count).toBe(0);
   await dialog.getByLabel(/^假账扣除/).fill('200000');
   await expect(dialog.getByRole('region', { name: '本场净值', exact: true }).locator('strong').last()).toHaveText('1,667,449');
-  const draftSaved = page.waitForResponse(response => response.url().endsWith('/api/matches/' + uploaded.record.id) && response.request().method() === 'PATCH');
-  await dialog.getByRole('button', { name: '保存草稿', exact: true }).click();
-  const draftResponse = await draftSaved;
-  expect(draftResponse.status()).toBe(200);
-  const savedDraft: MatchRecord = await draftResponse.json();
-  expect(savedDraft.id).toBe(uploaded.record.id);
-  expect(savedDraft.confirmed).toBe(false);
-  expect(new Date(savedDraft.played_at!).toISOString()).toBe('2026-10-03T14:00:00.000Z');
-  await expect(dialog).toHaveCount(0);
-  expect((await ledger.get<ServiceOrder>('/orders/' + order.id)).record_count).toBe(0);
+  await expect(dialog.getByRole('button', { name: '保存草稿', exact: true })).toHaveCount(0);
+  const confirmed: MatchRecord = await confirmRound(page, dialog);
+  expect(confirmed.confirmed).toBe(true);
   const article = orderArticle(page, order.title);
   const history = article.getByRole('button', { name: order.title + '场次账本', exact: true });
-  if (await history.getAttribute('aria-expanded') !== 'true') await history.click();
-  const pending = article.getByRole('region', { name: '待确认截图', exact: true });
-  await pending.getByRole('button', { name: '继续填写', exact: true }).click();
-  const resumed = page.getByRole('dialog', { name: '校对此场', exact: true });
-  await expect(resumed.getByLabel(/^带出金额/)).toHaveValue('1,867,449');
-  await expect(resumed.getByLabel(/^假账扣除/)).toHaveValue('200,000');
-  await resumed.locator('.round-supplement > summary').click();
-  await expect(resumed.getByLabel('备注', { exact: true })).toHaveValue('浏览器校对验收');
-  await expect(resumed.getByLabel('场次时间', { exact: true })).toHaveText(selectedSceneTime);
-  const confirmed: MatchRecord = await confirmRound(page, resumed);
-  expect(confirmed.id).toBe(draftList.items[0].id);
   expect(confirmed.fake_amount).toBe(200000);
   expect(confirmed.net_amount).toBe(1667449);
   expect(new Date(confirmed.played_at!).toISOString()).toBe('2026-10-03T14:00:00.000Z');
@@ -128,7 +108,7 @@ test('浏览器预览按老板匹配截图并校对撤离失败', async ({ page 
   expect((await ledger.get<MatchStats>('/matches/stats?order_id=' + order.id)).total_amount).toBe(1667449);
 
   if (await history.getAttribute('aria-expanded') !== 'true') await history.click();
-  await article.getByRole('button', { name: '查看此场', exact: true }).click();
+  await article.getByRole('button', { name: '修改校对', exact: true }).click();
   let correction = page.getByRole('dialog', { name: '校对此场', exact: true });
   await expect(correction.getByLabel(/^带出金额/)).toHaveValue('1,867,449');
   await mkdir('.artifacts', { recursive: true });
@@ -158,7 +138,7 @@ test('浏览器预览按老板匹配截图并校对撤离失败', async ({ page 
   expect((await ledger.get<MatchStats>('/matches/stats?order_id=' + order.id)).failed_count).toBe(1);
 
   if (await history.getAttribute('aria-expanded') !== 'true') await history.click();
-  await article.getByRole('button', { name: '查看此场', exact: true }).click();
+  await article.getByRole('button', { name: '修改校对', exact: true }).click();
   correction = page.getByRole('dialog', { name: '校对此场', exact: true });
   await expect(correction.getByLabel(/^带出金额/)).toHaveValue('0');
   await correction.locator('.round-supplement > summary').click();
@@ -173,11 +153,11 @@ test('浏览器预览按老板匹配截图并校对撤离失败', async ({ page 
   await expect(correction).toHaveCount(0);
   await expect(page.getByRole('region', { name: '老板长期备注' })).toContainText('每场确认后再记账');
   await expect(orderArticle(page, order.title)).toContainText('11,000,000 哈夫币');
-  await page.getByRole('button', { name: '返回所有老板', exact: true }).click();
+  await page.getByRole('button', { name: '返回', exact: true }).click();
   await expect(page.getByRole('row', { name: '截图验收老板老板汇总', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '查看截图验收老板订单', exact: true }).click();
   if (await history.getAttribute('aria-expanded') !== 'true') await history.click();
-  await article.getByRole('button', { name: '查看此场', exact: true }).click();
+  await article.getByRole('button', { name: '修改校对', exact: true }).click();
   correction = page.getByRole('dialog', { name: '校对此场', exact: true });
   await expect(correction.getByLabel(/^带出金额/)).toHaveValue('0');
   await correction.locator('.round-supplement > summary').click();

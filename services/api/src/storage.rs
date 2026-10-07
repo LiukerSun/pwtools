@@ -12,6 +12,10 @@ use std::{collections::BTreeMap, fmt, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 const PREFIX: &str = "pwtools/";
+pub const THUMBNAIL_WIDTH: u32 = 216;
+pub const THUMBNAIL_HEIGHT: u32 = 122;
+const THUMBNAIL_PROCESS: &str =
+    "image/auto-orient,0/resize,m_lfit,w_216,h_122,limit_1/format,webp/quality,q_80";
 #[derive(Clone)]
 pub struct Storage {
     oss: Option<Arc<Oss>>,
@@ -210,7 +214,7 @@ impl Storage {
             headers.insert("x-oss-forbid-overwrite".into(), "true".into());
         }
         let response = oss
-            .send(Method::PUT, key, headers, Some(bytes.to_vec()))
+            .send(Method::PUT, key, headers, Some(bytes.to_vec()), None)
             .await?;
         if !response.status().is_success()
             && !(immutable && response.status() == reqwest::StatusCode::CONFLICT)
@@ -229,9 +233,32 @@ impl Storage {
             .await
     }
     pub async fn get_private(&self, key: &str, max_bytes: usize) -> Result<Vec<u8>, StorageError> {
+        self.get_processed(key, max_bytes, None).await
+    }
+    pub async fn get_thumbnail(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        let bytes = self
+            .get_processed(key, 256 * 1024, Some(THUMBNAIL_PROCESS))
+            .await?;
+        let (width, height) =
+            image::ImageReader::with_format(std::io::Cursor::new(&bytes), image::ImageFormat::WebP)
+                .into_dimensions()
+                .map_err(|_| StorageError::Integrity)?;
+        if width == 0 || height == 0 || width > THUMBNAIL_WIDTH || height > THUMBNAIL_HEIGHT {
+            return Err(StorageError::Integrity);
+        }
+        Ok(bytes)
+    }
+    async fn get_processed(
+        &self,
+        key: &str,
+        max_bytes: usize,
+        process: Option<&str>,
+    ) -> Result<Vec<u8>, StorageError> {
         checked_key(key)?;
         let oss = self.oss.as_ref().ok_or(StorageError::NotConfigured)?;
-        let mut response = oss.send(Method::GET, key, BTreeMap::new(), None).await?;
+        let mut response = oss
+            .send(Method::GET, key, BTreeMap::new(), None, process)
+            .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(StorageError::Missing);
         }
@@ -264,7 +291,9 @@ impl Storage {
     pub async fn delete_private(&self, key: &str) -> Result<(), StorageError> {
         checked_key(key)?;
         let oss = self.oss.as_ref().ok_or(StorageError::NotConfigured)?;
-        let response = oss.send(Method::DELETE, key, BTreeMap::new(), None).await?;
+        let response = oss
+            .send(Method::DELETE, key, BTreeMap::new(), None, None)
+            .await?;
         if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
             Ok(())
         } else {
@@ -279,6 +308,7 @@ impl Oss {
         key: &str,
         mut headers: BTreeMap<String, String>,
         body: Option<Vec<u8>>,
+        process: Option<&str>,
     ) -> Result<reqwest::Response, StorageError> {
         headers.insert(
             "x-oss-date".into(),
@@ -288,7 +318,11 @@ impl Oss {
         if let Some(token) = &self.config.token {
             headers.insert("x-oss-security-token".into(), token.clone());
         }
-        let authorization = sign(&self.config, method.as_str(), key, &headers, "");
+        // OSS V4 signs the encoded query, including the image processing policy.
+        let query = process.map_or_else(String::new, |value| {
+            format!("x-oss-process={}", uri(value).replace('/', "%2F"))
+        });
+        let authorization = sign(&self.config, method.as_str(), key, &headers, "", &query);
         let mut map = HeaderMap::new();
         for (name, value) in headers {
             map.insert(
@@ -309,6 +343,9 @@ impl Oss {
             url.set_host(Some(&format!("{}.{}", self.config.bucket, host)))
                 .map_err(|_| StorageError::Unavailable)?;
             url.set_path(&format!("/{key}"));
+        }
+        if !query.is_empty() {
+            url.set_query(Some(&query));
         }
         let mut request = self.client.request(method, url).headers(map);
         if let Some(body) = body {
@@ -340,6 +377,7 @@ fn sign(
     key: &str,
     headers: &BTreeMap<String, String>,
     additional: &str,
+    query: &str,
 ) -> String {
     let date = &headers["x-oss-date"];
     let scope = format!("{}/{}/oss/aliyun_v4_request", &date[..8], config.region);
@@ -354,7 +392,7 @@ fn sign(
         .map(|(name, value)| format!("{name}:{}\n", value.trim()))
         .collect::<String>();
     let canonical = format!(
-        "{method}\n{}\n\n{canonical_headers}\n{additional}\nUNSIGNED-PAYLOAD",
+        "{method}\n{}\n{query}\n{canonical_headers}\n{additional}\nUNSIGNED-PAYLOAD",
         uri(&format!("/{}/{key}", config.bucket))
     );
     let to_sign = format!(
@@ -451,7 +489,7 @@ mod tests {
     use axum::{
         Router,
         body::Bytes,
-        extract::{Path, State},
+        extract::{OriginalUri, Path, Query, State},
         http::{HeaderMap, StatusCode},
         response::{IntoResponse, Response},
         routing::any,
@@ -467,6 +505,8 @@ mod tests {
     async fn object(
         State(objects): State<Objects>,
         Path((bucket, key)): Path<(String, String)>,
+        Query(query): Query<HashMap<String, String>>,
+        OriginalUri(request_uri): OriginalUri,
         method: Method,
         headers: HeaderMap,
         bytes: Bytes,
@@ -484,6 +524,16 @@ mod tests {
         assert!(authorization.contains("/cn-beijing/oss/aliyun_v4_request"));
         assert_eq!(headers["x-oss-content-sha256"], "UNSIGNED-PAYLOAD");
         assert_eq!(headers["x-oss-date"].to_str().expect("UTC date").len(), 16);
+        if let Some(process) = query.get("x-oss-process") {
+            assert_eq!(method, Method::GET);
+            assert_eq!(process, THUMBNAIL_PROCESS);
+            assert!(
+                request_uri
+                    .query()
+                    .expect("processing query")
+                    .starts_with("x-oss-process=image%2Fauto-orient%2C0%2F")
+            );
+        }
         let mut stored = objects.bytes.lock().await;
         match method {
             Method::PUT => {
@@ -505,6 +555,16 @@ mod tests {
             Method::GET => match stored.get(&key) {
                 Some(bytes) => {
                     let mut bytes = bytes.clone();
+                    if query.contains_key("x-oss-process")
+                        && !objects.corrupt.load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        let image = image::load_from_memory(&bytes).expect("mock source");
+                        let mut result = std::io::Cursor::new(Vec::new());
+                        image
+                            .write_to(&mut result, image::ImageFormat::WebP)
+                            .expect("mock thumbnail");
+                        return result.into_inner().into_response();
+                    }
                     if objects.corrupt.load(std::sync::atomic::Ordering::SeqCst) {
                         bytes.push(0);
                     }
@@ -567,6 +627,20 @@ mod tests {
             .put_verified(&key, "image/png", &bytes, true)
             .await
             .expect("idempotent original");
+        let thumbnail = storage
+            .get_thumbnail(&key)
+            .await
+            .expect("processed private image");
+        assert_eq!(
+            image::guess_format(&thumbnail).expect("thumbnail format"),
+            image::ImageFormat::WebP
+        );
+        assert_ne!(thumbnail, bytes);
+        assert_eq!(
+            objects.bytes.lock().await.get(&key),
+            Some(&bytes),
+            "processing does not overwrite the source"
+        );
         assert_eq!(
             storage
                 .put_verified(&key, "image/png", b"different", true)
@@ -605,6 +679,11 @@ mod tests {
         objects
             .corrupt
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            storage.get_thumbnail(&key).await,
+            Err(StorageError::Integrity),
+            "do not silently send an unprocessed original as a thumbnail"
+        );
         assert_eq!(
             storage.put_verified(&key, "image/png", &bytes, true).await,
             Err(StorageError::Integrity)
@@ -676,6 +755,7 @@ mod tests {
             "exampleobject",
             &headers,
             "content-disposition;content-length",
+            "",
         );
         // The public documentation uses a placeholder secret; the literal placeholder's
         // signature is independently calculated with Python hashlib/hmac.
@@ -685,6 +765,35 @@ mod tests {
         assert_eq!(
             uri("/bucket/中文 +.png"),
             "/bucket/%E4%B8%AD%E6%96%87%20%2B.png"
+        );
+    }
+    #[test]
+    fn image_processing_query_is_signed() {
+        let headers = BTreeMap::from([
+            ("x-oss-content-sha256".into(), "UNSIGNED-PAYLOAD".into()),
+            ("x-oss-date".into(), "20250411T064124Z".into()),
+        ]);
+        let config = OssConfig::new(
+            "oss-cn-hangzhou.aliyuncs.com",
+            "examplebucket",
+            "cn-hangzhou",
+            "LTAIexample".into(),
+            "yourAccessKeySecret".into(),
+            None,
+        )
+        .expect("public test config");
+        let query = format!(
+            "x-oss-process={}",
+            uri(THUMBNAIL_PROCESS).replace('/', "%2F")
+        );
+        let result = sign(&config, "GET", "exampleobject", &headers, "", &query);
+        // Independent Python urllib.parse / hashlib / hmac vector, using a placeholder key.
+        assert!(result.ends_with(
+            "Signature=965700036885c74a16447911690214de90572be1bfcf3e1b28ceb0533296cb66"
+        ));
+        assert_ne!(
+            result,
+            sign(&config, "GET", "exampleobject", &headers, "", "")
         );
     }
 }

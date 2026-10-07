@@ -3,11 +3,11 @@ import { randomUUID } from 'node:crypto';
 import type { Boss, LedgerEntry, LedgerEntryInput, LedgerPage, MatchRecord, MatchUpdateInput, ServiceOrder } from '../../apps/desktop/src/shared/contracts';
 import { confirmRound, openLedger, orderArticle, selectOption } from './ledger-helpers';
 
-test('订单内识别重试失败、关闭保护、草稿恢复及删除失败反馈', async ({ page }) => {
+test('已入账对局校对、识别失败保护及删除失败反馈', async ({ page }) => {
   const ledger = await openLedger(page);
   const navigation = page.getByRole('navigation');
   await expect(navigation.getByRole('button', { name: '战绩记录', exact: true })).toHaveCount(0);
-  await expect(navigation.getByRole('button')).toHaveCount(3);
+  await expect(navigation.getByRole('button')).toHaveCount(4);
   const boss = await ledger.post<Boss>('/bosses', {
     display_name: '校对测试老板', game_id: 'review-boss', game_name: '校对测试老板', notes: '订单内核对截图。',
   });
@@ -15,17 +15,19 @@ test('订单内识别重试失败、关闭保护、草稿恢复及删除失败�
     title: '校对故障护航单', kind: 'escort', target_quantity: 3000000,
     failure_default_quantity: 1000000, failure_trigger: 'failed', failure_mode: 'manual', note: '',
   });
-  const records: MatchRecord[] = ['识别待恢复.png', '空白截图.png'].map((original_name, index) => ({
-    id: randomUUID(), order_id: order.id, failure_extra_amount: 0, fake_amount: null,
+  const records: MatchRecord[] = ['识别待恢复.png'].map((original_name, index) => ({
+    id: randomUUID(), order_id: order.id, failure_extra_amount: 0, fake_amount: 0,
     net_amount: null, credited_amount: null, boss_id: boss.id,
     boss_player_name: boss.game_name, original_name, image_content_type: 'image/png',
     image_sha256: 'a'.repeat(64), image_width: 1, image_height: 1, image_size: 68,
     players: [], raw_text: '', warnings: index === 0 ? ['识别服务繁忙，原图已保存，请稍后重新识别。'] : [],
     ocr_status: index === 0 ? 'failed' : 'completed', player_name: boss.game_name,
-    outcome: 'unknown', amount: null, confirmed: false, played_at: null, note: '',
+    outcome: 'success', amount: 100, confirmed: true, played_at: null, note: '',
     created_at: '2026-10-03T14:00:00Z', updated_at: '2026-10-03T14:00:00Z',
   }));
   let manualEntries = 0;
+  let imageReads = 0;
+  let thumbnailReads = 0;
   let successfulRetries = 0;
   const recognizedText = 'OCR 回归：校对测试老板 撤离成功 1,867,449';
   const currentOrder = (): ServiceOrder => {
@@ -70,9 +72,16 @@ test('订单内识别重试失败、关闭保护、草稿恢复及删除失败�
     if (route.request().method() === 'DELETE') return route.fulfill({
       status: 503, json: { error: { code: 'UNAVAILABLE', message: '服务暂时不可用，请稍后重试。' } },
     });
-    if (url.pathname.endsWith('/image')) return route.fulfill({
-      contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jqucAAAAASUVORK5CYII=', 'base64'),
-    });
+    if (url.pathname.endsWith('/thumbnail')) {
+      thumbnailReads += 1;
+      if (thumbnailReads === 1) return route.fulfill({ status: 503, json: { error: { code: 'UNAVAILABLE', message: '缩略图读取暂时不可用，请重试。' } } });
+      return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jqucAAAAASUVORK5CYII=', 'base64') });
+    }
+    if (url.pathname.endsWith('/image')) {
+      imageReads += 1;
+      if (imageReads === 1) return route.fulfill({ status: 503, json: { error: { code: 'UNAVAILABLE', message: '截图读取暂时不可用，请重试。' } } });
+      return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jqucAAAAASUVORK5CYII=', 'base64') });
+    }
     if (url.pathname.endsWith('/recognize')) {
       if (record.id === records[0].id) return route.fulfill({
         status: 503, json: { error: { code: 'OCR_UNAVAILABLE', message: '识别服务仍不可用，请根据原图手工填写。' } },
@@ -102,11 +111,31 @@ test('订单内识别重试失败、关闭保护、草稿恢复及删除失败�
   await page.getByRole('button', { name: '查看校对测试老板订单', exact: true }).click();
   const article = orderArticle(page, order.title);
   await article.getByRole('button', { name: order.title + '场次账本', exact: true }).click();
-  const firstDraft = article.getByRole('article', { name: '识别待恢复.png待确认截图', exact: true });
-  await firstDraft.getByRole('button', { name: '继续填写', exact: true }).click();
-  let correction = page.getByRole('dialog', { name: '校对此场', exact: true });
+  const thumbnail = article.getByRole('button', { name: /^查看对局截图/ });
+  await article.getByRole('button', { name: '重新加载缩略图', exact: true }).click();
+  await expect(thumbnail.getByRole('img')).toHaveJSProperty('naturalWidth', 1);
+  expect(thumbnailReads).toBe(2);
+  expect(imageReads).toBe(0);
+  await thumbnail.click();
+  const preview = page.getByRole('dialog', { name: /^对局截图 ·/ });
+  await expect(preview.getByRole('alert')).toContainText('截图读取暂时不可用，请重试。');
+  await preview.getByRole('button', { name: '重新加载截图', exact: true }).click();
+  await expect(preview.getByRole('img', { name: '对局截图原图', exact: true })).toHaveJSProperty('naturalWidth', 1);
+  await expect(page.getByRole('dialog', { name: '校对此场', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(preview).toHaveCount(0);
+  await expect(thumbnail).toBeFocused();
+  await expect(thumbnail.getByRole('img')).toHaveJSProperty('naturalWidth', 1);
+  await thumbnail.click();
+  await expect(preview.getByRole('img', { name: '对局截图原图', exact: true })).toBeVisible();
+  expect(imageReads).toBe(2);
+  expect(thumbnailReads).toBe(2);
+  expect(records[0].amount).toBe(100);
+  await preview.getByRole('button', { name: '关闭对局截图', exact: true }).click();
+  await article.getByRole('button', { name: '修改校对', exact: true }).click();
+  const correction = page.getByRole('dialog', { name: '校对此场', exact: true });
   await expect(correction.getByText('识别服务繁忙，原图已保存，请稍后重新识别。', { exact: true })).toBeVisible();
-  await expect(correction.getByLabel(/^带出金额/)).toHaveValue('');
+  await expect(correction.getByLabel(/^带出金额/)).toHaveValue('100');
   await correction.getByLabel(/^带出金额/).fill('1867449');
   await correction.getByLabel(/^假账扣除/).fill('200000');
   await selectOption(page, correction.getByRole('combobox', { name: '撤离结果', exact: true }), '撤离成功');
@@ -124,72 +153,20 @@ test('订单内识别重试失败、关闭保护、草稿恢复及删除失败�
   await guard.getByRole('button', { name: '继续填写', exact: true }).click();
   await expect(correction.getByLabel('备注', { exact: true })).toHaveValue('手工校对仍保留');
 
-  const draftSaved = page.waitForResponse(response => response.url().endsWith('/api/matches/' + records[0].id) && response.request().method() === 'PATCH');
-  await correction.getByRole('button', { name: '保存草稿', exact: true }).click();
-  expect((await draftSaved).status()).toBe(200);
-  await expect(correction).toHaveCount(0);
-  expect(records[0].confirmed).toBe(false);
-  await firstDraft.getByRole('button', { name: '继续填写', exact: true }).click();
-  correction = page.getByRole('dialog', { name: '校对此场', exact: true });
-  await expect(correction.getByLabel(/^带出金额/)).toHaveValue('1,867,449');
-  await expect(correction.getByLabel(/^假账扣除/)).toHaveValue('200,000');
-  await correction.locator('.round-supplement > summary').click();
-  await expect(correction.getByLabel('备注', { exact: true })).toHaveValue('手工校对仍保留');
+  await expect(correction.getByRole('button', { name: '撤销入账', exact: true })).toHaveCount(0);
   const confirmed: MatchRecord = await confirmRound(page, correction);
   expect(confirmed.id).toBe(records[0].id);
   expect(confirmed.confirmed).toBe(true);
   expect(manualEntries).toBe(0);
-  await expect(firstDraft).toHaveCount(0);
-  await expect(article.getByRole('button', { name: '查看此场', exact: true })).toBeVisible();
-  await article.getByRole('button', { name: '删除本场截图记录', exact: true }).click();
+  await expect(article.getByRole('button', { name: '修改校对', exact: true })).toBeVisible();
+  await article.getByRole('button', { name: '删除误录对局', exact: true }).click();
   const deletion = page.getByRole('dialog', { name: '删除本场截图记录？', exact: true });
   await deletion.getByRole('button', { name: '删除记录', exact: true }).click();
   await expect(deletion.getByText('服务暂时不可用，请稍后重试。', { exact: true })).toBeVisible();
   await expect(deletion.getByRole('button', { name: '删除记录', exact: true })).toBeEnabled();
   await deletion.getByRole('button', { name: '取消', exact: true }).click();
-  await expect(article.getByRole('button', { name: '查看此场', exact: true })).toBeVisible();
+  await expect(article.getByRole('button', { name: '修改校对', exact: true })).toBeVisible();
 
-  const blank = article.getByRole('article', { name: '空白截图.png待确认截图', exact: true });
-  await blank.getByRole('button', { name: '继续填写', exact: true }).click();
-  correction = page.getByRole('dialog', { name: '校对此场', exact: true });
-  await expect(correction.getByLabel(/^带出金额/)).toHaveValue('');
-  await expect(correction.getByLabel(/^假账扣除/)).toHaveValue('');
-  await expect(correction.getByRole('img', { name: '本场原始战绩截图', exact: true })).toBeVisible();
-  await correction.getByRole('button', { name: '确认入账', exact: true }).click();
-  await expect(correction.getByText('明确选择撤离成功或失败。', { exact: true })).toBeVisible();
-  expect(records[1].confirmed).toBe(false);
-  expect(records[1].outcome).toBe('unknown');
-
-  let retried = page.waitForResponse(response => response.url().endsWith('/api/matches/' + records[1].id + '/recognize'));
-  await correction.getByRole('button', { name: '重新识别', exact: true }).click();
-  expect((await retried).status()).toBe(200);
-  await expect(correction.getByLabel(/^带出金额/)).toHaveValue('1,867,449');
-  await expect(correction.getByLabel(/^带出金额/)).not.toHaveAttribute('aria-invalid', 'true');
-  await expect(correction.getByRole('combobox', { name: '撤离结果', exact: true })).toHaveValue('撤离成功');
-  await expect(correction.getByRole('combobox', { name: '撤离结果', exact: true })).not.toHaveAttribute('aria-invalid', 'true');
-  await expect(correction.getByLabel(/^假账扣除/)).toHaveValue('');
-  await expect(correction.getByLabel(/^假账扣除/)).toHaveAttribute('aria-invalid', 'true');
-  await expect(correction.getByRole('img', { name: '本场原始战绩截图', exact: true })).toBeVisible();
-  await expect(correction.getByText('识别详情', { exact: true })).toHaveCount(0);
-  await expect(correction.getByText('识别文字', { exact: true })).toHaveCount(0);
-  await expect(correction.getByText(recognizedText, { exact: true })).toHaveCount(0);
-
-  await correction.getByLabel(/^带出金额/).fill('2000000');
-  await correction.getByLabel(/^假账扣除/).fill('100000');
-  await selectOption(page, correction.getByRole('combobox', { name: '撤离结果', exact: true }), '撤离失败');
-  await correction.locator('.round-supplement > summary').click();
-  await correction.getByLabel('备注', { exact: true }).fill('成功识别后保留手工结果');
-  retried = page.waitForResponse(response => response.url().endsWith('/api/matches/' + records[1].id + '/recognize'));
-  await correction.getByRole('button', { name: '重新识别', exact: true }).click();
-  expect((await retried).status()).toBe(200);
-  await expect(correction.getByRole('button', { name: '重新识别', exact: true })).toBeEnabled();
-  await expect(correction.getByLabel(/^带出金额/)).toHaveValue('2,000,000');
-  await expect(correction.getByRole('combobox', { name: '撤离结果', exact: true })).toHaveValue('撤离失败');
-  await expect(correction.getByLabel(/^假账扣除/)).toHaveValue('100,000');
-  await expect(correction.getByLabel('备注', { exact: true })).toHaveValue('成功识别后保留手工结果');
-  expect(successfulRetries).toBe(2);
-  expect(records[1].confirmed).toBe(false);
-  expect(manualEntries).toBe(0);
   expect(ledger.errors).toEqual([]);
 });
 

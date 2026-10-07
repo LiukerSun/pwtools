@@ -35,9 +35,9 @@ void CheckAndDownload(pwtools::Updater& updater) {
 
 class Fixture {
  public:
-  std::atomic<unsigned> manifests{0}, downloads{0};
-  Fixture(std::string manifest, const std::string& installer, int status = 200, size_t trim = 0)
-      : manifest_(std::move(manifest)), installer_(installer), status_(status), trim_(trim) {
+  std::atomic<unsigned> manifests{0}, downloads{0}, betaManifests{0}, betaDownloads{0};
+  Fixture(std::string manifest, const std::string& installer, int status = 200, size_t trim = 0, std::string betaManifest = "")
+      : manifest_(std::move(manifest)), betaManifest_(std::move(betaManifest)), installer_(installer), status_(status), trim_(trim) {
     listener_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     Require(listener_ != INVALID_SOCKET, "socket failed");
     sockaddr_in address{}; address.sin_family = AF_INET; address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -59,12 +59,16 @@ class Fixture {
           if (count <= 0) break;
           request.append(buffer, count);
         }
-        const bool metadata = request.starts_with("GET /api/updates/windows-x64/latest.json ");
-        const bool binary = request.starts_with("GET /api/updates/windows-x64/PWTools-Setup-");
-        const int status = metadata ? status_ : binary ? 200 : 404;
-        if (metadata) ++manifests;
+        const bool betaMetadata = request.starts_with("GET /api/updates/windows-x64/beta/latest.json ");
+        const bool metadata = request.starts_with("GET /api/updates/windows-x64/latest.json ") || betaMetadata;
+        const bool betaBinary = request.starts_with("GET /api/updates/windows-x64/beta/PWTools-Setup-");
+        const bool binary = request.starts_with("GET /api/updates/windows-x64/PWTools-Setup-") || betaBinary;
+        const int status = betaMetadata ? (betaManifest_.empty() ? 404 : status_) : metadata ? status_ : binary ? 200 : 404;
+        if (betaMetadata) ++betaManifests;
+        else if (metadata) ++manifests;
+        if (betaBinary) ++betaDownloads;
         else if (binary) ++downloads;
-        const std::string& body = metadata ? manifest_ : installer_;
+        const std::string& body = betaMetadata ? betaManifest_ : metadata ? manifest_ : installer_;
         const auto bytes = body.size() - (metadata ? 0 : trim_);
         const auto header = "HTTP/1.1 " + std::to_string(status) + " Fixture\r\nContent-Length: " + std::to_string(bytes) + "\r\nConnection: close\r\nLocation: http://127.0.0.1:1/not-allowed\r\n\r\n";
         Send(client, header.data(), header.size());
@@ -86,7 +90,7 @@ class Fixture {
   }
   SOCKET listener_ = INVALID_SOCKET;
   std::thread worker_;
-  std::string manifest_;
+  std::string manifest_, betaManifest_;
   const std::string& installer_;
   int status_;
   size_t trim_;
@@ -102,7 +106,8 @@ int wmain(int argc, wchar_t** argv) {
       const fs::path target = fs::weakly_canonical(argv[4]);
       Require(target.parent_path().filename() == ".artifacts" && target.filename().string().starts_with("native-installer-qa-") && fs::is_regular_file(target / "PWTools.exe"), "probe requires an owned installer QA stage");
       const auto binary = Read(argv[2]);
-      Fixture server(Read(argv[3]), binary);
+      auto release = json::parse(Read(argv[3])); release["channel"] = "stable";
+      Fixture server(release.dump(), binary);
       pwtools::Updater updater(server.url, "0.0.1", fs::path(argv[5]), target);
       CheckAndDownload(updater);
       updater.Install(); std::cout << "Installer handoff started\n";
@@ -118,20 +123,22 @@ int wmain(int argc, wchar_t** argv) {
     }
     owned = fs::temp_directory_path() / ("pwtools-updater-test-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
     fs::create_directory(owned);
-    if (argc == 3 && std::wstring(argv[1]) == L"--download-probe") {
+    if (argc == 3 && (std::wstring(argv[1]) == L"--download-probe" || std::wstring(argv[1]) == L"--download-beta-probe")) {
       pwtools::Updater updater(ProbeUrl(argv[2]), "0.0.1", owned, owned);
+      if (std::wstring(argv[1]) == L"--download-beta-probe") updater.SetBetaParticipation(true);
       CheckAndDownload(updater); const auto state = updater.State();
       std::cout << state.dump() << '\n'; Require(state["phase"] == "ready", "public download failed");
     } else {
       Require(argc == 3, "pass installer and generated manifest paths");
       const auto binary = Read(argv[1]);
-      const auto release = json::parse(Read(argv[2]));
+      auto release = json::parse(Read(argv[2])); release.erase("channel");
       Require(pwtools::IsNewerVersion("0.9.16", "0.9.9"), "version comparison must be numeric");
       Require(!pwtools::IsNewerVersion("0.9.15", "0.9.16") && !pwtools::IsNewerVersion("1.0.0", "1.0.0"), "downgrade or equal version accepted");
       for (const auto& value : {"1.2", "1.2.3.4", "01.2.3", "1.-1.3", "1.2.3-beta", "65536.0.0", "../1.2.3"}) Reject([&] { pwtools::IsNewerVersion(value, "0.0.1"); });
       for (const auto& value : {json(nullptr), json::object(), json{{"schema_version", "1"}}}) Reject([&] { pwtools::ValidateUpdateManifest(value); });
       auto invalid = release; invalid["size"] = 256ull * 1024 * 1024 + 1; Reject([&] { pwtools::ValidateUpdateManifest(invalid); });
       invalid = release; invalid["sha256"] = "not-a-digest"; Reject([&] { pwtools::ValidateUpdateManifest(invalid); });
+      invalid = release; invalid["channel"] = "nightly"; Reject([&] { pwtools::ValidateUpdateManifest(invalid); });
 
       const auto expectError = [&](json manifest, const char* label, int status = 200, size_t trim = 0) {
         Fixture server(manifest.dump(), binary, status, trim);
@@ -187,6 +194,45 @@ int wmain(int argc, wchar_t** argv) {
       {
         pwtools::Updater updater("http://example.com/api", "0.0.1", owned / "http", owned);
         updater.Check(); Require(Finished(updater)["phase"] == "error", "non-local plaintext update endpoint accepted");
+      }
+      {
+        auto stable = release; stable["version"] = "0.0.2";
+        auto beta = release; beta["channel"] = "beta";
+        Fixture channels(stable.dump(), binary, 200, 0, beta.dump());
+        const auto profile = owned / "channels";
+        {
+          pwtools::Updater updater(channels.url, "0.0.2", profile, owned, "beta");
+          Require(updater.State()["betaEnabled"] == false && updater.State()["currentChannel"] == "beta", "beta participation must default off even on a beta build");
+          updater.Check(); Require(Finished(updater)["phase"] == "up-to-date" && channels.betaManifests == 0, "stable users fetched beta metadata");
+          updater.SetBetaParticipation(true);
+          Require(Finished(updater)["latestChannel"] == "beta" && updater.State()["phase"] == "available" && channels.betaDownloads == 0, "opt-in did not offer beta without downloading");
+          updater.SetBetaParticipation(false);
+          Require(Finished(updater)["latestChannel"] == "stable" && updater.State()["phase"] == "up-to-date", "opt-out retained beta offer");
+          Reject([&] { updater.DownloadUpdate(); });
+          updater.SetBetaParticipation(true); Finished(updater);
+          updater.DownloadUpdate(); Reject([&] { updater.SetBetaParticipation(false); });
+          Require(Finished(updater)["phase"] == "ready" && channels.betaDownloads == 1 && channels.downloads == 0, "beta installer did not use its own endpoint");
+          updater.SetBetaParticipation(false); Finished(updater);
+          Reject([&] { updater.Install(); });
+          updater.SetBetaParticipation(true); Finished(updater);
+        }
+        pwtools::Updater restarted(channels.url, "0.0.2", profile, owned);
+        Require(restarted.State()["betaEnabled"] == true, "opt-in did not survive restart");
+        restarted.SetBetaParticipation(false); Finished(restarted);
+        pwtools::Updater disabled(channels.url, "0.0.2", profile, owned);
+        Require(disabled.State()["betaEnabled"] == false, "opt-out did not survive restart");
+        Fixture stableOnly(release.dump(), binary);
+        pwtools::Updater noBeta(stableOnly.url, "0.0.1", owned / "no-beta", owned);
+        noBeta.SetBetaParticipation(true);
+        Require(Finished(noBeta)["latestChannel"] == "stable", "absent beta feed must retain stable updates");
+        auto olderBeta = beta; olderBeta["version"] = "0.0.1";
+        Fixture newerStable(release.dump(), binary, 200, 0, olderBeta.dump());
+        pwtools::Updater stableWins(newerStable.url, "0.0.1", owned / "newer-stable", owned);
+        stableWins.SetBetaParticipation(true);
+        Require(Finished(stableWins)["latestChannel"] == "stable", "newer stable release must supersede beta");
+        Fixture wrongFeed(beta.dump(), binary);
+        pwtools::Updater misrouted(wrongFeed.url, "0.0.1", owned / "wrong-feed", owned);
+        misrouted.Check(); Require(Finished(misrouted)["phase"] == "error", "stable feed accepted a beta manifest");
       }
       std::cout << "Updater fixtures passed: consent before download, restart after deferral, coalescing, versions, manifest validation, redirects, limits, truncation, SHA-256, installer identity, cache reuse, tamper rejection and cleanup (no installer launched).\n";
     }

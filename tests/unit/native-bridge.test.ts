@@ -28,7 +28,22 @@ test('all desktop methods use matching RPC names and JSON arguments', async () =
   const template = { ...order, name: '小时模板' };
   const match = { player_name: '老板', outcome: 'success' as const, amount: 100, confirmed: true, played_at: null, note: '', fake_amount: 0 };
   const entry = { kind: 'progress' as const, quantity: 30, occurred_at: null, note: '', idempotency_key: 'same-retry-key' };
+  const transfer = { id: 'transfer', prepaid: false, progress_bps: null, note: '协商转出', expected_updated_at: '2026-10-07T00:00:00Z' };
+  const transferAction = { id: 'action', transfer_id: 'transfer', action: 'settle' as const, amount_cents: 19960, note: '已收到', expected_updated_at: '2026-10-07T00:01:00Z' };
+  const rentalAccount = { id: 'account', name: '租用账号', note: '' };
+  const rentalSession = { id: 'rental', account_id: 'account', coin_per_yuan: 500000, aw_price: 200000, helmet_price: 300000, armor_price: 400000, initial_coins: 10000000, deposit_cents: 20000, started_at: '2026-10-06T00:00:00Z', note: '' };
   const cases: Array<[string, () => Promise<unknown>, unknown[]]> = [
+    ['listBuildCodes', () => bridge.listBuildCodes(), []],
+    ['createBuildCode', () => bridge.createBuildCode({ code: 'ABCDEFGH', weapon_name: 'M7', mode: '烽火地带', note: '' }), [{ code: 'ABCDEFGH', weapon_name: 'M7', mode: '烽火地带', note: '' }]],
+    ['updateBuildCode', () => bridge.updateBuildCode('code-id', { code: 'ABCDEFGH', weapon_name: 'M7', mode: '烽火地带', note: '' }), ['code-id', { code: 'ABCDEFGH', weapon_name: 'M7', mode: '烽火地带', note: '' }]],
+    ['deleteBuildCode', () => bridge.deleteBuildCode('code-id'), ['code-id']],
+    ['lookupBuildCode', () => bridge.lookupBuildCode({ code: 'ABCDEFGH', weapon_name: 'M7', mode: '烽火地带', note: '' }), [{ code: 'ABCDEFGH', weapon_name: 'M7', mode: '烽火地带', note: '' }]],
+    ['listRentalAccounts', () => bridge.listRentalAccounts(), []],
+    ['createRentalAccount', () => bridge.createRentalAccount(rentalAccount), [rentalAccount]],
+    ['listRentalSessions', () => bridge.listRentalSessions(), []],
+    ['createRentalSession', () => bridge.createRentalSession(rentalSession), [rentalSession]],
+    ['returnRentalSession', () => bridge.returnRentalSession('rental', { final_cost_cents: 13500 }), ['rental', { final_cost_cents: 13500 }]],
+    ['rentalAnalysis', () => bridge.rentalAnalysis('rental'), ['rental']],
     ['health', () => bridge.health(), []],
     ['register', () => bridge.register(auth), [auth]],
     ['login', () => bridge.login(auth), [auth]],
@@ -36,6 +51,7 @@ test('all desktop methods use matching RPC names and JSON arguments', async () =
     ['logout', () => bridge.logout(), []],
     ['windowControl', () => bridge.windowControl('close'), ['close']],
     ['windowControl', () => bridge.windowControl('minimize'), ['minimize']],
+    ['windowControl', () => bridge.windowControl('hide-to-tray'), ['hide-to-tray']],
     ['windowControl', () => bridge.windowControl('restore'), ['restore']],
     ['setWindowTheme', () => bridge.setWindowTheme('dark'), ['dark']],
     ['setWindowTheme', () => bridge.setWindowTheme('light'), ['light']],
@@ -44,6 +60,7 @@ test('all desktop methods use matching RPC names and JSON arguments', async () =
     ['appInfo', () => bridge.appInfo(), []],
     ['getUpdateState', () => bridge.getUpdateState(), []],
     ['checkForUpdates', () => bridge.checkForUpdates(), []],
+    ['setBetaParticipation', () => bridge.setBetaParticipation(true), [true]],
     ['downloadUpdate', () => bridge.downloadUpdate(), []],
     ['installUpdate', () => bridge.installUpdate(), []],
     ['listMatches', () => bridge.listMatches(undefined, undefined, undefined, false), [1, 20, null, false]],
@@ -62,6 +79,8 @@ test('all desktop methods use matching RPC names and JSON arguments', async () =
     ['getOrder', () => bridge.getOrder('order'), ['order']],
     ['createOrder', () => bridge.createOrder('boss', order), ['boss', order]],
     ['updateOrder', () => bridge.updateOrder('order', order), ['order', order]],
+    ['transferOrder', () => bridge.transferOrder('order', transfer), ['order', transfer]],
+    ['transferOrderAction', () => bridge.transferOrderAction('order', transferAction), ['order', transferAction]],
     ['listOrderTemplates', () => bridge.listOrderTemplates(), []],
     ['createOrderTemplate', () => bridge.createOrderTemplate(template), [template]],
     ['updateOrderTemplate', () => bridge.updateOrderTemplate('template', template), ['template', template]],
@@ -126,6 +145,11 @@ test('screenshots round-trip base64 without leaking typed-array wire data or los
     const malformed = native.bridge.matchImage('bad');
     webview.reply(2, { content_type: 'image/png', data_base64: '?' });
     await assert.rejects(malformed, { code: 'IMAGE_INTEGRITY_ERROR' });
+    const thumbnail = native.bridge.matchThumbnail('match');
+    assert.equal(webview.requests[3].method, 'matchThumbnail');
+    assert.deepEqual(webview.requests[3].args, ['match']);
+    webview.reply(3, { content_type: 'image/webp', data_base64: 'BAUG' });
+    assert.deepEqual(await thumbnail, { content_type: 'image/webp', data: Uint8Array.from([4, 5, 6]) });
   } finally { native.dispose(); }
 });
 

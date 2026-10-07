@@ -155,12 +155,15 @@ private:
       { std::lock_guard lock(mutex_); current_token_.clear(); }
       Send(client, 204, ""); return;
     }
+    if (request.path.ends_with("/thumbnail")) { Send(client, 200, std::string("\4\5\6", 3), "image/webp"); return; }
     if (request.path.ends_with("/image")) { Send(client, 200, std::string("\1\2\3", 3), "image/png"); return; }
-    if (request.path == "/api/matches/local") {
+    if (request.path == "/api/matches/preview-local") {
       { std::lock_guard lock(mutex_); upload_ = request; }
       const auto duplicate = duplicate_.exchange(false);
+      const auto preview = Json::parse(request.body);
+      Check(preview.at("data_base64") == "AQID" && preview.at("order_id") == id, "preview original changed");
       Send(client, duplicate ? 200 : 201, Json{{"duplicate", duplicate}, {"record", {
-        {"id", id}, {"ocr_status", duplicate ? "completed" : "failed"}, {"amount", nullptr}, {"warnings", Json::array()}
+        {"id", id}, {"ocr_status", duplicate || !preview.at("recognition").is_null() ? "completed" : "failed"}, {"amount", nullptr}, {"warnings", Json::array()}
       }}}.dump()); return;
     }
     if (request.path.ends_with("/local-recognition")) {
@@ -229,6 +232,17 @@ void Run(const std::filesystem::path& directory) {
   const Json entry = {{"kind", "progress"}, {"quantity", 75}, {"occurred_at", nullptr}, {"note", ""}, {"idempotency_key", other_id}};
   struct Case { const char* method; Json args; std::string verb, path; };
   const std::vector<Case> cases = {
+    {"listBuildCodes", Json::array(), "GET", "/api/weapon-build-codes"},
+    {"createBuildCode", Json::array({Json{{"code", "ABCDEFGH"}, {"weapon_name", "M7"}, {"mode", "烽火地带"}, {"note", ""}}}), "POST", "/api/weapon-build-codes"},
+    {"lookupBuildCode", Json::array({Json{{"code", "ABCDEFGH"}, {"weapon_name", "M7"}, {"mode", "烽火地带"}, {"note", ""}}}), "POST", "/api/weapon-build-codes/lookup"},
+    {"updateBuildCode", Json::array({id, Json{{"code", "ABCDEFGH"}, {"weapon_name", "M7"}, {"mode", "烽火地带"}, {"note", ""}}}), "PATCH", "/api/weapon-build-codes/" + id},
+    {"deleteBuildCode", Json::array({id}), "DELETE", "/api/weapon-build-codes/" + id},
+    {"listRentalAccounts", Json::array(), "GET", "/api/rental-accounts"},
+    {"createRentalAccount", Json::array({Json{{"id", id}, {"name", "测试租号"}, {"note", ""}}}), "POST", "/api/rental-accounts"},
+    {"listRentalSessions", Json::array(), "GET", "/api/rental-sessions"},
+    {"createRentalSession", Json::array({Json{{"id", id}, {"account_id", other_id}, {"coin_per_yuan", 500000}, {"aw_price", 100000}, {"helmet_price", 200000}, {"armor_price", 300000}, {"initial_coins", 10000000}, {"deposit_cents", 20000}, {"started_at", "2026-10-06T00:00:00Z"}, {"note", ""}}}), "POST", "/api/rental-sessions"},
+    {"returnRentalSession", Json::array({id, Json{{"final_cost_cents", 13500}}}), "PATCH", "/api/rental-sessions/" + id + "/return"},
+    {"rentalAnalysis", Json::array({id}), "GET", "/api/rental-sessions/" + id + "/analysis"},
     {"health", Json::array(), "GET", "/api/health"},
     {"listMatches", Json::array({nullptr, nullptr, id, false}), "GET", "/api/matches?page=1&page_size=20&order_id=" + id + "&confirmed=false"},
     {"listMatches", Json::array({nullptr, nullptr, nullptr, nullptr}), "GET", "/api/matches?page=1&page_size=20"},
@@ -247,6 +261,15 @@ void Run(const std::filesystem::path& directory) {
     {"getOrder", Json::array({id}), "GET", "/api/orders/" + id},
     {"createOrder", Json::array({id, order}), "POST", "/api/bosses/" + id + "/orders"},
     {"updateOrder", Json::array({id, order}), "PATCH", "/api/orders/" + id},
+    {"archiveOrder", Json::array({id, Json{{"id", other_id}, {"mode", "refund"}, {"final_income_cents", 12345}, {"note", "提前结束"}, {"expected_updated_at", "2026-10-06T00:00:00Z"}}}), "POST", "/api/orders/" + id + "/archive"},
+    {"restoreOrder", Json::array({id, Json{{"settlement_id", other_id}}}), "POST", "/api/orders/" + id + "/restore"},
+    {"transferOrder", Json::array({id, Json{{"id", other_id}, {"prepaid", false}, {"progress_bps", nullptr}, {"note", "转出"}, {"expected_updated_at", "2026-10-07T00:00:00Z"}}}), "POST", "/api/orders/" + id + "/transfer"},
+    {"transferOrder", Json::array({id, Json{{"id", other_id}, {"prepaid", true}, {"progress_bps", 5000}, {"note", "协商进度"}, {"expected_updated_at", "2026-10-07T00:00:00Z"}}}), "POST", "/api/orders/" + id + "/transfer"},
+    {"transferOrderAction", Json::array({id, Json{{"id", other_id}, {"transfer_id", id}, {"action", "settle"}, {"amount_cents", 19960}, {"note", ""}, {"expected_updated_at", "2026-10-07T00:00:00Z"}}}), "POST", "/api/orders/" + id + "/transfer-action"},
+    {"transferOrderAction", Json::array({id, Json{{"id", other_id}, {"transfer_id", id}, {"action", "refund"}, {"mode", "waiver"}, {"final_income_cents", 0}, {"note", "免单"}, {"expected_updated_at", "2026-10-07T00:00:00Z"}}}), "POST", "/api/orders/" + id + "/transfer-action"},
+    {"transferOrderAction", Json::array({id, Json{{"id", other_id}, {"transfer_id", id}, {"action", "confirm_refund"}, {"note", "已退回"}, {"expected_updated_at", "2026-10-07T00:00:00Z"}}}), "POST", "/api/orders/" + id + "/transfer-action"},
+    {"transferOrderAction", Json::array({id, Json{{"id", other_id}, {"transfer_id", id}, {"action", "cancel"}, {"note", "撤销转出"}, {"expected_updated_at", "2026-10-07T00:00:00Z"}}}), "POST", "/api/orders/" + id + "/transfer-action"},
+    {"confirmMatch", Json::array({Json{{"name", "截图.png"}, {"content_type", "image/png"}, {"data_base64", "AQID"}, {"order_id", id}, {"input", match}, {"recognition", nullptr}}}), "POST", "/api/matches/confirm"},
     {"listOrderTemplates", Json::array(), "GET", "/api/order-templates"},
     {"createOrderTemplate", Json::array({order_template}), "POST", "/api/order-templates"},
     {"updateOrderTemplate", Json::array({id, order_template}), "PATCH", "/api/order-templates/" + id},
@@ -259,23 +282,42 @@ void Run(const std::filesystem::path& directory) {
     bridge.Execute(item.method, item.args);
     const auto request = fixture.Last(); Check(request.method == item.verb && request.path == item.path, "HTTP method or route mapping mismatch");
   }
+  // Confirm the screenshot payload at the real native boundary, not just a tiny RPC fixture.
+  Json screenshot_confirmation{{"name", "战绩.png"}, {"content_type", "image/png"},
+    {"data_base64", "AQID"}, {"order_id", id}, {"input", match}, {"recognition", nullptr}};
+  screenshot_confirmation["input"]["order_id"] = id;
+  for (const std::size_t image_size : {3 * 1024, 96 * 1024, 3 * 1024 * 1024, 12 * 1024 * 1024}) {
+    screenshot_confirmation["data_base64"] = std::string(image_size / 3 * 4, 'A');
+    bridge.Execute("confirmMatch", Json::array({screenshot_confirmation}));
+    Check(fixture.Last().path == "/api/matches/confirm", "screenshot confirmation did not reach the API");
+    Check(Json::parse(fixture.Last().body) == screenshot_confirmation, "screenshot confirmation changed image bytes or corrected result");
+  }
+  screenshot_confirmation["data_base64"].get_ref<std::string&>().append("AAAA");
+  Reject([&] { bridge.Execute("confirmMatch", Json::array({screenshot_confirmation})); }, "INVALID_IMAGE");
+  screenshot_confirmation["data_base64"] = "AR==";
+  Reject([&] { bridge.Execute("confirmMatch", Json::array({screenshot_confirmation})); }, "INVALID_IMAGE");
+  Json oversized_order = order;
+  oversized_order["extra"] = std::string(128 * 1024, 'x');
+  Reject([&] { bridge.Execute("createOrder", Json::array({id, oversized_order})); }, "INVALID_INPUT");
   bridge.Execute("uploadMatch", Json::array({Json{{"name", "截图.png"}, {"content_type", "image/png"}, {"data_base64", "AQID"}, {"order_id", id}}}));
   const auto upload = fixture.Upload();
-  Check(upload.path == "/api/matches/local", "desktop upload used server OCR route");
-  Check(upload.body == std::string("\1\2\3", 3) && upload.headers.at("x-order-id") == id && upload.headers.at("x-file-name") == "%E6%88%AA%E5%9B%BE.png", "upload metadata or bytes changed");
+  Check(upload.path == "/api/matches/preview-local", "desktop must use memory-only preview route");
+  const auto preview_payload = Json::parse(upload.body);
+  Check(preview_payload.at("data_base64") == "AQID" && preview_payload.at("order_id") == id && preview_payload.at("name") == "截图.png", "preview metadata or bytes changed");
+  Check(!preview_payload.at("recognition").is_null(), "local recognition not included in preview");
   const auto image = bridge.Execute("matchImage", Json::array({id}));
   Check(image["content_type"] == "image/png" && image["data_base64"] == "AQID", "image bytes did not roundtrip");
-  const auto upload_args = Json::array({Json{{"name", "截图.png"}, {"content_type", "image/png"}, {"data_base64", "AQID"}}});
+  const auto thumbnail = bridge.Execute("matchThumbnail", Json::array({id}));
+  Check(thumbnail["content_type"] == "image/webp" && thumbnail["data_base64"] == "BAUG", "thumbnail must use its own endpoint and bytes");
+  const auto upload_args = Json::array({Json{{"name", "截图.png"}, {"content_type", "image/png"}, {"data_base64", "AQID"}, {"order_id", id}}});
   fail_local = true;
-  Check(bridge.Execute("uploadMatch", upload_args)["record"]["ocr_status"] == "failed", "model failure must retain the saved draft");
+  Check(bridge.Execute("uploadMatch", upload_args)["record"]["ocr_status"] == "failed", "model failure must return a temporary preview");
   fail_local = false;
   fixture.CompletedDuplicateNext();
   const auto writes = fixture.LocalWrites();
   Check(bridge.Execute("uploadMatch", upload_args)["duplicate"] == true && fixture.LocalWrites() == writes,
         "completed duplicate must retain existing results");
-  fixture.RejectLocalNext();
-  const auto pending = bridge.Execute("uploadMatch", upload_args);
-  Check(pending["record"]["id"] == id && !pending["record"]["warnings"].empty(), "sync failure lost the saved original");
+  Check(fixture.LocalWrites() == writes, "preview must never persist local recognition to a match");
 
   Reject([&] { bridge.Execute("getMatch", Json::array({"../me"})); }, "INVALID_INPUT");
   Reject([&] { bridge.Execute("listMatches", Json::parse("[0,20]")); }, "INVALID_INPUT");
@@ -284,6 +326,14 @@ void Run(const std::filesystem::path& directory) {
   Reject([&] { bridge.Execute("listBosses", Json::array({std::string(201, 'x')})); }, "INVALID_INPUT");
   Reject([&] { bridge.Execute("createBoss", Json::array({Json::array()})); }, "INVALID_INPUT");
   Reject([&] { bridge.Execute("createOrder", Json::array({id, Json{{"title", "x"}}})); }, "INVALID_INPUT");
+  Json invalid_transfer{{"id", other_id}, {"prepaid", false}, {"progress_bps", 10001}, {"note", ""}, {"expected_updated_at", "2026-10-07T00:00:00Z"}};
+  Reject([&] { bridge.Execute("transferOrder", Json::array({id, invalid_transfer})); }, "INVALID_INPUT");
+  invalid_transfer["progress_bps"] = 5000; invalid_transfer["prepaid"] = "false";
+  Reject([&] { bridge.Execute("transferOrder", Json::array({id, invalid_transfer})); }, "INVALID_INPUT");
+  Json invalid_transfer_action{{"id", other_id}, {"transfer_id", id}, {"action", "settle"}, {"amount_cents", -1}, {"note", ""}, {"expected_updated_at", "2026-10-07T00:00:00Z"}};
+  Reject([&] { bridge.Execute("transferOrderAction", Json::array({id, invalid_transfer_action})); }, "INVALID_INPUT");
+  invalid_transfer_action["amount_cents"] = 199.60;
+  Reject([&] { bridge.Execute("transferOrderAction", Json::array({id, invalid_transfer_action})); }, "INVALID_INPUT");
   Json retired_order = order; retired_order["kind"] = "wager";
   Reject([&] { bridge.Execute("createOrder", Json::array({id, retired_order})); }, "INVALID_INPUT");
   retired_order["name"] = "旧类型模板";
@@ -307,7 +357,8 @@ int main() {
   const auto directory = root / ("pwtools-native-api-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
   int result = 0;
   try { Run(directory); std::cout << "API bridge fixtures passed\n"; }
-  catch (const std::exception&) { std::cerr << "API bridge fixture failed\n"; result = 1; }
+  catch (const ApiFailure& failure) { std::cerr << "API bridge fixture failed: " << failure.code << " " << failure.what() << '\n'; result = 1; }
+  catch (const std::exception& failure) { std::cerr << "API bridge fixture failed: " << failure.what() << '\n'; result = 1; }
   // Delete only this test's verified direct child, never a configured user directory.
   if (directory.parent_path().lexically_normal() == root.lexically_normal() && directory.filename().string().starts_with("pwtools-native-api-")) {
     std::error_code error; std::filesystem::remove_all(directory, error);

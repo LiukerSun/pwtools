@@ -30,9 +30,11 @@ pub async fn load_snapshot(
             'account', jsonb_build_object('id', u.id, 'email', u.email, 'created_at', u.created_at),
             'bosses', COALESCE((SELECT jsonb_agg(to_jsonb(b) - 'user_id' ORDER BY b.created_at, b.id) FROM bosses b WHERE b.user_id = u.id), '[]'::jsonb),
             'orders', COALESCE((SELECT jsonb_agg(to_jsonb(o) - 'user_id' ORDER BY o.created_at, o.id) FROM service_orders o WHERE o.user_id = u.id), '[]'::jsonb),
+            'rental_accounts', COALESCE((SELECT jsonb_agg(to_jsonb(a) - 'user_id' ORDER BY a.created_at, a.id) FROM rental_accounts a WHERE a.user_id = u.id), '[]'::jsonb),
+            'rental_sessions', COALESCE((SELECT jsonb_agg(to_jsonb(s) - 'user_id' ORDER BY s.created_at, s.id) FROM rental_sessions s WHERE s.user_id = u.id), '[]'::jsonb),
             'order_templates', COALESCE((SELECT jsonb_agg(to_jsonb(t) - 'user_id' ORDER BY t.created_at, t.id) FROM order_templates t WHERE t.user_id = u.id), '[]'::jsonb),
             'entries', COALESCE((SELECT jsonb_agg(to_jsonb(e) - 'user_id' ORDER BY e.created_at, e.id) FROM ledger_entries e WHERE e.user_id = u.id), '[]'::jsonb),
-            'matches', COALESCE((SELECT jsonb_agg(to_jsonb(m) - 'user_id' - 'image_bytes' ORDER BY m.created_at, m.id) FROM matches m WHERE m.user_id = u.id), '[]'::jsonb),
+            'matches', COALESCE((SELECT jsonb_agg(to_jsonb(m) - 'user_id' - 'image_bytes' ORDER BY m.created_at, m.id) FROM matches m WHERE m.user_id = u.id AND m.confirmed), '[]'::jsonb),
             'match_settings', (SELECT to_jsonb(s) - 'user_id' FROM match_settings s WHERE s.user_id = u.id)
         ) FROM users u WHERE u.id = $1
           AND EXISTS (SELECT 1 FROM account_oss_archives a WHERE a.user_id=u.id AND a.revision=$2)"#,

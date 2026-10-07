@@ -58,6 +58,9 @@ pub(crate) async fn enqueue_snapshot<T: Serialize>(
     storage::checked_record_key(image_key, owner, id).map_err(api_storage_error)?;
     let key = storage::snapshot_key(image_key).map_err(api_storage_error)?;
     let payload = serde_json::json!({"schema_version":1,"record":record});
+    if payload["record"]["confirmed"] != true {
+        return Ok(());
+    }
     sqlx::query("INSERT INTO object_storage_jobs(object_key,user_id,match_id,operation,payload) VALUES($1,$2,$3,'snapshot',$4) ON CONFLICT(object_key) DO UPDATE SET operation='snapshot',payload=EXCLUDED.payload,available_at=now(),attempts=0,revision=object_storage_jobs.revision+1,updated_at=now()")
         .bind(key).bind(owner).bind(id).bind(Json(payload)).execute(connection).await.map_err(|_|ApiError::internal("record snapshot scheduling failed"))?;
     Ok(())
@@ -79,6 +82,34 @@ pub struct JobReport {
     pub completed: i64,
     pub failed: i64,
 }
+
+/// Exact-key cleanup. The explicit all-record mode is used only after a release backup.
+pub async fn cleanup_unconfirmed(
+    pool: &PgPool,
+    expired_only: bool,
+    limit: i64,
+) -> anyhow::Result<i64> {
+    anyhow::ensure!((1..=5000).contains(&limit), "invalid cleanup limit");
+    let mut tx = pool.begin().await?;
+    let rows: Vec<(Uuid, Uuid, Option<String>)> = sqlx::query_as(
+        "DELETE FROM matches WHERE id IN (SELECT id FROM matches WHERE NOT confirmed AND ($1=false OR created_at<now()-interval '30 minutes') ORDER BY created_at,id LIMIT $2 FOR UPDATE SKIP LOCKED) AND NOT confirmed RETURNING user_id,id,image_object_key")
+        .bind(expired_only).bind(limit).fetch_all(&mut *tx).await?;
+    for (owner, id, key) in &rows {
+        if let Some(key) = key {
+            enqueue_delete(&mut tx, *owner, *id, key)
+                .await
+                .map_err(|_| anyhow::anyhow!("unable to schedule temporary original cleanup"))?;
+            let snapshot =
+                storage::snapshot_key(key).map_err(|_| anyhow::anyhow!("invalid snapshot key"))?;
+            enqueue_delete(&mut tx, *owner, *id, &snapshot)
+                .await
+                .map_err(|_| anyhow::anyhow!("unable to schedule temporary snapshot cleanup"))?;
+        }
+    }
+    let count = rows.len() as i64;
+    tx.commit().await?;
+    Ok(count)
+}
 #[derive(FromRow)]
 struct Job {
     object_key: String,
@@ -93,6 +124,8 @@ pub async fn drain_jobs(pool: &PgPool, storage: &Storage, limit: i64) -> anyhow:
         (1..=5000).contains(&limit),
         "storage job limit must be between 1 and 5000"
     );
+    // Compatibility previews from older clients are temporary and expire after 30 minutes.
+    cleanup_unconfirmed(pool, true, limit).await?;
     if !storage.is_oss() {
         return Ok(JobReport::default());
     }
@@ -106,7 +139,7 @@ pub async fn drain_jobs(pool: &PgPool, storage: &Storage, limit: i64) -> anyhow:
                 Err(StorageError::InvalidKey)
             } else if job.operation == "snapshot" {
                 let exists = sqlx::query_scalar::<_, bool>(
-                    "SELECT EXISTS(SELECT 1 FROM matches WHERE user_id=$1 AND id=$2)",
+                    "SELECT EXISTS(SELECT 1 FROM matches WHERE user_id=$1 AND id=$2 AND confirmed)",
                 )
                 .bind(job.user_id)
                 .bind(job.match_id)

@@ -1,7 +1,7 @@
 use pwtools_api::{
     connect_database,
     storage::Storage,
-    storage_migration::{drain_jobs, migrate_legacy_images},
+    storage_migration::{cleanup_unconfirmed, drain_jobs, migrate_legacy_images},
 };
 
 #[tokio::main]
@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let command = args.next().unwrap_or_else(|| "help".into());
     if command == "help" {
-        println!("pwtools-storage migrate|drain|status [--limit N]");
+        println!("pwtools-storage migrate|drain|status|cleanup-unconfirmed [--limit N]");
         return Ok(());
     }
     let mut limit = 1000_i64;
@@ -34,6 +34,11 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|_| anyhow::anyhow!("unable to initialize storage database"))?;
     let success = match command.as_str() {
+        "cleanup-unconfirmed" => {
+            let count = cleanup_unconfirmed(&pool, false, limit.min(5000)).await?;
+            println!("removed_unconfirmed={count}");
+            true
+        }
         "migrate" => {
             let report = migrate_legacy_images(&pool, &storage, limit).await?;
             println!("{}", serde_json::to_string(&report)?);

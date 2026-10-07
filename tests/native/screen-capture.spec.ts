@@ -14,7 +14,7 @@ async function cleanupDirectory(directory: string) {
   await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
 }
 
-async function beginCapture(app: NativeApplication): Promise<{ result: Promise<CapturedPNG | null>; overlay: Page; state: NativeCaptureState }> {
+async function beginCapture(app: NativeApplication, fromTray = false): Promise<{ result: Promise<CapturedPNG | null>; overlay: Page; state: NativeCaptureState }> {
   const result = nativeCommand(app.page, 'captureScreen', [], 90_000) as Promise<CapturedPNG | null>;
   // Cleanup can close the CDP page before a failed startup reaches its reply.
   // Attach a rejection handler immediately while preserving the result promise.
@@ -31,10 +31,9 @@ async function beginCapture(app: NativeApplication): Promise<{ result: Promise<C
   await expect(overlay.locator('[data-capture-state="ready"]')).toBeVisible();
   expect(state.active).toBe(true);
   expect(state.ready).toBe(true);
-  // Ordinary minimization retains the taskbar button while removing the main
-  // application from the desktop being captured.
-  expect(state.parentWindowVisible).toBe(true);
-  expect(state.parentWindowIconic).toBe(true);
+  // Keep an already hidden tray window hidden throughout capture.
+  expect(state.parentWindowVisible).toBe(!fromTray);
+  expect(state.parentWindowIconic).toBe(!fromTray);
   expect(await overlay.evaluate(() => window.devicePixelRatio)).toBe(1);
   expect(await overlay.evaluate(() => ({ width: innerWidth, height: innerHeight }))).toEqual({ width: state.bounds.right - state.bounds.left, height: state.bounds.bottom - state.bounds.top });
   await overlay.evaluate(() => new Promise<void>(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(() => resolveFrame()))));
@@ -87,6 +86,41 @@ async function decodePixels(page: Page, png: CapturedPNG) {
     } finally { URL.revokeObjectURL(url); }
   }, png);
 }
+
+test('托盘运行中取消截图保持隐藏，完成截图恢复窗口并移除托盘图标', async () => {
+  const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
+  let app: NativeApplication | undefined;
+  try {
+    app = await NativeApplication.launch(directory, UNREACHABLE_API, { PWTOOLS_E2E_CAPTURE_PATTERN: '1' });
+    await expect(app.page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+    await app.page.evaluate(() => window.pwtools!.windowControl('maximize'));
+    await expect.poll(async () => (await app!.windowState()).maximized).toBe(true);
+    const before = await app.windowState();
+    await app.page.evaluate(() => window.pwtools!.windowControl('hide-to-tray'));
+    await expect.poll(async () => (await app!.windowState()).visible).toBe(false);
+    expect((await app.windowState()).trayIconRegistered).toBe(true);
+
+    const canceled = await beginCapture(app, true);
+    expect((await app.windowState()).trayIconRegistered).toBe(true);
+    await closingAction(canceled.overlay, () => canceled.overlay.keyboard.press('Escape'));
+    expect(await canceled.result).toBeNull();
+    expect((await app.windowState()).visible).toBe(false);
+    expect((await app.windowState()).trayIconRegistered).toBe(true);
+
+    const completed = await beginCapture(app, true);
+    await selectRegion(completed.overlay, { x: 80, y: 96 }, { x: 208, y: 176 });
+    await closingAction(completed.overlay, () => completed.overlay.getByTitle('完成截图', { exact: true }).click());
+    expect(await completed.result).not.toBeNull();
+    await expect.poll(async () => (await app!.windowState()).visible).toBe(true);
+    const restored = await app.windowState();
+    expect(restored.trayIconRegistered).toBe(false);
+    expect(restored.maximized).toBe(true);
+    expect({ left: restored.left, top: restored.top, width: restored.width, height: restored.height }).toEqual({ left: before.left, top: before.top, width: before.width, height: before.height });
+  } finally {
+    await app?.close().catch(() => {});
+    await cleanupDirectory(directory);
+  }
+});
 
 test('截图前最小化主窗口保留任务栏入口，前台 Esc 和后台右键取消均保留原窗口状态', async ({}, testInfo) => {
   test.setTimeout(150_000);

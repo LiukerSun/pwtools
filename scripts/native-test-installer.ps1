@@ -303,7 +303,9 @@ try {
     $taskPhase = '自动更新安装与重启'
     $taskUpdateProbe = Join-Path $taskRepoRoot 'apps/desktop/native/.build/tests/updater_test.exe'
     if (-not [IO.File]::Exists($taskUpdateProbe)) { throw 'Run npm run test:updater before exercising an update.' }
-    $taskUpdateManifest = Join-Path $taskRepoRoot 'apps/desktop/release/updates/windows-x64/latest.json'
+    $taskReleaseNotes = Get-Content -LiteralPath (Join-Path $taskRepoRoot 'apps/desktop/release-notes.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $taskUpdateChannelPath = if ($taskReleaseNotes.PSObject.Properties['channel'] -and $taskReleaseNotes.channel -eq 'beta') { 'beta/' } else { '' }
+    $taskUpdateManifest = Join-Path $taskRepoRoot "apps/desktop/release/updates/windows-x64/${taskUpdateChannelPath}latest.json"
     $taskUpdateProfile = Assert-StagePath (Join-Path $stage 'update-qa-profile')
     New-Item -ItemType Directory -Path $taskUpdateProfile | Out-Null
     $taskSentinel = Join-Path $taskUpdateProfile 'preserve-during-update.txt'
@@ -348,12 +350,12 @@ try {
   & (Join-Path $PSHOME 'powershell.exe') -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $taskRepoRoot 'scripts/native-test-resize.ps1') -ExecutablePath (Join-Path $stage 'PWTools.exe')
   if ($LASTEXITCODE -ne 0) { throw '已安装程序的窗口拖拽缩放失败。' }
 
-  $taskPhase = '原生登录验收'
+  $taskPhase = '原生登录与转单验收'
   [Environment]::SetEnvironmentVariable('PWTOOLS_E2E_EXECUTABLE', (Join-Path $stage 'PWTools.exe'), 'Process')
   [Environment]::SetEnvironmentVariable('PWTOOLS_DEV_URL', $null, 'Process')
   Push-Location $taskRepoRoot
   $taskLocationChanged = $true
-  & $taskNpx.Source playwright test --config playwright.native.config.ts tests/native/app.spec.ts
+  & $taskNpx.Source playwright test --config playwright.native.config.ts tests/native/app.spec.ts tests/native/order-transfer.spec.ts
   if ($LASTEXITCODE -ne 0) { throw '已安装程序的原生验收失败。' }
 } catch {
   $taskFailed = $true

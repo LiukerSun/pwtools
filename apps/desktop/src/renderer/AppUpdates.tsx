@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Button, Modal, Progress } from '@mantine/core';
+import { Alert, Button, Modal, Progress, Switch } from '@mantine/core';
 import { CheckCircle2, Download, RefreshCw, RotateCw, X } from 'lucide-react';
 import type { AppInfo, UpdateState } from '../shared/contracts';
 import { api, errorInfo } from './api';
@@ -9,20 +9,23 @@ export function useAppUpdates(appInfo: AppInfo | null) {
   const [state, setState] = useState<UpdateState | null>(null);
   const [requestError, setRequestError] = useState('');
   const [installing, setInstalling] = useState(false);
+  const [changingChannel, setChangingChannel] = useState(false);
   const [promptOpen, setPromptOpen] = useState(false);
   const announcedVersions = useRef(new Set<string>());
   const live = useRef(false);
   const operation = useRef(false);
+  const revision = useRef(0);
   useEffect(() => {
     if (!appInfo?.updatesSupported) return;
     live.current = true;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       let active = false;
+      const requestedRevision = revision.current;
       try {
         const next = await api.getUpdateState();
         if (!live.current) return;
-        setState(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
+        if (!operation.current && requestedRevision === revision.current) setState(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
         active = ['checking', 'downloading', 'installing'].includes(next.phase);
       } catch { /* Background checks never interrupt the ledger. */ }
       if (live.current) timer = setTimeout(() => void poll(), active ? 750 : 5000);
@@ -38,14 +41,25 @@ export function useAppUpdates(appInfo: AppInfo | null) {
   const check = useCallback(async () => {
     if (operation.current) return;
     operation.current = true;
+    revision.current += 1;
     setRequestError('');
     try { const next = await api.checkForUpdates(); if (live.current) setState(next); }
     catch (error) { if (live.current) setRequestError(errorInfo(error).message); }
     finally { operation.current = false; }
   }, []);
+  const setBetaParticipation = useCallback(async (enabled: boolean) => {
+    if (operation.current) return;
+    operation.current = true; revision.current += 1;
+    setChangingChannel(true); setRequestError('');
+    try {
+      const next = await api.setBetaParticipation(enabled);
+      if (live.current) { announcedVersions.current.clear(); setPromptOpen(false); setState(next); }
+    } catch (error) { if (live.current) setRequestError(errorInfo(error).message); }
+    finally { operation.current = false; if (live.current) setChangingChannel(false); }
+  }, []);
   const download = useCallback(async () => {
     if (operation.current) return;
-    operation.current = true; setRequestError('');
+    operation.current = true; revision.current += 1; setRequestError('');
     try { const next = await api.downloadUpdate(); if (live.current) setState(next); }
     catch (error) { if (live.current) setRequestError(errorInfo(error).message); }
     finally { operation.current = false; }
@@ -61,7 +75,7 @@ export function useAppUpdates(appInfo: AppInfo | null) {
     }
   }, []);
   const dismissPrompt = useCallback(() => setPromptOpen(false), []);
-  return { state, error: requestError || state?.error || '', installing, check, download, install, promptOpen, dismissPrompt };
+  return { state, error: requestError || state?.error || '', installing, changingChannel, setBetaParticipation, check, download, install, promptOpen, dismissPrompt };
 }
 
 export type AppUpdates = ReturnType<typeof useAppUpdates>;
@@ -78,7 +92,8 @@ export function UpdateNotice({ updates, onOpen }: { updates: AppUpdates; onOpen:
   if (!state || !['available', 'ready', 'downloading', 'download-error'].includes(state.phase) || dismissed === state.latestVersion) return null;
   const ready = state.phase === 'ready';
   const downloading = state.phase === 'downloading';
-  return <div className="update-notice" role="status"><span className="update-notice-icon"><Download size={18} aria-hidden="true" /></span><div><strong>{downloading ? `正在下载新版本 v${state.latestVersion}` : ready ? `新版本 v${state.latestVersion} 已准备好` : `发现新版本 v${state.latestVersion}`}</strong><p>{ready ? '可在方便时安装，完成后自动重启。' : downloading ? '下载在后台进行，你可以继续使用。' : '可选择现在更新，也可以继续使用当前版本。'}</p></div><Button size="xs" variant="light" onClick={onOpen}>{downloading ? '查看进度' : '查看更新'}</Button><button className="update-dismiss" aria-label="稍后处理更新" title="稍后处理" onClick={() => setDismissed(state.latestVersion || '')}><X size={16} /></button></div>;
+  const releaseName = `${state.latestChannel === 'beta' ? '测试版' : '新版本'} v${state.latestVersion}`;
+  return <div className="update-notice" role="status"><span className="update-notice-icon"><Download size={18} aria-hidden="true" /></span><div><strong>{downloading ? `正在下载${releaseName}` : ready ? `${releaseName} 已准备好` : `发现${releaseName}`}</strong><p>{ready ? '可在方便时安装，完成后自动重启。' : downloading ? '下载在后台进行，你可以继续使用。' : '可选择现在更新，也可以继续使用当前版本。'}</p></div><Button size="xs" variant="light" onClick={onOpen}>{downloading ? '查看进度' : '查看更新'}</Button><button className="update-dismiss" aria-label="稍后处理更新" title="稍后处理" onClick={() => setDismissed(state.latestVersion || '')}><X size={16} /></button></div>;
 }
 
 export function StartupUpdatePrompt({ updates, onInstall }: { updates: AppUpdates; onInstall: () => void }) {
@@ -89,7 +104,7 @@ export function StartupUpdatePrompt({ updates, onInstall }: { updates: AppUpdate
   const busy = updates.installing || state?.phase === 'installing';
   const offered = state && ['available', 'ready', 'downloading', 'download-error', 'installing'].includes(state.phase);
   return <Modal title={ready ? '新版本已准备好' : '发现新版本'} opened={updates.promptOpen && Boolean(offered)} onClose={() => !busy && updates.dismissPrompt()} centered size="md" zIndex={350} withCloseButton={!busy} closeOnEscape={!busy} closeOnClickOutside={false}>
-    <div className="update-offer-heading"><span className="update-offer-icon"><Download size={24} aria-hidden="true" /></span><div><h3>PWTools v{state?.latestVersion}</h3><p>当前版本 v{state?.currentVersion} · {megabytes(state?.totalBytes || 0)}</p></div></div>
+    <div className="update-offer-heading"><span className="update-offer-icon"><Download size={24} aria-hidden="true" /></span><div><h3>PWTools v{state?.latestVersion}{state?.latestChannel === 'beta' ? ' 测试版' : ''}</h3><p>当前版本 v{state?.currentVersion} · {megabytes(state?.totalBytes || 0)}</p></div></div>
     <p className="update-offer-copy">{busy ? '正在启动安装程序，请稍候。' : ready ? '安装会退出当前应用，完成后自动启动。你的账户和账本数据会保留。' : downloading ? '正在下载更新，你也可以切换到后台下载并继续使用。' : '选择更新后才会下载安装包，下载完成后再确认安装。暂不更新也能继续使用。'}</p>
     {state?.notes && <div className="update-offer-notes"><strong>更新内容</strong><p>{state.notes}</p></div>}
     {downloading && state && <DownloadProgress state={state} />}
@@ -106,8 +121,10 @@ export function UpdateSettings({ updates, onInstall }: { updates: AppUpdates; on
   const downloading = state?.phase === 'downloading';
   const ready = state?.phase === 'ready';
   const available = state?.phase === 'available' || state?.phase === 'download-error';
-  const description = busy ? '正在启动安装程序…' : checking ? '正在检查新版本…' : downloading ? `正在下载 v${state.latestVersion}` : ready ? `v${state.latestVersion} 已下载，随时可安装` : available ? `发现新版本 v${state.latestVersion}` : state?.phase === 'up-to-date' ? '当前已是最新版本' : '每次启动检查新版本，由你决定是否更新。';
-  return <section className="panel settings-section update-settings" aria-label="版本更新"><div className="section-heading"><h2>版本更新</h2><span className="update-version">v{state?.currentVersion || '…'}</span></div><div className="settings-row"><div><strong className="update-status">{state?.phase === 'up-to-date' && <CheckCircle2 size={17} aria-hidden="true" />}{description}</strong><p>{available ? '选择更新后才开始下载，暂不更新也可继续使用。' : '安装前会退出应用，完成后自动启动；账户和账本将保留。'}</p></div>{ready || busy ? <Button leftSection={<RotateCw size={16} />} loading={busy} onClick={() => setConfirming(true)}>安装更新</Button> : available ? <Button leftSection={<Download size={16} />} onClick={() => void updates.download()}>{state?.phase === 'download-error' ? '重试下载' : '立即更新'}</Button> : <Button variant="default" leftSection={<RefreshCw size={16} />} loading={checking} disabled={downloading} onClick={() => void updates.check()}>{updates.error ? '重试更新' : '检查更新'}</Button>}</div>
+  const releaseName = `${state?.latestChannel === 'beta' ? '测试版 ' : ''}v${state?.latestVersion}`;
+  const description = busy ? '正在启动安装程序…' : checking ? '正在检查新版本…' : downloading ? `正在下载 ${releaseName}` : ready ? `${releaseName} 已下载，随时可安装` : available ? `发现新版本 ${releaseName}` : state?.phase === 'up-to-date' ? (state.betaEnabled ? '当前没有更新的版本' : '当前没有更新的正式版') : '每次启动检查新版本，由你决定是否更新。';
+  return <section className="panel settings-section update-settings" aria-label="版本更新"><div className="section-heading"><h2>版本更新</h2><span className="update-version">v{state?.currentVersion || '…'}{state?.currentChannel === 'beta' ? ' · 测试版' : ''}</span></div><div className="settings-row"><div><strong className="update-status">{state?.phase === 'up-to-date' && <CheckCircle2 size={17} aria-hidden="true" />}{description}</strong><p>{available ? '选择更新后才开始下载，暂不更新也可继续使用。' : '安装前会退出应用，完成后自动启动；账户和账本将保留。'}</p></div>{ready || busy ? <Button leftSection={<RotateCw size={16} />} loading={busy} disabled={updates.changingChannel} onClick={() => setConfirming(true)}>安装更新</Button> : available ? <Button leftSection={<Download size={16} />} disabled={updates.changingChannel} onClick={() => void updates.download()}>{state?.phase === 'download-error' ? '重试下载' : '立即更新'}</Button> : <Button variant="default" leftSection={<RefreshCw size={16} />} loading={checking} disabled={downloading || updates.changingChannel} onClick={() => void updates.check()}>{updates.error ? '重试更新' : '检查更新'}</Button>}</div>
+    <div className="update-channel"><Switch label="参与测试体验" description="开启后可收到测试版更新，提前体验新功能。设置在本机保存，切换后立即检查更新。" checked={state?.betaEnabled ?? false} disabled={!state || checking || downloading || busy || updates.changingChannel} onChange={event => { setConfirming(false); void updates.setBetaParticipation(event.currentTarget.checked); }} />{state?.currentChannel === 'beta' && !state.betaEnabled && <p>当前安装的是测试版。关闭测试体验后等待后续正式版，不会自动降级。</p>}</div>
     {downloading && state && <DownloadProgress state={state} />}
     {updates.error && <Alert color="orange" role="alert">{updates.error}</Alert>}
     {(available || ready || downloading) && state?.notes && <details className="update-notes" open={available || ready}><summary>本次更新</summary><p>{state.notes}</p></details>}

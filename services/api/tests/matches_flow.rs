@@ -384,7 +384,22 @@ async fn run_flow(app: Router, pool: PgPool, mode: Arc<AtomicU8>) {
         .await
         .expect("stored blob");
     assert_eq!(stored, image);
-    for suffix in ["", "/image", "/recognize"] {
+    let (status, headers, thumbnail) = call(
+        &app,
+        "GET",
+        &format!("{first_path}/thumbnail"),
+        vec![],
+        None,
+        Some(alice_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/webp");
+    assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+    let thumbnail = image::load_from_memory_with_format(&thumbnail, ImageFormat::WebP)
+        .expect("local thumbnail");
+    assert_eq!((thumbnail.width(), thumbnail.height()), (122, 122));
+    for suffix in ["", "/image", "/thumbnail", "/recognize"] {
         let method = if suffix == "/recognize" {
             "POST"
         } else {
@@ -657,7 +672,7 @@ async fn run_flow(app: Router, pool: PgPool, mode: Arc<AtomicU8>) {
     assert_eq!(retry.1["amount"], 777);
     assert_eq!(retry.1["confirmed"], false);
     // A failed retry must not erase saved draft corrections or prior successful OCR references.
-    let saved_draft = json_call(&app,"PATCH",&third_path,Some(json!({"player_name":"识别玩家","outcome":"success","amount":4321,"confirmed":false,"note":"已人工核对的草稿"})),Some(alice_token)).await;
+    let saved_draft = json_call(&app,"PATCH",&third_path,Some(json!({"player_name":"识别玩家","outcome":"success","amount":4321,"note":"已人工核对的草稿"})),Some(alice_token)).await;
     assert_eq!(saved_draft.0, StatusCode::OK);
     let confirmed_before_failure = json_call(&app, "GET", &first_path, None, Some(alice_token))
         .await
@@ -1069,16 +1084,16 @@ async fn confirmation_filter_flow(app: &Router, alice_token: &str, bob_token: &s
         )
         .await
         .0,
-        StatusCode::OK
+        StatusCode::UNPROCESSABLE_ENTITY
     );
     assert_eq!(
         filtered_page(app, alice_token, Some(alpha), Some(false), 1, 20).await["total"],
-        3,
-        "withdrawing confirmation restores the same draft"
+        2,
+        "withdrawal cannot recreate a draft"
     );
     assert_eq!(
         filtered_page(app, alice_token, Some(alpha), Some(true), 1, 20).await["total"],
-        0
+        1
     );
     let scoped = filtered_page(app, alice_token, Some(beta), Some(false), 1, 1).await;
     assert_eq!(scoped["total"], 1);

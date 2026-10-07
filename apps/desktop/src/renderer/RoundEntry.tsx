@@ -4,6 +4,7 @@ import { notifications } from '@mantine/notifications';
 import { Check, ChevronDown, Clock3, FileImage, Maximize2, ScanLine, Upload } from 'lucide-react';
 import type { LedgerEntryInput, MatchOutcome, MatchRecord, MatchUpdateInput, MatchUploadInput, ServiceOrder } from '../shared/contracts';
 import { api, errorInfo } from './api';
+import RentalSelect from './RentalSelect';
 import { amountFormat, automaticExtra, MAX_QUANTITY, orderSummary, ruleTriggered } from './orderPresentation';
 import DateTimeField from './DateTimeField';
 import './round-entry.css';
@@ -22,7 +23,7 @@ export interface RoundDraft {
 type RoundErrors = Partial<Record<keyof RoundDraft, string>>;
 type DraftKey = keyof RoundDraft;
 type Action = 'upload' | 'recognize' | 'save' | null;
-type PendingSave = { kind: 'match'; id: string; input: MatchUpdateInput; confirmed: boolean } | { kind: 'manual'; input: LedgerEntryInput; confirmed: true };
+type PendingSave = { kind: 'image'; file: File; record: MatchRecord; input: MatchUpdateInput; confirmed: true } | { kind: 'match'; id: string; input: MatchUpdateInput; confirmed: boolean } | { kind: 'manual'; input: LedgerEntryInput; confirmed: true };
 const uncertainFailure = (code: string) => /TIMEOUT|NETWORK|UNKNOWN|API_ERROR|INTERNAL|SERVER|DATABASE|HTTP_5|INVALID_RESPONSE|RESPONSE_TOO_LARGE|IMAGE_INTEGRITY_ERROR|IMAGE_STORAGE_UNAVAILABLE/.test(code.toUpperCase());
 
 interface RoundEntryProps {
@@ -87,9 +88,13 @@ export function RoundResultFields({ order, draft, record, disabled, errors, onCh
 }
 
 export default function RoundEntry({ order, matchId, initialImage, onClose, onSaved, onError, onNavigationStateChange }: RoundEntryProps) {
+  const readOnly = order.status === 'archived';
   const [mode, setMode] = useState(order.kind === 'hourly' ? 'manual' : 'screenshot');
   const [draft, setDraft] = useState<RoundDraft>(initialDraft);
   const [record, setRecord] = useState<MatchRecord | null>(null);
+  const [rentalSessionId, setRentalSessionId] = useState<string | null>(order.default_rental_session_id ?? null);
+  const [rentalReady, setRentalReady] = useState(false);
+  const rentalTouched = useRef(false);
   const [action, setAction] = useState<Action>(null);
   const [loading, setLoading] = useState(Boolean(matchId));
   const [dirty, setDirty] = useState(false);
@@ -129,6 +134,7 @@ export default function RoundEntry({ order, matchId, initialImage, onClose, onSa
 
   function mergeRecord(next: MatchRecord, initial: boolean) {
     setRecord(next);
+    if (initial && !rentalTouched.current) setRentalSessionId(next.rental_session_id ?? null);
     const patch: Partial<RoundDraft> = { amount: next.amount ?? '', outcome: next.outcome };
     if (initial) Object.assign(patch, { fake_amount: next.fake_amount ?? '', failure_extra_amount: next.failure_extra_amount, played_at: localTime(next.played_at), note: next.note });
     setDraft((current) => {
@@ -159,7 +165,7 @@ export default function RoundEntry({ order, matchId, initialImage, onClose, onSa
     let alive = true;
     let url = '';
     setImageError(''); setSourceUrl('');
-    if (record) {
+    if (record?.confirmed) {
       setImageLoading(true);
       void api.matchImage(record.id).then((image) => {
         if (!alive) return;
@@ -187,7 +193,8 @@ export default function RoundEntry({ order, matchId, initialImage, onClose, onSa
       if (!mounted.current) return;
       const info = errorInfo(failure);
       // A rejected retry cannot prove that the original request did not save.
-      if (type === 'upload') setUploadUncertain((current) => current || uncertainFailure(info.code));
+      // Preview failure cannot persist a record; cancelling is always safe.
+      if (type === 'upload') setUploadUncertain(false);
       if (type === 'save') {
         if (saveUncertain || uncertainFailure(info.code)) setSaveUncertain(true);
         else { setSaveUncertain(false); pendingSave.current = null; }
@@ -209,7 +216,7 @@ export default function RoundEntry({ order, matchId, initialImage, onClose, onSa
       setUploadUncertain(false);
       if (result.record.order_id && result.record.order_id !== order.id) { setError('原图已存在于另一笔订单，请从原订单打开。'); return; }
       mergeRecord(result.record, result.duplicate);
-      if (result.duplicate) notifications.show({ message: result.record.confirmed ? '此场已入账，可继续校对' : '此图已上传，可继续填写', color: 'blue' });
+      if (result.duplicate) notifications.show({ message: result.record.confirmed ? '此场已入账，可继续校对' : '请核对后确认入账', color: 'blue' });
     });
   };
 
@@ -232,7 +239,8 @@ export default function RoundEntry({ order, matchId, initialImage, onClose, onSa
   const recognize = () => {
     if (!record || saveUncertain || uploadUncertain) return;
     void run('recognize', async () => {
-      const next = await api.recognizeMatch(record.id);
+      const next = record.confirmed ? await api.recognizeMatch(record.id) : selectedFile
+        ? (await api.uploadMatch({ name: selectedFile.name, content_type: record.image_content_type, data: new Uint8Array(await selectedFile.arrayBuffer()), order_id: order.id })).record : record;
       if (mounted.current) mergeRecord(next, false);
     });
   };
@@ -240,19 +248,21 @@ export default function RoundEntry({ order, matchId, initialImage, onClose, onSa
   const submitSnapshot = (snapshot: PendingSave) => {
     pendingSave.current = snapshot;
     void run('save', async () => {
-      if (snapshot.kind === 'match') await api.updateMatch(snapshot.id, snapshot.input);
+      if (snapshot.kind === 'image') await api.confirmMatch({ name: snapshot.file.name, content_type: snapshot.record.image_content_type, data: new Uint8Array(await snapshot.file.arrayBuffer()), order_id: order.id }, snapshot.input, snapshot.record);
+      else if (snapshot.kind === 'match') await api.updateMatch(snapshot.id, snapshot.input);
       else await api.addLedgerEntry(order.id, snapshot.input);
       if (!mounted.current) return;
       pendingSave.current = null; setSaveUncertain(false); setDirty(false);
-      notifications.show({ message: snapshot.confirmed ? record?.confirmed ? '校对已保存' : '已入账' : record?.confirmed ? '已撤销，保留为草稿' : '草稿已保存', color: 'teal' });
+      notifications.show({ message: record?.confirmed ? '校对已保存' : '已入账', color: 'teal' });
       onNavigationStateChange?.({ dirty: false, busy: false });
       onSaved(order.id);
     });
   };
 
   const save = (confirmed: boolean) => {
-    if (busy || actionRef.current || (matchId && !record)) return;
+    if (readOnly || !confirmed || busy || actionRef.current || (matchId && !record)) return;
     if (saveUncertain && pendingSave.current) { submitSnapshot(pendingSave.current); return; }
+    if (!rentalReady) return;
     if (uploadUncertain) { setError('上传结果尚未确认，请重试同一张截图后保存本场。已填写的结果会保留。'); return; }
     if (order.kind !== 'hourly' && mode === 'screenshot' && !record) { setError('先上传本场截图，或切换为手工填写后保存。'); return; }
     const validation = validateRoundDraft(order, draft, confirmed);
@@ -260,10 +270,10 @@ export default function RoundEntry({ order, matchId, initialImage, onClose, onSa
     if (Object.keys(validation).length) return;
     const playedAt = draft.played_at ? new Date(`${draft.played_at}:00+08:00`).toISOString() : null;
     if (record) {
-      submitSnapshot({ kind: 'match', id: record.id, confirmed, input: { player_name: record.boss_player_name, outcome: draft.outcome, amount: draft.amount === '' ? null : draft.amount, fake_amount: draft.fake_amount === '' ? null : draft.fake_amount, ...(order.failure_mode === 'manual' && (!ruleTriggered(order, draft.outcome, roundNet(draft)) || draft.failure_extra_amount !== '') ? { failure_extra_amount: ruleTriggered(order, draft.outcome, roundNet(draft)) ? Number(draft.failure_extra_amount) : 0 } : {}), confirmed, order_id: order.id, played_at: playedAt, note: draft.note.trim() } });
+      submitSnapshot({ ...(record.confirmed || !selectedFile ? { kind: 'match' as const, id: record.id } : { kind: 'image' as const, file: selectedFile, record }), confirmed: true, input: { player_name: record.boss_player_name, outcome: draft.outcome, amount: draft.amount === '' ? null : draft.amount, fake_amount: draft.fake_amount === '' ? null : draft.fake_amount, ...(order.failure_mode === 'manual' && (!ruleTriggered(order, draft.outcome, roundNet(draft)) || draft.failure_extra_amount !== '') ? { failure_extra_amount: ruleTriggered(order, draft.outcome, roundNet(draft)) ? Number(draft.failure_extra_amount) : 0 } : {}), confirmed, order_id: order.id, rental_session_id: rentalSessionId, played_at: playedAt, note: draft.note.trim() } });
     } else {
       const quantity = order.kind === 'hourly' ? Number(draft.hours) * 60 + Number(draft.minutes) : Number(draft.amount);
-      const input: LedgerEntryInput = { kind: 'progress', quantity, occurred_at: playedAt, note: draft.note.trim(), idempotency_key: idempotencyKey.current };
+      const input: LedgerEntryInput = { kind: 'progress', quantity, occurred_at: playedAt, note: draft.note.trim(), idempotency_key: idempotencyKey.current, rental_session_id: rentalSessionId };
       if (order.kind !== 'hourly') Object.assign(input, { outcome: draft.outcome, amount: draft.amount, fake_amount: draft.fake_amount, ...(order.failure_mode === 'manual' ? { failure_extra_amount: ruleTriggered(order, draft.outcome, roundNet(draft)) ? draft.failure_extra_amount : 0 } : {}) });
       submitSnapshot({ kind: 'manual', confirmed: true, input });
     }
@@ -271,23 +281,23 @@ export default function RoundEntry({ order, matchId, initialImage, onClose, onSa
 
   return <>
     <Modal opened onClose={close} onPaste={pasteScreenshot} title={matchId ? '校对此场' : '记一场'} centered size={order.kind === 'hourly' || (mode === 'manual' && !record) ? 620 : 1040} classNames={{ content: 'round-modal-content', body: 'round-modal-body' }} closeOnClickOutside={!busy && !uploadUncertain && !saveUncertain && !imageOpen && !discardOpen && !datePickerOpen} closeOnEscape={!busy && !uploadUncertain && !saveUncertain && !imageOpen && !discardOpen && !datePickerOpen} withCloseButton={!busy && !uploadUncertain && !saveUncertain}>
-      <div className="round-context"><div><strong>{order.boss_name} / {order.title}</strong><p>{orderSummary(order)}</p></div>{order.kind !== 'hourly' && <SegmentedControl aria-label="本场录入方式" value={mode} disabled={saving || saveUncertain} onChange={setMode} data={[{ value: 'screenshot', label: '截图录入' }, { value: 'manual', label: '手工填写' }]} />}</div>
+      <div className="round-context"><div><strong>{order.boss_name} / {order.title}</strong><p>{orderSummary(order)}</p></div>{order.kind !== 'hourly' && <SegmentedControl aria-label="本场录入方式" value={mode} disabled={readOnly || saving || saveUncertain} onChange={setMode} data={[{ value: 'screenshot', label: '截图录入' }, { value: 'manual', label: '手工填写' }]} />}</div>
       {error && <Alert color="red" title="本场尚未保存" className="round-alert">{error}{selectedFile && !record && !busy && <Button size="xs" variant="subtle" onClick={() => upload(selectedFile)}>重试上传</Button>}{matchId && !record && !busy && <Button size="xs" variant="subtle" onClick={() => setLoadRetry((current) => current + 1)}>重新读取本场</Button>}</Alert>}
       {uploadUncertain && <Alert color="orange" title="上传结果待核实" className="round-alert">请重试同一张截图，已填写内容会保留。</Alert>}
       {saveUncertain && <Alert color="orange" title="本场保存结果待核实" className="round-alert">可能已保存，请重试核实后再离开。</Alert>}
       {loading && <div className="round-operation" role="status"><Loader size="sm" />加载中…</div>}
       {(action === 'upload' || action === 'recognize') && <div className="round-operation" role="status"><Loader size="sm" /><strong>{window.pwtools ? '本地识别中' : '识别中'} · {elapsed} 秒</strong></div>}
       <form className={`round-workspace ${order.kind === 'hourly' || (mode === 'manual' && !record) ? 'round-hourly' : ''}`} onSubmit={(event) => { event.preventDefault(); save(true); }} noValidate>
-        {order.kind !== 'hourly' && (mode === 'screenshot' || record) && <section className="round-source" aria-label="本场原图"><div className="round-pane-heading"><h3><FileImage size={16} />原图</h3>{record && <Button size="xs" variant="subtle" leftSection={<ScanLine size={14} />} disabled={busy || saveUncertain} onClick={recognize}>重新识别</Button>}</div>
+        {order.kind !== 'hourly' && (mode === 'screenshot' || record) && <section className="round-source" aria-label="本场原图"><div className="round-pane-heading"><h3><FileImage size={16} />原图</h3>{record && <Button size="xs" variant="subtle" leftSection={<ScanLine size={14} />} disabled={readOnly || busy || saveUncertain} onClick={recognize}>重新识别</Button>}</div>
           {sourceUrl && !imageError ? <button type="button" className="round-image" aria-label="放大本场原图" onClick={() => setImageOpen(true)}><img src={sourceUrl} alt="本场原始战绩截图" onError={() => setImageError('原图无法显示，请重试')} /><span><Maximize2 size={14} />放大</span></button> : <div className="round-image-empty" tabIndex={!record && !matchId && mode === 'screenshot' ? 0 : undefined} aria-label={!record && !matchId && mode === 'screenshot' ? '截图上传区域' : undefined} data-autofocus={!record && !matchId && mode === 'screenshot' ? true : undefined}>{imageLoading ? <Loader size="sm" /> : <FileImage size={34} strokeWidth={1.3} />}{imageError && <p>{imageError}</p>}{imageError && record && <Button size="xs" variant="default" onClick={() => setImageRetry((current) => current + 1)}>重试</Button>}{!record && !matchId && mode === 'screenshot' && <><Button component="label" size="sm" leftSection={<Upload size={15} />} disabled={busy || saveUncertain || uploadUncertain || !nicknameReady}>上传截图<input type="file" accept="image/png,image/jpeg,image/webp" aria-label="导入本场截图" hidden disabled={busy || saveUncertain || uploadUncertain || !nicknameReady} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) upload(file); }} /></Button><p>也可 Ctrl+V 粘贴截图</p></>}</div>}
           {!record && mode === 'screenshot' && !nicknameReady && <Alert color="orange">请补充老板的截图昵称，或手工填写。<Button size="xs" variant="subtle" onClick={() => setMode('manual')}>手工填写</Button></Alert>}
-          {record && <><p className="round-source-caption">{record.original_name}{!record.confirmed && ' · 草稿'}</p>{(record.ocr_status === 'failed' || record.warnings.length > 0) && <Alert color="orange" title={record.ocr_status === 'failed' ? '识别失败，可手工填写' : '请核对结果'}>{record.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</Alert>}</>}
+          {record && <><p className="round-source-caption">{record.original_name}{!record.confirmed && ' · 确认入账后保存原图'}</p>{(record.ocr_status === 'failed' || record.warnings.length > 0) && <Alert color="orange" title={record.ocr_status === 'failed' ? '识别失败，可手工填写' : '请核对结果'}>{record.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</Alert>}</>}
         </section>}
-        <section className="round-results" aria-label="本场结果"><div className="round-pane-heading"><h3>{order.kind === 'hourly' ? <Clock3 size={16} /> : <Check size={16} />}结果</h3></div><RoundResultFields order={order} draft={draft} record={record} disabled={saving || saveUncertain} errors={errors} onChange={patchDraft} onDatePickerOpenChange={setDatePickerOpen} /></section>
-        <div className="round-actions">{record?.confirmed && <span>撤销后保留为草稿</span>}<Button type="button" variant="default" disabled={busy || uploadUncertain || saveUncertain} onClick={close}>取消</Button>{record && <Button type="button" variant="default" disabled={busy || saveUncertain} onClick={() => save(false)}>{record.confirmed ? '撤销入账' : '保存草稿'}</Button>}<Button type="submit" leftSection={<Check size={15} />} loading={saving} disabled={busy || uploadUncertain || (!saveUncertain && Boolean(matchId) && !record)}>{saveUncertain ? '重试核实本场' : record?.confirmed ? '保存校对' : '确认入账'}</Button></div>
+        <section className="round-results" aria-label="本场结果"><div className="round-pane-heading"><h3>{order.kind === 'hourly' ? <Clock3 size={16} /> : <Check size={16} />}结果</h3></div><RentalSelect value={rentalSessionId} activeOnly retainedSessionId={record?.rental_session_id} onReadyChange={setRentalReady} onChange={(id, reason) => { setRentalSessionId(id); if (reason === 'select') { rentalTouched.current = true; setDirty(true); } }} disabled={readOnly || saving || saveUncertain || loading} onError={onError} /><RoundResultFields order={order} draft={draft} record={record} disabled={readOnly || saving || saveUncertain} errors={errors} onChange={patchDraft} onDatePickerOpenChange={setDatePickerOpen} /></section>
+        <div className="round-actions"><span>{readOnly ? '已归档；恢复订单后可修改' : record && !record.confirmed ? '确认入账成功后才保留截图' : ''}</span><Button type="button" variant="default" disabled={busy || saveUncertain} onClick={close}>{readOnly ? '关闭' : '取消'}</Button>{!readOnly && <Button type="submit" leftSection={<Check size={15} />} loading={saving} disabled={busy || uploadUncertain || (!saveUncertain && (!rentalReady || (Boolean(matchId) && !record)))}>{saveUncertain ? '重试核实本场' : record?.confirmed ? '保存校对' : '确认入账'}</Button>}</div>
       </form>
     </Modal>
-    <Modal opened={discardOpen} onClose={() => setDiscardOpen(false)} title="尚有未保存结果" centered size="sm"><p className="round-discard-copy">未保存内容将丢失，已上传的截图保留。</p><div className="round-discard-actions"><Button variant="default" onClick={() => setDiscardOpen(false)}>继续填写</Button><Button color="orange" onClick={() => { setDiscardOpen(false); onClose(); }}>放弃修改</Button></div></Modal>
+    <Modal opened={discardOpen} onClose={() => setDiscardOpen(false)} title="尚有未保存结果" centered size="sm"><p className="round-discard-copy">{record?.confirmed ? '放弃本次修改，原有已入账记录和截图保持不变。' : '放弃本次录入，未确认的内容和截图不会保留。'}</p><div className="round-discard-actions"><Button variant="default" onClick={() => setDiscardOpen(false)}>继续填写</Button><Button color="orange" onClick={() => { setDiscardOpen(false); onClose(); }}>放弃修改</Button></div></Modal>
     <Modal opened={imageOpen} onClose={() => setImageOpen(false)} title="本场原图" centered size="90%">{sourceUrl && <div className="round-image-large"><img src={sourceUrl} alt="本场原图放大查看" /></div>}</Modal>
   </>;
 }

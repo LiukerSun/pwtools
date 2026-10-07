@@ -64,6 +64,7 @@ test('原生客户端三类订单、模板、中文日期与深浅主题布局',
     await page.getByRole('option', { name: '晚间护航 · 护航单', exact: true }).click();
     await expect(create.getByLabel(/^约定带出金额/)).toHaveValue('5,000,000');
     await create.getByLabel(/^订单名称/).fill('模板新开护航');
+    await create.getByLabel('订单总价（元）').fill('300');
     await create.getByRole('button', { name: '创建订单', exact: true }).click();
     await expect(create).toHaveCount(0); await expect(order('模板新开护航')).toBeVisible();
     const changed = await page.evaluate(async id => {

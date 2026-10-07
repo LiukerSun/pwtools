@@ -1,0 +1,66 @@
+.transfer-form { display: grid; gap: 18px; }
+.transfer-form p { margin: 0; line-height: 1.7; }
+.transfer-context { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.transfer-context strong { overflow-wrap: anywhere; }
+.transfer-context > span, .transfer-small { color: var(--muted); font-size: 13px; line-height: 1.7; }
+.transfer-progress-source { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 16px; background: var(--panel-soft); border: 1px solid var(--border); border-radius: 10px; }
+.transfer-progress-source > p, .transfer-progress-source > small { grid-column: 1 / -1; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.transfer-progress-source > strong { font-variant-numeric: tabular-nums; }
+.transfer-progress-choice { display: grid; gap: 8px; }
+.transfer-progress-choice > label { font-size: 14px; font-weight: 500; }
+.transfer-progress-choice .mantine-SegmentedControl-label { min-height: 38px; display: flex; align-items: center; justify-content: center; }
+.transfer-preview { padding: 16px; background: var(--blue-soft); border: 1px solid var(--border); border-radius: 10px; display: grid; gap: 12px; }
+.transfer-preview > div, .transfer-current-income, .transfer-income-result { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+.transfer-preview > p { color: var(--muted); font-size: 13px; }
+.transfer-preview > .transfer-preview-total { border-top: 1px solid var(--border); padding-top: 12px; }
+.transfer-preview > .transfer-preview-total:first-child { padding-top: 0; border-top: 0; }
+.transfer-preview-total > strong { font-size: 24px; font-weight: 600; }
+.transfer-form-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; padding-top: 8px; }
+.transfer-form-actions .mantine-Button-root { min-height: 42px; }
+.transfer-order-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 0 20px 10px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.transfer-order-summary b { color: var(--text); font-weight: 500; }
+.transfer-state { padding: 4px 8px; border-radius: 6px; background: var(--blue-soft); color: var(--blue); font-size: 12px; font-weight: 500; }
+.transfer-state.settled { color: var(--mint); background: var(--panel-soft); }
+.transfer-state.waived { color: var(--muted); background: var(--panel-soft); }
+.ledger-order-status.transferred { color: var(--blue); background: var(--blue-soft); }
+.ledger-transfer-section { margin-top: 20px; }
+.transfer-history { padding: 14px 20px; margin-bottom: 14px; border-block: 1px solid var(--border); }
+.transfer-section-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; }
+.transfer-section-heading > strong { font-size: 14px; }
+.transfer-section-heading > span { color: var(--muted); font-size: 12px; }
+.transfer-history-item { margin-top: 12px; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.transfer-history-item > summary { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; cursor: pointer; padding: 14px; background: var(--panel-soft); font-size: 13px; font-variant-numeric: tabular-nums; }
+.transfer-history-item > summary::before { content: '›'; }
+.transfer-history-item[open] > summary::before { content: '⌄'; }
+.transfer-history-item > summary > span:first-of-type { flex: 1; }
+.transfer-history-item > summary:focus-visible, .transfer-audit > summary:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.transfer-snapshot { padding: 16px; border: 1px solid var(--border); border-radius: 9px; display: grid; gap: 12px; }
+.transfer-history-item > .transfer-snapshot { border: 0; border-radius: 0; }
+.transfer-facts { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; }
+.transfer-facts > div { min-width: 0; }
+.transfer-facts dt { color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+.transfer-facts dd { margin: 0; font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.transfer-note, .transfer-cash-history p, .transfer-audit p { margin: 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
+.transfer-income-result { padding: 12px 16px; background: var(--panel-soft); font-size: 13px; }
+.transfer-cash-history { padding: 16px; }
+.transfer-cash-history h4 { font-size: 13px; font-weight: 600; margin: 0 0 10px; }
+.transfer-cash-history ul, .transfer-audit ul { list-style: none; padding: 0; margin: 0; }
+.transfer-cash-history li, .transfer-audit li { display: grid; gap: 5px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.transfer-cash-history li:last-child, .transfer-audit li:last-child { border-bottom: 0; }
+.transfer-cash-history li > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; font-size: 13px; }
+.transfer-cash-history li strong, .transfer-cash-history li b { font-weight: 500; }
+.transfer-cash-history time, .transfer-audit time, .transfer-audit li > span { font-size: 12px; color: var(--muted); }
+.transfer-audit { padding: 0 16px 16px; font-size: 13px; }
+.transfer-audit > summary { padding: 8px 0; cursor: pointer; color: var(--muted); }
+@media (max-width: 540px) {
+  .transfer-form { gap: 16px; }
+  .transfer-preview, .transfer-progress-source, .transfer-snapshot { padding: 12px; }
+  .transfer-order-summary { padding-inline: 16px; }
+  .transfer-history { padding-inline: 16px; }
+  .transfer-form-actions .mantine-Button-root { flex: 1 1 auto; }
+  .transfer-progress-source { grid-template-columns: minmax(0, 1fr); }
+  .transfer-facts { gap: 12px; }
+  .ledger-settlement-shortcuts { gap: 8px; }
+  .ledger-settlement-shortcuts .mantine-Button-root { min-height: 38px; }
+}
+@media (max-width: 360px) { .transfer-facts { grid-template-columns: minmax(0, 1fr); } }

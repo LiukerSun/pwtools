@@ -9,6 +9,7 @@ import { NativeApplication } from './native-helpers';
 
 const DIRECTORY_PREFIX = 'pwtools-native-window-behavior-';
 const CLOSE_BEHAVIOR_KEY = 'pwtools:close-behavior';
+const TRAY_CLOSE_CONFIRMED_KEY = 'pwtools:tray-close-confirmed';
 const UNREACHABLE_API = 'http://127.0.0.1:1/api';
 
 async function cleanupDirectory(directory: string) {
@@ -26,11 +27,11 @@ async function clickWindowClose(page: Page) {
   });
 }
 
-async function expectTaskbarMinimized(app: NativeApplication, restore = true) {
-  await expect.poll(async () => (await app.windowState()).iconic, { timeout: 15_000 }).toBe(true);
+async function expectInTray(app: NativeApplication, restore = true) {
+  await expect.poll(async () => (await app.windowState()).visible, { timeout: 15_000 }).toBe(false);
   const state = await app.windowState();
-  expect(state.trayIconRegistered).toBe(false);
-  expect(state.visible).toBe(true);
+  expect(state.trayIconRegistered).toBe(true);
+  expect(state.visible).toBe(false);
   expect(state.appWindow).toBe(true);
   expect(state.toolWindow).toBe(false);
   expect(state.owner).toBe(0);
@@ -38,7 +39,7 @@ async function expectTaskbarMinimized(app: NativeApplication, restore = true) {
   expect(app.page.isClosed()).toBe(false);
   expect(await app.page.evaluate(() => Boolean(window.pwtools))).toBe(true);
   if (restore) {
-    await app.restoreWindow();
+    await app.activateTrayIcon();
     await expect.poll(async () => (await app.windowState()).visible, { timeout: 15_000 }).toBe(true);
     await expect.poll(async () => (await app.windowState()).iconic, { timeout: 15_000 }).toBe(false);
     const restored = await app.windowState();
@@ -48,6 +49,62 @@ async function expectTaskbarMinimized(app: NativeApplication, restore = true) {
     expect(restored.owner).toBe(0);
   }
 }
+
+test('开启关闭后台运行后隐藏窗口并注册系统托盘图标', async () => {
+  const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
+  let app: NativeApplication | undefined;
+  try {
+    app = await NativeApplication.launch(directory, UNREACHABLE_API);
+    const page = app.page;
+    await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+    await page.evaluate(({ behaviorKey, confirmedKey }) => {
+      localStorage.setItem(behaviorKey, 'minimize');
+      localStorage.setItem(confirmedKey, 'true');
+    }, { behaviorKey: CLOSE_BEHAVIOR_KEY, confirmedKey: TRAY_CLOSE_CONFIRMED_KEY });
+    await page.reload();
+    await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+    await clickWindowClose(page);
+    await expect.poll(async () => {
+      const state = await app!.windowState();
+      return { visible: state.visible, trayIconRegistered: state.trayIconRegistered };
+    }, { timeout: 5000 }).toEqual({ visible: false, trayIconRegistered: true });
+    expect(app.process.exitCode).toBeNull();
+  } finally {
+    await app?.close().catch(() => {});
+    await cleanupDirectory(directory);
+  }
+});
+
+test('旧版后台偏好首次关闭提示托盘运行，取消保持窗口和偏好', async () => {
+  const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
+  let app: NativeApplication | undefined;
+  try {
+    app = await NativeApplication.launch(directory, UNREACHABLE_API);
+    const page = app.page;
+    await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+    await page.evaluate(key => localStorage.setItem(key, 'minimize'), CLOSE_BEHAVIOR_KEY);
+    await page.reload();
+    await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+    await app.requestNativeClose();
+    const dialog = page.getByRole('dialog', { name: '关闭窗口', exact: true });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('是否继续在系统托盘运行');
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    const state = await app.windowState();
+    expect(state.visible).toBe(true);
+    expect(state.trayIconRegistered).toBe(false);
+    expect(await page.evaluate(key => localStorage.getItem(key), CLOSE_BEHAVIOR_KEY)).toBe('minimize');
+    expect(await page.evaluate(key => localStorage.getItem(key), TRAY_CLOSE_CONFIRMED_KEY)).toBeNull();
+    await clickWindowClose(page);
+    await dialog.getByRole('button', { name: '托盘运行', exact: true }).click();
+    await expectInTray(app);
+    expect(await page.evaluate(key => localStorage.getItem(key), TRAY_CLOSE_CONFIRMED_KEY)).toBe('true');
+  } finally {
+    await app?.close().catch(() => {});
+    await cleanupDirectory(directory);
+  }
+});
 
 test('原生窗口启动居中且完整位于显示器工作区', async ({}, testInfo) => {
   const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
@@ -78,7 +135,7 @@ test('原生窗口启动居中且完整位于显示器工作区', async ({}, tes
   }
 });
 
-test('最大化窗口最小化恢复保持布局，重复启动只唤回同一测试资料目录的实例', async ({}, testInfo) => {
+test('最大化窗口托盘隐藏恢复保持布局，重复启动只唤回同一测试资料目录的实例', async ({}, testInfo) => {
   test.setTimeout(120_000);
   const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
   let app: NativeApplication | undefined;
@@ -91,19 +148,19 @@ test('最大化窗口最小化恢复保持布局，重复启动只唤回同一�
     await expect.poll(async () => (await app!.windowState()).maximized).toBe(true);
     const maximized = await app.windowState();
     await app.requestNativeClose();
-    await page.getByRole('dialog', { name: '关闭窗口', exact: true }).getByRole('button', { name: '最小化到任务栏', exact: true }).click();
-    await expectTaskbarMinimized(app, false);
+    await page.getByRole('dialog', { name: '关闭窗口', exact: true }).getByRole('button', { name: '托盘运行', exact: true }).click();
+    await expectInTray(app, false);
     const minimized = await app.windowState();
     await app.restoreWindow();
     await expect.poll(async () => (await app!.windowState()).iconic).toBe(false);
     const restored = await app.windowState();
-    const restorePath = testInfo.outputPath('taskbar-maximized-restore.json');
+    const restorePath = testInfo.outputPath('tray-maximized-restore.json');
     await writeFile(restorePath, JSON.stringify({ maximized, minimized, restored, capturedProcessId: app.process.pid }, null, 2));
-    await testInfo.attach('taskbar-maximized-restore', { path: restorePath, contentType: 'application/json' });
+    await testInfo.attach('tray-maximized-restore', { path: restorePath, contentType: 'application/json' });
     expect(restored.maximized).toBe(true);
     expect({ left: restored.left, top: restored.top, width: restored.width, height: restored.height }).toEqual({ left: maximized.left, top: maximized.top, width: maximized.width, height: maximized.height });
     await app.requestNativeClose();
-    await expectTaskbarMinimized(app, false);
+    await expectInTray(app, false);
     expect(await app.activateExistingInstance()).toBe(0);
     await expect.poll(async () => (await app!.windowState()).visible).toBe(true);
     await expect.poll(async () => (await app!.windowState()).iconic).toBe(false);
@@ -115,16 +172,16 @@ test('最大化窗口最小化恢复保持布局，重复启动只唤回同一�
     expect(activated.owner).toBe(0);
     expect(app.process.exitCode).toBeNull();
     expect(page.isClosed()).toBe(false);
-    const path = testInfo.outputPath('taskbar-maximized-activation.json');
+    const path = testInfo.outputPath('tray-maximized-activation.json');
     await writeFile(path, JSON.stringify({ maximized, restored, activated, capturedProcessId: app.process.pid }, null, 2));
-    await testInfo.attach('taskbar-maximized-activation', { path, contentType: 'application/json' });
+    await testInfo.attach('tray-maximized-activation', { path, contentType: 'application/json' });
   } finally {
     await app?.close().catch(() => {});
     await cleanupDirectory(directory);
   }
 });
 
-test('首次关闭可取消，最小化到任务栏可恢复且重启后记忆选择', async () => {
+test('首次关闭可取消，托盘运行可恢复且重启后记忆选择', async () => {
   test.setTimeout(150_000);
   const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
   let app: NativeApplication | undefined;
@@ -135,7 +192,7 @@ test('首次关闭可取消，最小化到任务栏可恢复且重启后记忆�
     await clickWindowClose(page);
     const firstClose = page.getByRole('dialog', { name: '关闭窗口', exact: true });
     await expect(firstClose).toBeVisible();
-    await expect(firstClose).toContainText('任务栏');
+    await expect(firstClose).toContainText('系统托盘');
     await page.keyboard.press('Escape');
     await expect(firstClose).toHaveCount(0);
     expect(await page.evaluate(key => localStorage.getItem(key), CLOSE_BEHAVIOR_KEY)).toBeNull();
@@ -143,13 +200,14 @@ test('首次关闭可取消，最小化到任务栏可恢复且重启后记忆�
 
     await app.requestNativeClose();
     await expect(firstClose).toBeVisible();
-    await firstClose.getByRole('button', { name: '最小化到任务栏', exact: true }).click();
-    await expectTaskbarMinimized(app);
+    await firstClose.getByRole('button', { name: '托盘运行', exact: true }).click();
+    await expectInTray(app);
     expect(await page.evaluate(key => localStorage.getItem(key), CLOSE_BEHAVIOR_KEY)).toBe('minimize');
+    expect(await page.evaluate(key => localStorage.getItem(key), TRAY_CLOSE_CONFIRMED_KEY)).toBe('true');
     await expect(firstClose).toHaveCount(0);
 
     await clickWindowClose(page);
-    await expectTaskbarMinimized(app);
+    await expectInTray(app);
     await expect(firstClose).toHaveCount(0);
     await app.close();
     app = await NativeApplication.launch(directory, UNREACHABLE_API);
@@ -157,7 +215,7 @@ test('首次关闭可取消，最小化到任务栏可恢复且重启后记忆�
     await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
     expect(await page.evaluate(key => localStorage.getItem(key), CLOSE_BEHAVIOR_KEY)).toBe('minimize');
     await app.requestNativeClose();
-    await expectTaskbarMinimized(app);
+    await expectInTray(app);
     await expect(page.getByRole('dialog', { name: '关闭窗口', exact: true })).toHaveCount(0);
 
     // The ordinary title-bar minimize button retains normal taskbar behavior.
@@ -171,7 +229,7 @@ test('首次关闭可取消，最小化到任务栏可恢复且重启后记忆�
     // Explicit exit bypasses the remembered background preference,
     // then a restart retains the same compatible 'minimize' preference value.
     await app.requestNativeClose();
-    await expectTaskbarMinimized(app, false);
+    await expectInTray(app, false);
     await app.requestExplicitExit();
     await expect.poll(() => app!.process.exitCode, { timeout: 20_000 }).toBe(0);
     await app.close();
@@ -267,7 +325,7 @@ async function startWindowFixture() {
   };
 }
 
-test('设置记忆关闭方式，草稿与在途保存最小化到任务栏后继续保留', async () => {
+test('设置记忆关闭方式，草稿与在途保存托盘运行后继续保留', async () => {
   test.setTimeout(150_000);
   const directory = await mkdtemp(join(tmpdir(), DIRECTORY_PREFIX));
   const fixture = await startWindowFixture();
@@ -281,7 +339,7 @@ test('设置记忆关闭方式，草稿与在途保存最小化到任务栏后�
     await page.getByLabel(/^邮箱/).fill('window-fixture@example.test');
     await page.getByLabel(/^密码/).fill('Fixture-window-password!');
     await page.getByRole('button', { name: '登录', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     await app.setSize(960, 760);
     await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight }))).toEqual({ width: 960, height: 760 });
     await mkdir('.artifacts/window-behavior', { recursive: true });
@@ -291,17 +349,18 @@ test('设置记忆关闭方式，草稿与在途保存最小化到任务栏后�
       const firstClose = page.getByRole('dialog', { name: '关闭窗口', exact: true });
       await expect(firstClose).toBeVisible();
       await expect(firstClose).toBeInViewport({ ratio: 1 });
-      await expect(firstClose.getByRole('button', { name: '最小化到任务栏', exact: true })).toBeInViewport({ ratio: 1 });
+      await expect(firstClose.getByRole('button', { name: '托盘运行', exact: true })).toBeInViewport({ ratio: 1 });
       await page.screenshot({ path: `.artifacts/window-behavior/first-close-${mode}-960.png`, animations: 'disabled' });
       await page.keyboard.press('Escape');
       await expect(firstClose).toHaveCount(0);
     }
     await page.getByRole('button', { name: '切换至深色', exact: true }).click();
     await page.getByRole('navigation').getByRole('button', { name: '设置', exact: true }).click();
-    const closeSwitch = page.getByRole('switch', { name: /^关闭窗口时最小化到任务栏/ });
+    const closeSwitch = page.getByRole('switch', { name: /^关闭窗口时最小化到系统托盘/ });
     await expect(closeSwitch).toBeChecked();
     for (const mode of ['dark', 'light'] as const) {
       if (mode === 'light') await page.getByRole('button', { name: '切换至浅色', exact: true }).click();
+      await page.locator('.settings-close-switch').scrollIntoViewIfNeeded();
       await expect(closeSwitch).toBeInViewport({ ratio: 1 });
       await page.screenshot({ path: `.artifacts/window-behavior/settings-${mode}-960.png`, animations: 'disabled' });
     }
@@ -314,34 +373,39 @@ test('设置记忆关闭方式，草稿与在途保存最小化到任务栏后�
     app = await NativeApplication.launch(directory, fixture.apiUrl);
     page = app.page;
     page.on('pageerror', error => errors.push(error.message));
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     await page.getByRole('navigation').getByRole('button', { name: '设置', exact: true }).click();
-    const restoredSwitch = page.getByRole('switch', { name: /^关闭窗口时最小化到任务栏/ });
+    const restoredSwitch = page.getByRole('switch', { name: /^关闭窗口时最小化到系统托盘/ });
     await expect(restoredSwitch).not.toBeChecked();
     await restoredSwitch.check();
     expect(await page.evaluate(key => localStorage.getItem(key), CLOSE_BEHAVIOR_KEY)).toBe('minimize');
+    await clickWindowClose(page);
+    const firstTrayClose = page.getByRole('dialog', { name: '关闭窗口', exact: true });
+    await expect(firstTrayClose).toBeVisible();
+    await firstTrayClose.getByRole('button', { name: '托盘运行', exact: true }).click();
+    await expectInTray(app);
     await page.getByRole('navigation').getByRole('button', { name: '老板账本', exact: true }).click();
     await page.getByRole('button', { name: '添加老板', exact: true }).click();
     const form = page.getByRole('dialog', { name: '添加老板', exact: true });
     await form.getByLabel(/^老板称呼/).fill('后台保存测试老板');
-    await form.getByLabel(/^老板备注/).fill('任务栏最小化保留草稿和在途保存');
+    await form.getByLabel(/^老板备注/).fill('托盘运行保留草稿和在途保存');
     await clickWindowClose(page);
-    await expectTaskbarMinimized(app);
+    await expectInTray(app);
     await expect(page.getByRole('dialog', { name: '尚有未保存修改', exact: true })).toHaveCount(0);
     await expect(form.getByLabel(/^老板称呼/)).toHaveValue('后台保存测试老板');
-    await expect(form.getByLabel(/^老板备注/)).toHaveValue('任务栏最小化保留草稿和在途保存');
+    await expect(form.getByLabel(/^老板备注/)).toHaveValue('托盘运行保留草稿和在途保存');
 
     await form.getByRole('button', { name: '保存', exact: true }).click();
     await expect.poll(() => fixture.hasPendingSave).toBe(true);
     await expect(form.getByLabel(/^老板称呼/)).toBeDisabled();
     await app.requestNativeClose();
-    await expectTaskbarMinimized(app, false);
+    await expectInTray(app, false);
     await expect(page.getByText('当前操作尚未完成', { exact: true })).toHaveCount(0);
     fixture.releaseSave();
     await expect(form).toHaveCount(0);
-    expect((await app.windowState()).visible).toBe(true);
-    expect((await app.windowState()).iconic).toBe(true);
-    expect((await app.windowState()).trayIconRegistered).toBe(false);
+    expect((await app.windowState()).visible).toBe(false);
+    expect((await app.windowState()).iconic).toBe(false);
+    expect((await app.windowState()).trayIconRegistered).toBe(true);
     await app.restoreWindow();
     await expect.poll(async () => (await app!.windowState()).visible).toBe(true);
     expect((await app.windowState()).trayIconRegistered).toBe(false);
@@ -370,16 +434,16 @@ test('显式退出先恢复窗口，并保护草稿与在途保存，完成后�
     await page.getByLabel(/^邮箱/).fill('window-fixture@example.test');
     await page.getByLabel(/^密码/).fill('Fixture-window-password!');
     await page.getByRole('button', { name: '登录', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     await app.requestNativeClose();
-    await page.getByRole('dialog', { name: '关闭窗口', exact: true }).getByRole('button', { name: '最小化到任务栏', exact: true }).click();
-    await expectTaskbarMinimized(app);
+    await page.getByRole('dialog', { name: '关闭窗口', exact: true }).getByRole('button', { name: '托盘运行', exact: true }).click();
+    await expectInTray(app);
 
     await page.getByRole('button', { name: '添加老板', exact: true }).click();
     const form = page.getByRole('dialog', { name: '添加老板', exact: true });
-    await form.getByLabel(/^老板称呼/).fill('任务栏退出保护测试老板');
+    await form.getByLabel(/^老板称呼/).fill('托盘退出保护测试老板');
     await app.requestNativeClose();
-    await expectTaskbarMinimized(app, false);
+    await expectInTray(app, false);
     const minimizedWithDraft = await app.windowState();
     await app.requestExplicitExit();
     await expect.poll(async () => (await app!.windowState()).visible).toBe(true);
@@ -390,12 +454,12 @@ test('显式退出先恢复窗口，并保护草稿与在途保存，完成后�
     expect(app.process.exitCode).toBeNull();
     await guard.getByRole('button', { name: '继续填写', exact: true }).click();
     await expect(guard).toHaveCount(0);
-    await expect(form.getByLabel(/^老板称呼/)).toHaveValue('任务栏退出保护测试老板');
+    await expect(form.getByLabel(/^老板称呼/)).toHaveValue('托盘退出保护测试老板');
 
     await form.getByRole('button', { name: '保存', exact: true }).click();
     await expect.poll(() => fixture.hasPendingSave).toBe(true);
     await app.requestNativeClose();
-    await expectTaskbarMinimized(app, false);
+    await expectInTray(app, false);
     const minimizedDuringSave = await app.windowState();
     await app.requestExplicitExit();
     await expect.poll(async () => (await app!.windowState()).visible).toBe(true);
@@ -407,17 +471,17 @@ test('显式退出先恢复窗口，并保护草稿与在途保存，完成后�
     await expect(form.getByLabel(/^老板称呼/)).toBeDisabled();
     fixture.releaseSave();
     await expect(form).toHaveCount(0);
-    await expect(page.getByRole('region', { name: '老板详情与订单', exact: true })).toContainText('任务栏退出保护测试老板');
+    await expect(page.getByRole('region', { name: '老板详情与订单', exact: true })).toContainText('托盘退出保护测试老板');
     await app.requestNativeClose();
-    await expectTaskbarMinimized(app, false);
+    await expectInTray(app, false);
     await app.requestExplicitExit();
     await expect.poll(() => app!.process.exitCode, { timeout: 20_000 }).toBe(0);
     expect(fixture.saveRequests).toBe(1);
     expect(fixture.unexpected).toEqual([]);
     expect(errors).toEqual([]);
-    const path = testInfo.outputPath('taskbar-exit-protection.json');
+    const path = testInfo.outputPath('tray-exit-protection.json');
     await writeFile(path, JSON.stringify({ minimizedWithDraft, minimizedDuringSave, saveRequests: fixture.saveRequests, exitCode: app.process.exitCode }, null, 2));
-    await testInfo.attach('taskbar-exit-protection', { path, contentType: 'application/json' });
+    await testInfo.attach('tray-exit-protection', { path, contentType: 'application/json' });
   } finally {
     await app?.close().catch(() => {});
     await fixture.close();

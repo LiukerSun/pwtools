@@ -1,11 +1,12 @@
 use axum::{
     Router,
     body::{Body, Bytes},
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, Method, Request, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{any, post},
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use http_body_util::BodyExt;
 use image::{DynamicImage, ImageFormat, RgbImage};
 use pwtools_api::{
@@ -36,10 +37,12 @@ struct Objects {
     fail_delete: Arc<AtomicBool>,
     corrupt_read: Arc<AtomicBool>,
     gets: Arc<AtomicUsize>,
+    thumbnail_gets: Arc<AtomicUsize>,
 }
 async fn object(
     State(objects): State<Objects>,
     Path((bucket, key)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
     method: Method,
     headers: HeaderMap,
     bytes: Bytes,
@@ -69,6 +72,22 @@ async fn object(
             objects.gets.fetch_add(1, Ordering::SeqCst);
             match objects.bytes.lock().await.get(&key) {
                 Some(bytes) => {
+                    if let Some(process) = query.get("x-oss-process") {
+                        assert_eq!(
+                            process,
+                            "image/auto-orient,0/resize,m_lfit,w_216,h_122,limit_1/format,webp/quality,q_80"
+                        );
+                        objects.thumbnail_gets.fetch_add(1, Ordering::SeqCst);
+                        if objects.corrupt_read.load(Ordering::SeqCst) {
+                            return bytes.clone().into_response();
+                        }
+                        let mut result = Cursor::new(Vec::new());
+                        image::load_from_memory(bytes)
+                            .expect("mock original")
+                            .write_to(&mut result, ImageFormat::WebP)
+                            .expect("mock thumbnail");
+                        return result.into_inner().into_response();
+                    }
                     let mut bytes = bytes.clone();
                     if objects.corrupt_read.load(Ordering::SeqCst) {
                         bytes.push(0);
@@ -318,6 +337,58 @@ async fn flow(app: Router, legacy: Router, pool: PgPool, storage: Storage, objec
         image(1)
     );
     let reads = objects.gets.load(Ordering::SeqCst);
+    let thumbnail = request(
+        &app,
+        "GET",
+        &format!("{path}/thumbnail"),
+        vec![],
+        None,
+        Some(token),
+    )
+    .await;
+    assert_eq!(thumbnail.0, StatusCode::OK);
+    assert_eq!(
+        image::guess_format(&thumbnail.1).expect("thumbnail format"),
+        ImageFormat::WebP
+    );
+    assert_eq!(objects.thumbnail_gets.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        objects.gets.load(Ordering::SeqCst),
+        reads + 1,
+        "thumbnail should fetch only the processed object"
+    );
+    assert_eq!(
+        objects.bytes.lock().await.get(&row.1),
+        Some(&image(1)),
+        "original remains immutable"
+    );
+    let reads = objects.gets.load(Ordering::SeqCst);
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            &format!("{path}/thumbnail"),
+            vec![],
+            None,
+            Some(other)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            &format!("{path}/thumbnail"),
+            vec![],
+            None,
+            None
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(
         request(
             &app,
@@ -392,6 +463,19 @@ async fn flow(app: Router, legacy: Router, pool: PgPool, storage: Storage, objec
     );
     objects.fail_put.store(false, Ordering::SeqCst);
     objects.corrupt_read.store(true, Ordering::SeqCst);
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            &format!("{path}/thumbnail"),
+            vec![],
+            None,
+            Some(token)
+        )
+        .await
+        .0,
+        StatusCode::BAD_GATEWAY
+    );
     assert_eq!(
         request(
             &app,
@@ -494,5 +578,116 @@ async fn flow(app: Router, legacy: Router, pool: PgPool, storage: Storage, objec
     assert_eq!(
         storage::digest(stored.get(&old_key).expect("legacy original")),
         storage::digest(&image(4))
+    );
+    drop(stored);
+    // The new preview route never writes an OSS object or draft, even with OCR data.
+    let boss = call(
+        &app,
+        "POST",
+        "/api/bosses",
+        Some(json!({"display_name":"截图确认","game_name":"识别玩家","game_id":"","notes":""})),
+        Some(token),
+    )
+    .await
+    .1;
+    let order = call(&app,"POST",&format!("/api/bosses/{}/orders",boss["id"].as_str().unwrap()),Some(json!({"title":"确认截图","kind":"escort","target_quantity":1000,"failure_default_quantity":0,"note":""})),Some(token)).await.1;
+    let mut payload = json!({"name":"preview.png","content_type":"image/png","data_base64":STANDARD.encode(image(7)),"order_id":order["id"],"recognition":null});
+    let object_count = objects.bytes.lock().await.len();
+    let row_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/matches/preview-local",
+            Some(payload.clone()),
+            Some(token)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(objects.bytes.lock().await.len(), object_count);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        row_count
+    );
+    payload["input"] = json!({"order_id":order["id"],"confirmed":true,"player_name":"识别玩家","outcome":"success","amount":130,"fake_amount":131,"failure_extra_amount":0,"played_at":null,"note":""});
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/matches/confirm",
+            Some(payload.clone()),
+            Some(token)
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        row_count,
+        "failed confirmation rolls back the row"
+    );
+    payload["input"]["fake_amount"] = json!(0);
+    let confirmed = call(
+        &app,
+        "POST",
+        "/api/matches/confirm",
+        Some(payload.clone()),
+        Some(token),
+    )
+    .await;
+    assert_eq!(confirmed.0, StatusCode::CREATED);
+    assert_eq!(confirmed.1["record"]["confirmed"], true);
+    let confirmed_id = Uuid::parse_str(confirmed.1["record"]["id"].as_str().unwrap()).unwrap();
+    let confirmed_key =
+        sqlx::query_scalar::<_, String>("SELECT image_object_key FROM matches WHERE id=$1")
+            .bind(confirmed_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/matches/confirm",
+            Some(payload),
+            Some(token)
+        )
+        .await
+        .1["record"]["id"],
+        confirmed.1["record"]["id"]
+    );
+    // An old-client temporary row is cleaned together with both exact object keys.
+    assert_eq!(
+        pwtools_api::storage_migration::cleanup_unconfirmed(&pool, false, 100)
+            .await
+            .unwrap(),
+        1
+    );
+    sqlx::query("UPDATE object_storage_jobs SET available_at=now()")
+        .execute(&pool)
+        .await
+        .unwrap();
+    drain_jobs(&pool, &storage, 100).await.unwrap();
+    let stored = objects.bytes.lock().await;
+    assert!(!stored.contains_key(&old_key));
+    assert!(stored.contains_key(&confirmed_key));
+    assert!(stored.contains_key(&storage::snapshot_key(&confirmed_key).unwrap()));
+    assert!(stored.contains_key("bjxzp/keep.png"));
+    assert_eq!(
+        stored.len(),
+        3,
+        "only the confirmed image, its snapshot and the unrelated project remain; failed uploads are reclaimed"
     );
 }

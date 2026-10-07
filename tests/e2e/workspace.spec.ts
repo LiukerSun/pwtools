@@ -22,9 +22,10 @@ test('私人账本只保留基础账户，登录、外观、侧栏与退出正�
   expect(Object.keys(me).sort()).toEqual(['created_at', 'email', 'id']);
   expect(me.email).toBe(email);
   expect((await request.patch('http://localhost:8080/api/me', { headers, data: { bio: 'removed' } })).status()).toBe(405);
-  await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+  await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
   const navigation = page.getByRole('navigation', { name: '主导航' });
-  await expect(navigation.getByRole('button')).toHaveCount(3);
+  await expect(navigation.getByRole('button')).toHaveCount(4);
+  await expect(navigation.getByRole('button', { name: '租号管理', exact: true })).toBeVisible();
   await expect(navigation.getByRole('button', { name: '哈夫币汇率', exact: true })).toBeVisible();
   for (const name of ['工具箱', '个人资料', '快速切换', '搜索页面与工具', '战绩记录']) {
     await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0);
@@ -36,7 +37,7 @@ test('私人账本只保留基础账户，登录、外观、侧栏与退出正�
   await page.getByRole('button', { name: '收起侧栏', exact: true }).click();
   await expect(page.locator('.sidebar')).toHaveClass(/collapsed/);
   await navigation.getByRole('button', { name: '设置', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible();
+  await expect(page.getByRole('main', { name: '设置', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
   await expect(page.locator('.sidebar')).not.toHaveClass(/collapsed/);
   await navigation.getByRole('button', { name: '设置', exact: true }).click();
@@ -58,7 +59,7 @@ test('私人账本只保留基础账户，登录、外观、侧栏与退出正�
   await expect(page.getByText('邮箱或密码不正确，请重新输入', { exact: true })).toBeVisible();
   await page.getByLabel(/^密码/).fill(password);
   await page.getByRole('button', { name: '登录', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+  await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '账号菜单', exact: true }).click();
   await page.getByRole('menuitem', { name: '退出登录', exact: true }).click();
   await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();

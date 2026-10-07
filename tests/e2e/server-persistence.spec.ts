@@ -23,7 +23,7 @@ test('账号、老板备注、订单、流水和模板由服务器在独立客�
   expect(registration.status()).toBe(201);
   const apiUrl = registration.url().replace(/\/auth\/register$/, '');
   const firstSession: AuthResponse = await registration.json();
-  await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+  await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
 
   const boss = await addBoss(page, `同步老板-${id.slice(0, 8)}`);
   const order = await createOrder(page, `同步小时订单-${id.slice(0, 8)}`, 'hourly', async dialog => {

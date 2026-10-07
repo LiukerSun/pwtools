@@ -22,11 +22,60 @@ std::vector<unsigned char> Read(const std::filesystem::path& path) {
   return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+pwtools::OcrLine Line(std::string text, double x, double y, double width = 110, double height = 30) {
+  return {x, y, x + width, y + height, std::move(text), 0.99};
+}
+
+void CheckScoreboardOutcomes() {
+  const auto parse = [](const std::string& first, const std::string& second) {
+    // Measured table geometry, with generic player names and no screenshot data.
+    return pwtools::ParseScoreboard({
+      Line("越狱成功", 100, 170, 450, 138),
+      Line("带出价值", 485, 498, 115, 41), Line("击败干员", 752, 499, 115, 40),
+      Line(first, 261, 583, 92, 31), Line("队员1", 261, 615), Line("3,314,221", 488, 598, 150, 39),
+      Line(second, 261, 727, 92, 31), Line("队员2", 261, 759), Line("1,867,449", 488, 742, 150, 39),
+    }, 2560, 1440);
+  };
+  for (const auto success : {"撤离成功", "越狱成功", "越 狱 成 功"}) {
+    const auto result = parse(success, success);
+    Check(result["outcome"] == "success" && result["players"].size() == 2,
+          "successful prison escape must be recognized as successful extraction");
+    Check(result["players"][0]["player_name"] == "队员1" && result["players"][1]["player_name"] == "队员2",
+          "escape status must not replace player names");
+    Check(result["players"][0]["amount"] == 3314221 && result["players"][1]["amount"] == 1867449,
+          "successful escape must preserve value-column amounts");
+    Check(result["warnings"].empty(), "recognized escape rows must not require status correction");
+  }
+  for (const auto failed : {"撤离失败", "撤离失敗", "越狱失败", "越狱失敗", "越 狱 失 败"}) {
+    const auto result = parse(failed, failed);
+    Check(result["outcome"] == "failed" && result["players"].size() == 2,
+          "failed prison escape must be recognized despite the success banner");
+    Check(result["players"][0]["amount"] == 0 && result["players"][1]["amount"] == 0,
+          "failed escape must use the same zero-amount rule as failed extraction");
+    Check(result["raw_text"].get<std::string>().find(failed) != std::string::npos
+          && result["raw_text"].get<std::string>().find("1,867,449") != std::string::npos,
+          "escape parsing must preserve original OCR text");
+  }
+  for (const auto failed : {"撤离失败", "越狱失败"}) {
+    const auto mixed = parse("越狱成功", failed);
+    Check(mixed["outcome"] == "unknown" && mixed["players"][0]["outcome"] == "success"
+          && mixed["players"][1]["outcome"] == "failed" && mixed["players"][1]["amount"] == 0,
+          "mixed escape outcomes must remain independent of the banner and each other");
+  }
+  for (const auto unknown : {"", "越狱成功 越狱失败", "撤离成功 越狱失败", "越狱成功 撤离失败"}) {
+    const auto result = parse("越狱成功", unknown);
+    Check(result["outcome"] == "unknown" && result["players"].size() == 2
+          && result["players"][1]["outcome"] == "unknown" && result["players"][1]["amount"] == 1867449,
+          "missing or conflicting escape status must remain unknown");
+  }
+}
+
 }
 
 int wmain(int argc, wchar_t** argv) {
   try {
     Check(argc == 2, "local OCR runtime directory required");
+    CheckScoreboardOutcomes();
     pwtools::LocalOcr ocr(argv[1]);
     // Exercise the actual native decoder and inference without opening a window.
     const std::vector<unsigned char> png{

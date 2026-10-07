@@ -1,0 +1,24 @@
+.build-codes { display: grid; gap: 20px; }
+.build-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 0; }
+.build-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) 180px; gap: 12px; }
+.build-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 16px; }
+.build-card { padding: 22px; min-width: 0; }
+.build-card-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.build-card-heading h2 { font-size: 18px; margin: 0 0 8px; overflow-wrap: anywhere; }
+.build-actions { display: flex; gap: 2px; flex-shrink: 0; }
+.build-code-text { display: block; background: var(--blue-soft); padding: 12px; border-radius: 8px; color: var(--text); overflow-wrap: anywhere; user-select: text; margin-top: 18px; font-size: 13px; }
+.build-note { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.7; margin: 14px 0; }
+.build-attributes { margin-top: 18px; }
+.build-attributes dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; gap: 16px 10px; }
+.build-attributes dt, .build-source, .build-status { color: var(--muted); font-size: 12px; }
+.build-attributes dd { margin: 5px 0 0; font-size: 20px; font-weight: 600; }
+.build-attributes dd small { font-size: 12px; font-weight: 400; margin-left: 5px; color: var(--muted); }
+.build-source { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 16px; line-height: 1.6; }
+.build-empty { padding: 64px 20px; text-align: center; color: var(--muted); display: grid; justify-items: center; gap: 12px; }
+.build-empty h2 { font-size: 18px; color: var(--text); margin: 0; }
+.build-empty p { margin: 0; font-size: 14px; }
+.build-form { display: grid; gap: 18px; }
+.build-form-row { display: grid; grid-template-columns: 1fr 170px; gap: 12px; }
+.build-form-actions, .build-form-actions > div, .build-dialog-actions { display: flex; gap: 10px; justify-content: space-between; align-items: center; }
+.build-dialog-actions { justify-content: flex-end; margin-top: 20px; }
+@media (max-width: 600px) { .build-card { padding: 16px; } .build-toolbar { grid-template-columns: 1fr; } .build-form-row { grid-template-columns: 1fr; } .build-card-heading { flex-wrap: wrap; } }

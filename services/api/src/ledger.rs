@@ -8,7 +8,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgConnection};
+use sqlx::{FromRow, PgConnection, types::Json as DbJson};
 use uuid::Uuid;
 
 use crate::{
@@ -48,7 +48,7 @@ pub struct Boss {
 
 #[derive(Serialize)]
 pub struct Items<T> {
-    items: Vec<T>,
+    pub(crate) items: Vec<T>,
 }
 
 fn text(value: String, min: usize, max: usize, multiline: bool) -> Result<String, ApiError> {
@@ -118,7 +118,10 @@ pub async fn list_bosses(
 fn populate_boss(boss: &mut Boss, orders: &[ServiceOrder]) -> Result<(), ApiError> {
     let mut minutes = 0_i128;
     let mut amount = 0_i128;
-    for order in orders.iter().filter(|order| order.boss_id == boss.id) {
+    for order in orders
+        .iter()
+        .filter(|order| order.boss_id == boss.id && order.status != "archived")
+    {
         if order.status == "active" {
             boss.active_order_count += 1;
         }
@@ -212,6 +215,18 @@ pub async fn update_boss(
 #[derive(Clone, Deserialize, Serialize, FromRow)]
 #[serde(deny_unknown_fields)]
 pub struct OrderInput {
+    #[serde(default)]
+    #[sqlx(default)]
+    pub(crate) price_cents: Option<i64>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub(crate) participant_count: Option<i32>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub(crate) commission_bps: Option<i32>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub(crate) default_rental_session_id: Option<Uuid>,
     pub(crate) title: String,
     pub(crate) kind: String,
     pub(crate) target_quantity: i64,
@@ -253,12 +268,20 @@ fn manual_mode() -> String {
 }
 #[derive(Serialize)]
 pub struct ServiceOrder {
-    id: Uuid,
+    pub(crate) archived_at: Option<DateTime<Utc>>,
+    pub(crate) settlement_required: bool,
+    pub(crate) settlement_history: Vec<crate::settlements::Settlement>,
+    pub(crate) transfer_history: Vec<crate::transfers::Transfer>,
+    pub(crate) id: Uuid,
     boss_id: Uuid,
-    boss_name: String,
+    pub(crate) boss_name: String,
     boss_game_name: String,
-    title: String,
-    kind: String,
+    pub(crate) title: String,
+    pub(crate) price_cents: Option<i64>,
+    pub(crate) participant_count: Option<i32>,
+    pub(crate) commission_bps: Option<i32>,
+    default_rental_session_id: Option<Uuid>,
+    pub(crate) kind: String,
     target_quantity: i64,
     failure_default_quantity: i64,
     note: String,
@@ -267,19 +290,27 @@ pub struct ServiceOrder {
     failure_mode: String,
     configuration_locked: bool,
     best_round_quantity: i64,
-    completed_quantity: i64,
+    pub(crate) completed_quantity: i64,
     failure_quantity: i64,
     adjustment_quantity: i64,
-    total_quantity: i64,
-    remaining_quantity: i64,
+    pub(crate) total_quantity: i64,
+    pub(crate) remaining_quantity: i64,
     excess_quantity: i64,
-    status: &'static str,
+    pub(crate) status: &'static str,
     record_count: i64,
     created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    pub(crate) updated_at: DateTime<Utc>,
 }
 #[derive(FromRow)]
 struct OrderRow {
+    archived_at: Option<DateTime<Utc>>,
+    settlement_required: bool,
+    settlement_history: DbJson<Vec<crate::settlements::Settlement>>,
+    transfer_history: DbJson<Vec<crate::transfers::Transfer>>,
+    price_cents: Option<i64>,
+    participant_count: Option<i32>,
+    commission_bps: Option<i32>,
+    default_rental_session_id: Option<Uuid>,
     id: Uuid,
     boss_id: Uuid,
     boss_name: String,
@@ -303,8 +334,8 @@ struct OrderRow {
 }
 
 // Confirmed screenshots are a projection into the ledger, never a second stored entry.
-const ORDER_QUERY: &str = r#"SELECT o.id,o.boss_id,b.display_name AS boss_name,b.game_name AS boss_game_name,o.title,o.kind,o.target_quantity,o.failure_default_quantity,o.note,
-o.failure_trigger,o.failure_standard_quantity,o.failure_mode,
+const ORDER_QUERY: &str = r#"SELECT o.archived_at,o.settlement_required,o.settlement_history,o.transfer_history,o.id,o.boss_id,b.display_name AS boss_name,b.game_name AS boss_game_name,o.title,o.kind,o.target_quantity,o.failure_default_quantity,o.note,
+o.failure_trigger,o.failure_standard_quantity,o.failure_mode,o.price_cents,o.participant_count,o.commission_bps,o.default_rental_session_id,
 (EXISTS(SELECT 1 FROM ledger_entries WHERE user_id=o.user_id AND order_id=o.id) OR EXISTS(SELECT 1 FROM matches WHERE user_id=o.user_id AND order_id=o.id)) AS configuration_locked,
 tot.progress::text AS progress,tot.failure::text AS failure,tot.adjustment::text AS adjustment,tot.best,tot.record_count,o.created_at,GREATEST(o.updated_at,COALESCE(tot.latest,o.updated_at)) AS updated_at
 FROM service_orders o JOIN bosses b ON b.user_id=o.user_id AND b.id=o.boss_id CROSS JOIN LATERAL (
@@ -371,6 +402,14 @@ fn projection(row: OrderRow) -> Result<ServiceOrder, ApiError> {
         0
     };
     Ok(ServiceOrder {
+        archived_at: row.archived_at,
+        settlement_required: row.settlement_required,
+        settlement_history: row.settlement_history.0,
+        transfer_history: row.transfer_history.0,
+        price_cents: row.price_cents,
+        participant_count: row.participant_count,
+        commission_bps: row.commission_bps,
+        default_rental_session_id: row.default_rental_session_id,
         id: row.id,
         boss_id: row.boss_id,
         boss_name: row.boss_name,
@@ -391,7 +430,11 @@ fn projection(row: OrderRow) -> Result<ServiceOrder, ApiError> {
         total_quantity,
         remaining_quantity,
         excess_quantity,
-        status: if remaining_quantity == 0 {
+        status: if row.archived_at.is_some() {
+            "archived"
+        } else if row.settlement_required {
+            "active"
+        } else if remaining_quantity == 0 {
             "completed"
         } else {
             "active"
@@ -420,6 +463,16 @@ async fn fetch_orders(
         .into_iter()
         .map(projection)
         .collect()
+}
+
+pub(crate) async fn orders_for_rental(
+    connection: &mut PgConnection,
+    owner: Uuid,
+    rental: Uuid,
+) -> Result<Vec<ServiceOrder>, ApiError> {
+    sqlx::query_as::<_, OrderRow>(&format!("{ORDER_QUERY} WHERE o.user_id=$1 AND o.kind IN ('hourly','escort','single_round') AND o.id IN (SELECT order_id FROM rental_rounds WHERE user_id=$1 AND rental_session_id=$2) ORDER BY o.created_at,o.id"))
+        .bind(owner).bind(rental).fetch_all(connection).await.map_err(|_| ApiError::internal("rental orders lookup failed"))?
+        .into_iter().map(projection).collect()
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -464,10 +517,26 @@ pub async fn create_order(
     let boss = boss_detail(&state, session.user.id, boss_id).await?;
     let input = clean_order(input, &boss.game_name)?;
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO service_orders(id,user_id,boss_id,title,kind,target_quantity,failure_default_quantity,note,failure_trigger,failure_standard_quantity,failure_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("order creation transaction failed"))?;
+    crate::rentals::validate_reference(
+        &mut tx,
+        session.user.id,
+        input.default_rental_session_id,
+        None,
+    )
+    .await?;
+    sqlx::query("INSERT INTO service_orders(id,user_id,boss_id,title,kind,target_quantity,failure_default_quantity,note,failure_trigger,failure_standard_quantity,failure_mode,price_cents,participant_count,commission_bps,default_rental_session_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
         .bind(id).bind(session.user.id).bind(boss_id).bind(input.title).bind(input.kind).bind(input.target_quantity).bind(input.failure_default_quantity).bind(input.note)
         .bind(input.failure_trigger).bind(input.failure_standard_quantity).bind(input.failure_mode)
-        .execute(&state.pool).await.map_err(|_| ApiError::internal("order creation failed"))?;
+        .bind(input.price_cents).bind(input.participant_count).bind(input.commission_bps).bind(input.default_rental_session_id)
+        .execute(&mut *tx).await.map_err(|_| ApiError::internal("order creation failed"))?;
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("order creation commit failed"))?;
     Ok((
         StatusCode::CREATED,
         Json(
@@ -492,6 +561,22 @@ fn clean_order(input: OrderInput, game_name: &str) -> Result<OrderInput, ApiErro
 
 /// Validate reusable configuration independently of the boss selected when opening an order.
 pub(crate) fn clean_configuration(mut input: OrderInput) -> Result<OrderInput, ApiError> {
+    match (
+        input.price_cents,
+        input.participant_count,
+        input.commission_bps,
+    ) {
+        (None, None, None) => {}
+        (Some(price), Some(people), Some(commission))
+            if (0..=crate::rentals::MAX_CENTS).contains(&price)
+                && (1..=100).contains(&people)
+                && (0..=10_000).contains(&commission) => {}
+        _ => {
+            return Err(ApiError::validation(
+                "请完整填写订单总价、接单人数（1–100）和抽成（0–100%）",
+            ));
+        }
+    }
     supported_kind(&input.kind)?;
     crate::retired_fields::configuration(
         input.retired_item_id.as_deref(),
@@ -555,9 +640,17 @@ pub async fn update_order(
             "订单已有记录，类型和核心规则不能修改；名称、备注及未来默认补量仍可修改",
         ));
     }
-    sqlx::query("UPDATE service_orders SET title=$3,kind=$4,target_quantity=$5,failure_default_quantity=$6,note=$7,failure_trigger=$8,failure_standard_quantity=$9,failure_mode=$10,updated_at=now() WHERE user_id=$1 AND id=$2")
+    crate::rentals::validate_reference(
+        &mut tx,
+        session.user.id,
+        input.default_rental_session_id,
+        None,
+    )
+    .await?;
+    sqlx::query("UPDATE service_orders SET title=$3,kind=$4,target_quantity=$5,failure_default_quantity=$6,note=$7,failure_trigger=$8,failure_standard_quantity=$9,failure_mode=$10,price_cents=COALESCE($11,price_cents),participant_count=COALESCE($12,participant_count),commission_bps=COALESCE($13,commission_bps),default_rental_session_id=$14,updated_at=now() WHERE user_id=$1 AND id=$2")
         .bind(session.user.id).bind(id).bind(input.title).bind(input.kind).bind(input.target_quantity).bind(input.failure_default_quantity).bind(input.note)
         .bind(input.failure_trigger).bind(input.failure_standard_quantity).bind(input.failure_mode)
+        .bind(input.price_cents).bind(input.participant_count).bind(input.commission_bps).bind(input.default_rental_session_id)
         .execute(&mut *tx).await.map_err(|_|ApiError::internal("order update failed"))?;
     validate_order(&mut tx, session.user.id, id).await?;
     tx.commit()
@@ -574,6 +667,7 @@ pub async fn update_order(
 
 #[derive(FromRow)]
 pub(crate) struct OrderBinding {
+    pub archived_at: Option<DateTime<Utc>>,
     pub kind: String,
     pub boss_key: String,
     pub game_name: String,
@@ -583,7 +677,7 @@ pub(crate) struct OrderBinding {
     pub failure_standard_quantity: i64,
     pub failure_mode: String,
 }
-const BINDING_QUERY: &str = "SELECT o.kind,b.boss_key,b.game_name,o.failure_default_quantity,o.target_quantity,o.failure_trigger,o.failure_standard_quantity,o.failure_mode FROM service_orders o JOIN bosses b ON b.user_id=o.user_id AND b.id=o.boss_id WHERE o.user_id=$1 AND o.id=$2";
+const BINDING_QUERY: &str = "SELECT o.archived_at,o.kind,b.boss_key,b.game_name,o.failure_default_quantity,o.target_quantity,o.failure_trigger,o.failure_standard_quantity,o.failure_mode FROM service_orders o JOIN bosses b ON b.user_id=o.user_id AND b.id=o.boss_id WHERE o.user_id=$1 AND o.id=$2";
 
 pub(crate) fn money(
     amount: Option<i64>,
@@ -670,6 +764,7 @@ pub(crate) async fn lock_order(
         .map_err(|_| ApiError::internal("order lock failed"))?
         .ok_or_else(missing)?;
     supported_kind(&order.kind)?;
+    ensure_writable(&order)?;
     Ok(order)
 }
 pub(crate) async fn validate_order(
@@ -698,6 +793,7 @@ pub(crate) async fn validate_order(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EntryInput {
+    rental_session_id: Option<Uuid>,
     kind: String,
     quantity: i64,
     occurred_at: Option<DateTime<Utc>>,
@@ -712,6 +808,7 @@ pub struct EntryInput {
 }
 #[derive(Serialize, FromRow)]
 pub struct LedgerEntry {
+    rental_session_id: Option<Uuid>,
     id: Uuid,
     order_id: Uuid,
     kind: String,
@@ -727,8 +824,8 @@ pub struct LedgerEntry {
     outcome: Option<String>,
     failure_extra_amount: i64,
 }
-const ENTRY_COLUMNS: &str = "id,order_id,kind,quantity,occurred_at,note,'manual'::text AS source,NULL::uuid AS match_id,amount,fake_amount,net_amount,credited_amount,outcome,failure_extra_amount";
-const EVENTS: &str = "SELECT id,order_id,kind,quantity,occurred_at,note,'manual'::text AS source,NULL::uuid AS match_id,amount,fake_amount,net_amount,credited_amount,outcome,failure_extra_amount FROM ledger_entries WHERE user_id=$1 AND order_id=$2 UNION ALL SELECT id,order_id,CASE WHEN outcome='success' THEN 'progress' ELSE 'failure' END,CASE WHEN outcome='success' THEN COALESCE(credited_amount,0) ELSE failure_extra_amount END,COALESCE(played_at,created_at),note,'screenshot'::text,id,amount,fake_amount,net_amount,credited_amount,outcome,failure_extra_amount FROM matches WHERE user_id=$1 AND order_id=$2 AND confirmed";
+const ENTRY_COLUMNS: &str = "id,order_id,kind,quantity,occurred_at,note,'manual'::text AS source,NULL::uuid AS match_id,amount,fake_amount,net_amount,credited_amount,outcome,failure_extra_amount,rental_session_id";
+const EVENTS: &str = "SELECT id,order_id,kind,quantity,occurred_at,note,'manual'::text AS source,NULL::uuid AS match_id,amount,fake_amount,net_amount,credited_amount,outcome,failure_extra_amount,rental_session_id FROM ledger_entries WHERE user_id=$1 AND order_id=$2 UNION ALL SELECT id,order_id,CASE WHEN outcome='success' THEN 'progress' ELSE 'failure' END,CASE WHEN outcome='success' THEN COALESCE(credited_amount,0) ELSE failure_extra_amount END,COALESCE(played_at,created_at),note,'screenshot'::text,id,amount,fake_amount,net_amount,credited_amount,outcome,failure_extra_amount,rental_session_id FROM matches WHERE user_id=$1 AND order_id=$2 AND confirmed";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PageQuery {
@@ -810,6 +907,7 @@ pub async fn add_entry(
     let input = normalize_entry(input, &order)?;
     if let Some(existing) = existing {
         if existing.kind != input.kind
+            || existing.rental_session_id != input.rental_session_id
             || existing.quantity != input.quantity
             || existing.note != input.note
             || existing.amount != input.amount
@@ -828,9 +926,20 @@ pub async fn add_entry(
         }
         return Ok((StatusCode::OK, Json(existing)));
     }
-    let entry=sqlx::query_as(&format!("INSERT INTO ledger_entries(id,user_id,order_id,kind,quantity,occurred_at,note,idempotency_key,amount,fake_amount,outcome,failure_extra_amount) VALUES($1,$2,$3,$4,$5,COALESCE($6,now()),$7,$8,$9,$10,$11,$12) RETURNING {ENTRY_COLUMNS}"))
+    if input.kind == "adjustment" && input.rental_session_id.is_some() {
+        return Err(ApiError::validation("约定调整不是对局，不能指定用号"));
+    }
+    crate::rentals::validate_reference(
+        &mut tx,
+        session.user.id,
+        input.rental_session_id,
+        Some(input.occurred_at.unwrap_or_else(Utc::now)),
+    )
+    .await?;
+    let entry=sqlx::query_as(&format!("INSERT INTO ledger_entries(id,user_id,order_id,kind,quantity,occurred_at,note,idempotency_key,amount,fake_amount,outcome,failure_extra_amount,rental_session_id) VALUES($1,$2,$3,$4,$5,COALESCE($6,now()),$7,$8,$9,$10,$11,$12,$13) RETURNING {ENTRY_COLUMNS}"))
         .bind(Uuid::new_v4()).bind(session.user.id).bind(id).bind(input.kind).bind(input.quantity).bind(input.occurred_at).bind(input.note).bind(input.idempotency_key)
         .bind(input.amount).bind(input.fake_amount).bind(input.outcome).bind(input.failure_extra_amount.unwrap_or(0))
+        .bind(input.rental_session_id)
         .fetch_one(&mut *tx).await.map_err(|_|ApiError::internal("ledger insertion failed"))?;
     validate_order(&mut tx, session.user.id, id).await?;
     tx.commit()
@@ -943,4 +1052,85 @@ pub async fn delete_entry(
         .await
         .map_err(|_| ApiError::internal("ledger deletion commit failed"))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) fn ensure_writable(order: &OrderBinding) -> Result<(), ApiError> {
+    if order.archived_at.is_some() {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "ORDER_ARCHIVED",
+            "订单已归档，请先恢复订单再修改或记录对局",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn projection_in(
+    connection: &mut PgConnection,
+    owner: Uuid,
+    id: Uuid,
+) -> Result<ServiceOrder, ApiError> {
+    let row =
+        sqlx::query_as::<_, OrderRow>(&format!("{ORDER_QUERY} WHERE o.user_id=$1 AND o.id=$2"))
+            .bind(owner)
+            .bind(id)
+            .fetch_optional(connection)
+            .await
+            .map_err(|_| ApiError::internal("order projection failed"))?
+            .ok_or_else(missing)?;
+    projection(row)
+}
+
+pub(crate) async fn locked_projection(
+    connection: &mut PgConnection,
+    owner: Uuid,
+    id: Uuid,
+) -> Result<ServiceOrder, ApiError> {
+    sqlx::query("SELECT id FROM service_orders WHERE user_id=$1 AND id=$2 FOR UPDATE")
+        .bind(owner)
+        .bind(id)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(|_| ApiError::internal("order settlement lock failed"))?
+        .ok_or_else(missing)?;
+    projection_in(connection, owner, id).await
+}
+
+impl ServiceOrder {
+    pub(crate) fn current_transfer(&self) -> Option<&crate::transfers::Transfer> {
+        self.transfer_history
+            .last()
+            .filter(|transfer| transfer.cancelled_at.is_none())
+    }
+
+    // A handoff earns only the transferred-out share; the next team's share is not a loss.
+    pub(crate) fn reference_income(&self) -> Option<i64> {
+        self.current_transfer()
+            .map(|transfer| transfer.expected_income_cents)
+            .or_else(|| self.original_income())
+    }
+
+    pub(crate) fn original_income(&self) -> Option<i64> {
+        match (
+            self.price_cents,
+            self.participant_count,
+            self.commission_bps,
+        ) {
+            (Some(price), Some(people), Some(commission)) => {
+                Some(crate::rentals::net_income(price, people, commission))
+            }
+            _ => None,
+        }
+    }
+    pub(crate) fn settled_income(&self) -> Option<i64> {
+        if let Some(transfer) = self.current_transfer() {
+            transfer.final_income_cents
+        } else if self.status == "archived" {
+            self.settlement_history.last().map(|s| s.final_income_cents)
+        } else if self.status == "completed" && !self.settlement_required {
+            self.original_income()
+        } else {
+            None
+        }
+    }
 }

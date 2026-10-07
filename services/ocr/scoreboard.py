@@ -50,8 +50,8 @@ def compact(text: str) -> str:
 
 def status(text: str) -> str:
     normalized = compact(text)
-    success = "撤离成功" in normalized
-    failed = "撤离失败" in normalized or "撤离失敗" in normalized
+    success = any(label in normalized for label in ("撤离成功", "越狱成功"))
+    failed = any(label in normalized for label in ("撤离失败", "撤离失敗", "越狱失败", "越狱失敗"))
     if success != failed:
         return "success" if success else "failed"
     return "unknown"

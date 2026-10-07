@@ -12,6 +12,9 @@ export interface AppInfo { version: string; apiUrl: string; persistentSession: b
 export interface UpdateState {
   phase: 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'download-error' | 'ready' | 'installing' | 'error';
   currentVersion: string;
+  currentChannel: 'stable' | 'beta';
+  betaEnabled: boolean;
+  latestChannel: 'stable' | 'beta' | null;
   latestVersion: string | null;
   downloadedBytes: number;
   totalBytes: number;
@@ -30,6 +33,7 @@ export interface MatchPlayer {
   confidence: number | null;
 }
 export interface MatchRecord {
+  rental_session_id?: string | null;
   id: string;
   order_id: string | null;
   failure_extra_amount: number;
@@ -57,7 +61,7 @@ export interface MatchRecord {
   created_at: string;
   updated_at: string;
 }
-export type MatchUpdateInput = Pick<MatchRecord, 'player_name' | 'outcome' | 'amount' | 'confirmed' | 'played_at' | 'note'> & { failure_extra_amount?: number; fake_amount?: number | null; order_id?: string };
+export type MatchUpdateInput = Pick<MatchRecord, 'player_name' | 'outcome' | 'amount' | 'confirmed' | 'played_at' | 'note'> & { failure_extra_amount?: number; fake_amount?: number | null; order_id?: string; rental_session_id?: string | null };
 export interface MatchUploadInput { name: string; content_type: string; data: Uint8Array; order_id?: string }
 export interface ImportHotkey { code: string; ctrl: boolean; alt: boolean; shift: boolean; win: boolean }
 export interface MatchUploadResponse { record: MatchRecord; duplicate: boolean }
@@ -87,6 +91,10 @@ export interface Boss extends BossInput {
   updated_at: string;
 }
 export interface OrderInput {
+  price_cents?: number | null;
+  participant_count?: number | null;
+  commission_bps?: number | null;
+  default_rental_session_id?: string | null;
   title: string;
   kind: OrderKind;
   target_quantity: number;
@@ -96,7 +104,76 @@ export interface OrderInput {
   failure_mode?: FailureMode;
   note: string;
 }
+export interface OrderSettlement {
+  id: string; mode: 'waiver' | 'refund' | 'completed'; original_income_cents: number;
+  final_income_cents: number; note: string; archived_at: string; restored_at: string | null;
+}
+export interface OrderArchiveInput {
+  id: string; mode: OrderSettlement['mode']; final_income_cents: number; note: string; expected_updated_at: string;
+}
+export interface OrderTransferInput {
+  id: string;
+  prepaid: boolean;
+  progress_bps: number | null;
+  note: string;
+  expected_updated_at: string;
+}
+export type OrderTransferAction = 'settle' | 'cancel' | 'refund' | 'confirm_refund';
+export interface OrderTransferActionInput {
+  id: string;
+  transfer_id: string;
+  action: OrderTransferAction;
+  amount_cents?: number;
+  final_income_cents?: number;
+  mode?: 'refund' | 'waiver';
+  note: string;
+  expected_updated_at: string;
+}
+export interface TransferCashEvent {
+  id: string;
+  kind: 'settlement' | 'refund';
+  direction: 'receipt' | 'payment';
+  amount_cents: number;
+  note: string;
+  created_at: string;
+}
+export interface TransferEvent {
+  id: string;
+  action: OrderTransferAction;
+  amount_cents: number | null;
+  final_income_cents: number | null;
+  mode: 'refund' | 'waiver' | null;
+  note: string;
+  created_at: string;
+}
+export interface OrderTransfer {
+  id: string;
+  prepaid: boolean;
+  progress_bps: number | null;
+  progress_numerator: number;
+  progress_denominator: number;
+  original_income_cents: number;
+  expected_income_cents: number;
+  expected_cash_cents: number;
+  agreed_income_cents: number;
+  amount_due_cents: number;
+  final_income_cents: number | null;
+  pending_refund_cents: number;
+  status: 'pending' | 'settled' | 'waived' | 'cancelled';
+  refund_mode: 'refund' | 'waiver' | null;
+  note: string;
+  created_at: string;
+  settled_at: string | null;
+  cancelled_at: string | null;
+  cash_events: TransferCashEvent[];
+  events: TransferEvent[];
+  original_order: Pick<ServiceOrder, 'title' | 'kind' | 'price_cents' | 'participant_count' | 'commission_bps' | 'completed_quantity' | 'total_quantity' | 'target_quantity' | 'failure_quantity' | 'adjustment_quantity'>;
+}
 export interface ServiceOrder extends OrderInput {
+  transfer_history?: OrderTransfer[];
+  archived_at?: string | null;
+  settlement_required?: boolean;
+  settlement_history?: OrderSettlement[];
   failure_trigger: FailureTrigger;
   failure_standard_quantity: number;
   failure_mode: FailureMode;
@@ -112,7 +189,7 @@ export interface ServiceOrder extends OrderInput {
   total_quantity: number;
   remaining_quantity: number;
   excess_quantity: number;
-  status: 'active' | 'completed';
+  status: 'active' | 'completed' | 'archived';
   record_count: number;
   created_at: string;
   updated_at: string;
@@ -128,6 +205,7 @@ export interface OrderTemplate extends OrderTemplateInput {
 }
 export type LedgerEntryKind = 'progress' | 'failure' | 'adjustment';
 export interface LedgerEntry {
+  rental_session_id?: string | null;
   id: string;
   order_id: string;
   kind: LedgerEntryKind;
@@ -144,6 +222,7 @@ export interface LedgerEntry {
   match_id: string | null;
 }
 export interface LedgerEntryInput {
+  rental_session_id?: string | null;
   kind: LedgerEntryKind;
   quantity: number;
   occurred_at: string | null;
@@ -156,13 +235,79 @@ export interface LedgerEntryInput {
 }
 export interface LedgerPage { items: LedgerEntry[]; total: number; page: number; page_size: number }
 
+export interface RentalAccountInput { id: string; name: string; note: string }
+export interface RentalAccount extends RentalAccountInput { created_at: string; updated_at: string }
+export interface RentalSessionInput {
+  id: string;
+  account_id: string;
+  coin_per_yuan: number;
+  /** Equipment quotes use 1/10000 yuan; preserve the scale used by earlier clients. */
+  aw_price: number;
+  helmet_price: number;
+  armor_price: number;
+  initial_coins: number;
+  deposit_cents: number;
+  started_at: string;
+  note: string;
+}
+export interface RentalSession extends RentalSessionInput {
+  account_name: string;
+  returned_at: string | null;
+  final_cost_cents: number | null;
+  round_count: number;
+  created_at: string;
+  updated_at: string;
+}
+export interface RentalReturnInput { final_cost_cents: number; returned_at?: string | null }
+export interface RentalOrderAnalysis {
+  original_income_cents: number | null;
+  lost_income_cents: number | null;
+  settlement_mode: OrderSettlement['mode'] | 'transfer' | null;
+  order_id: string;
+  title: string;
+  boss_name: string;
+  order_status: 'active' | 'completed' | 'archived';
+  rental_rounds: number;
+  total_rounds: number;
+  order_income_cents: number | null;
+  income_cents: number | null;
+  income_status: 'settled' | 'pending' | 'missing_finance';
+}
+export interface RentalAnalysis {
+  original_income_cents: number;
+  lost_income_cents: number;
+  affected_order_count: number;
+  affected_round_count: number;
+  original_profit_cents: number | null;
+  session: RentalSession;
+  orders: RentalOrderAnalysis[];
+  round_count: number;
+  order_count: number;
+  pending_order_count: number;
+  income_cents: number;
+  profit_cents: number | null;
+  refund_cents: number | null;
+  supplement_cents: number | null;
+}
+
 export interface DesktopBridge {
+  listBuildCodes(): Promise<{ items: WeaponBuildCode[] }>;
+  createBuildCode(input: WeaponBuildCodeInput): Promise<WeaponBuildCode>;
+  updateBuildCode(id: string, input: WeaponBuildCodeInput): Promise<WeaponBuildCode>;
+  deleteBuildCode(id: string): Promise<void>;
+  lookupBuildCode(input: WeaponBuildCodeInput): Promise<BuildCodeLookup>;
+  listRentalAccounts(): Promise<{ items: RentalAccount[] }>;
+  createRentalAccount(input: RentalAccountInput): Promise<RentalAccount>;
+  listRentalSessions(): Promise<{ items: RentalSession[] }>;
+  createRentalSession(input: RentalSessionInput): Promise<RentalSession>;
+  returnRentalSession(id: string, input: RentalReturnInput): Promise<RentalSession>;
+  rentalAnalysis(id: string): Promise<RentalAnalysis>;
   health(): Promise<HealthResponse>;
   register(input: RegisterInput): Promise<User>;
   login(input: LoginInput): Promise<User>;
   me(): Promise<User>;
   logout(): Promise<void>;
-  windowControl(action: 'minimize' | 'maximize' | 'restore' | 'close'): Promise<void>;
+  windowControl(action: 'minimize' | 'hide-to-tray' | 'maximize' | 'restore' | 'close'): Promise<void>;
   setWindowTheme(theme: 'dark' | 'light'): Promise<void>;
   setImportHotkey(shortcut: ImportHotkey | null): Promise<void>;
   captureScreen(): Promise<MatchUploadInput | null>;
@@ -170,11 +315,13 @@ export interface DesktopBridge {
   appInfo(): Promise<AppInfo>;
   getUpdateState(): Promise<UpdateState>;
   checkForUpdates(): Promise<UpdateState>;
+  setBetaParticipation(enabled: boolean): Promise<UpdateState>;
   downloadUpdate(): Promise<UpdateState>;
   installUpdate(): Promise<void>;
   onCloseRequested?(handler: () => void): () => void;
   onExitRequested?(handler: () => void): () => void;
   onImportRequested?(handler: () => void): () => void;
+  confirmMatch(image: MatchUploadInput, input: MatchUpdateInput, record: MatchRecord): Promise<MatchUploadResponse>;
   uploadMatch(input: MatchUploadInput): Promise<MatchUploadResponse>;
   listMatches(page?: number, pageSize?: number, orderId?: string, confirmed?: boolean): Promise<MatchListResponse>;
   matchStats(orderId?: string): Promise<MatchStats>;
@@ -183,12 +330,17 @@ export interface DesktopBridge {
   recognizeMatch(id: string): Promise<MatchRecord>;
   deleteMatch(id: string): Promise<void>;
   matchImage(id: string): Promise<MatchImage>;
+  matchThumbnail(id: string): Promise<MatchImage>;
   matchSettings(): Promise<MatchSettings>;
   updateMatchSettings(input: MatchSettings): Promise<MatchSettings>;
   listBosses(search?: string): Promise<{ items: Boss[] }>;
   getBoss(id: string): Promise<Boss>;
   createBoss(input: BossInput): Promise<Boss>;
   updateBoss(id: string, input: BossInput): Promise<Boss>;
+  archiveOrder(id: string, input: OrderArchiveInput): Promise<ServiceOrder>;
+  restoreOrder(id: string, settlementId: string): Promise<ServiceOrder>;
+  transferOrder(id: string, input: OrderTransferInput): Promise<ServiceOrder>;
+  transferOrderAction(id: string, input: OrderTransferActionInput): Promise<ServiceOrder>;
   listOrders(bossId?: string): Promise<{ items: ServiceOrder[] }>;
   getOrder(id: string): Promise<ServiceOrder>;
   createOrder(bossId: string, input: OrderInput): Promise<ServiceOrder>;
@@ -204,4 +356,22 @@ export interface DesktopBridge {
 
 declare global {
   interface Window { pwtools?: DesktopBridge }
+}
+
+export interface WeaponBuildCodeInput { code: string; weapon_name: string; mode: '烽火地带' | '全面战场'; note: string }
+export interface BuildCodeAttributes {
+  source: string;
+  fetched_at: string;
+  provider_id: number | null;
+  price: number | null;
+  properties: { name: string; value: number; change: string }[];
+}
+export type BuildCodeLookupStatus = 'matched' | 'unmatched' | 'unavailable' | 'not_configured';
+export interface BuildCodeLookup { status: BuildCodeLookupStatus; attributes: BuildCodeAttributes | null }
+export interface WeaponBuildCode extends WeaponBuildCodeInput {
+  id: string;
+  attributes: BuildCodeAttributes | null;
+  lookup_status: BuildCodeLookupStatus;
+  created_at: string;
+  updated_at: string;
 }

@@ -6,6 +6,7 @@
 #include <dwmapi.h>
 #include <wincrypt.h>
 #include <shlobj.h>
+#include <shellapi.h>
 #include <shlwapi.h>
 #include <wrl.h>
 #include <WebView2.h>
@@ -34,8 +35,11 @@ namespace {
 constexpr UINT ReplyMessage = WM_APP + 1;
 constexpr UINT ForceCloseMessage = WM_APP + 2;
 constexpr UINT UpdateInstallReplyMessage = WM_APP + 3;
+constexpr UINT TrayMessage = WM_APP + 4;
+constexpr UINT TrayIconId = 1;
 constexpr UINT WindowRestoreCommand = 0x8001;
 constexpr UINT WindowExitCommand = 0x8002;
+const UINT TaskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
 constexpr int ImportHotkeyIdA = 0x7001;
 constexpr int ImportHotkeyIdB = 0x7002;
 constexpr wchar_t WindowClass[] = L"PWToolsWebView2";
@@ -154,6 +158,9 @@ class Host {
   bool ready = false;
   bool debug = false;
   bool restoreMaximized = false;
+  bool trayHidden = false;
+  bool trayRegistered = false;
+  bool trayVersion4 = false;
   bool pendingImport = false;
   bool installingUpdate = false;
   COLORREF backgroundColor = RGB(17, 23, 34);
@@ -195,13 +202,69 @@ class Host {
     Post({{"event", "close-requested"}});
   }
 
+  NOTIFYICONDATAW TrayIcon() const {
+    NOTIFYICONDATAW icon{sizeof(NOTIFYICONDATAW)};
+    icon.hWnd = window;
+    icon.uID = TrayIconId;
+    icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+    icon.uCallbackMessage = TrayMessage;
+    icon.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
+    wcscpy_s(icon.szTip, L"PWTools");
+    return icon;
+  }
+
+  bool AddTrayIcon() {
+    if (trayRegistered) return true;
+    auto icon = TrayIcon();
+    if (!icon.hIcon || !Shell_NotifyIconW(NIM_ADD, &icon)) return false;
+    trayRegistered = true;
+    icon.uVersion = NOTIFYICON_VERSION_4;
+    trayVersion4 = Shell_NotifyIconW(NIM_SETVERSION, &icon) != FALSE;
+    return true;
+  }
+
+  void RemoveTrayIcon() {
+    if (!trayRegistered) return;
+    auto icon = TrayIcon();
+    Shell_NotifyIconW(NIM_DELETE, &icon);
+    trayRegistered = trayVersion4 = false;
+  }
+
+  void HideToTray() {
+    if (trayHidden) return;
+    // Register a working restore entry before removing the taskbar button.
+    if (!AddTrayIcon()) throw pwtools::ApiFailure("TRAY_UNAVAILABLE", "无法显示系统托盘图标，窗口仍保持打开，请稍后重试。");
+    if (!IsIconic(window)) restoreMaximized = IsZoomed(window) != FALSE;
+    trayHidden = true;
+    ShowWindow(window, SW_HIDE);
+    if (controller) controller->put_IsVisible(FALSE);
+  }
+
   void RestoreWindow() {
+    trayHidden = false;
     // SW_RESTORE alone can turn a previously maximized window into its normal
     // placement. Keep the last non-minimized state for every activation path.
     ShowWindow(window, IsIconic(window) ? (restoreMaximized ? SW_MAXIMIZE : SW_RESTORE) : SW_SHOW);
     if (controller) controller->put_IsVisible(TRUE);
     Resize();
+    RemoveTrayIcon();
     SetForegroundWindow(window);
+  }
+
+  void TrayMenu() {
+    const auto menu = CreatePopupMenu();
+    if (!menu) { RestoreWindow(); return; }
+    AppendMenuW(menu, MF_STRING, WindowRestoreCommand, L"打开 PWTools");
+    AppendMenuW(menu, MF_STRING, WindowExitCommand, L"退出应用");
+    SetMenuDefaultItem(menu, WindowRestoreCommand, FALSE);
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    SetForegroundWindow(window);
+    const auto command = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD, cursor.x, cursor.y, 0, window, nullptr);
+    DestroyMenu(menu);
+    PostMessageW(window, WM_NULL, 0, 0);
+    if (command) SendMessageW(window, WM_COMMAND, command, 0);
+    else if (trayRegistered) { auto icon = TrayIcon(); Shell_NotifyIconW(NIM_SETFOCUS, &icon); }
   }
 
   void MinimizeWindow() {
@@ -313,6 +376,12 @@ class Host {
         return;
       }
       if (installingUpdate) throw pwtools::ApiFailure("UPDATE_BUSY", "正在准备安装更新，请稍候。");
+      if (method == "setBetaParticipation") {
+        if (args.size() != 1 || !args[0].is_boolean()) throw pwtools::ApiFailure("INVALID_INPUT", "测试体验开关须为开启或关闭。");
+        updater->SetBetaParticipation(args[0].get<bool>());
+        Post({{"id", id}, {"ok", true}, {"data", updater->State()}});
+        return;
+      }
       if (method == "installUpdate") {
         if (!args.empty()) throw pwtools::ApiFailure("INVALID_INPUT", "更新安装不接受额外参数。");
         if (requests->load() || (screenCapture && screenCapture->Active())) throw pwtools::ApiFailure("BUSY", "请等待当前保存或截图完成后再安装。");
@@ -333,6 +402,7 @@ class Host {
         if (args.size() != 1 || !args[0].is_string()) throw pwtools::ApiFailure("INVALID_INPUT", "窗口操作不正确。");
         const auto action = args[0].get<std::string>();
         if (action == "minimize") MinimizeWindow();
+        else if (action == "hide-to-tray") HideToTray();
         else if (action == "restore") RestoreWindow();
         else if (action == "maximize") ShowWindow(window, IsZoomed(window) ? SW_RESTORE : SW_MAXIMIZE);
         else if (action == "close") { forceClose = true; PostMessageW(window, ForceCloseMessage, 0, 0); }
@@ -437,7 +507,7 @@ class Host {
     }
     ComPtr<ICoreWebView2Controller2> controller2;
     if (SUCCEEDED(controller.As(&controller2))) controller2->put_DefaultBackgroundColor({255, 17, 23, 34});
-    Check(controller->put_IsVisible(IsIconic(window) ? FALSE : TRUE));
+    Check(controller->put_IsVisible(trayHidden || IsIconic(window) ? FALSE : TRUE));
     EventRegistrationToken registration{};
     Check(view->add_ProcessFailed(Callback<ICoreWebView2ProcessFailedEventHandler>([this](ICoreWebView2*, ICoreWebView2ProcessFailedEventArgs* args) -> HRESULT {
       COREWEBVIEW2_PROCESS_FAILED_KIND kind{};
@@ -456,7 +526,21 @@ class Host {
       return S_OK;
     }).Get(), &registration));
     Check(view->add_FrameNavigationStarting(Callback<ICoreWebView2NavigationStartingEventHandler>([](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT { args->put_Cancel(TRUE); return S_OK; }).Get(), &registration));
-    Check(view->add_NewWindowRequested(Callback<ICoreWebView2NewWindowRequestedEventHandler>([](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT { args->put_Handled(TRUE); return S_OK; }).Get(), &registration));
+    Check(view->add_NewWindowRequested(Callback<ICoreWebView2NewWindowRequestedEventHandler>([this](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+      args->put_Handled(TRUE);
+      BOOL userInitiated = FALSE;
+      LPWSTR uri = nullptr;
+      args->get_IsUserInitiated(&userInitiated);
+      args->get_Uri(&uri);
+      if (userInitiated && uri && std::wstring(uri) == L"https://kook.vip/Uf1rPU") {
+        const auto result = ShellExecuteW(window, L"open", uri, nullptr, nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(result) <= 32) {
+          MessageBoxW(window, L"无法打开浏览器，请手动访问 https://kook.vip/Uf1rPU。", L"PWTools", MB_OK | MB_ICONERROR);
+        }
+      }
+      CoTaskMemFree(uri);
+      return S_OK;
+    }).Get(), &registration));
     Check(view->add_PermissionRequested(Callback<ICoreWebView2PermissionRequestedEventHandler>([](ICoreWebView2*, ICoreWebView2PermissionRequestedEventArgs* args) -> HRESULT {
       args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
       return S_OK;
@@ -504,7 +588,7 @@ class Host {
     fs::create_directories(dataDir);
     const auto configuredApi = Environment(L"PWTOOLS_API_URL");
     api = std::make_shared<pwtools::ApiBridge>(configuredApi.empty() ? PWTOOLS_DEFAULT_API_URL : Utf8(configuredApi), dataDir);
-    updater = std::make_shared<pwtools::Updater>(api->ApiUrl(), PWTOOLS_VERSION, dataDir, ExecutableDirectory());
+    updater = std::make_shared<pwtools::Updater>(api->ApiUrl(), PWTOOLS_VERSION, dataDir, ExecutableDirectory(), PWTOOLS_RELEASE_CHANNEL);
     updater->Check();
     const auto dev = Environment(L"PWTOOLS_DEV_URL");
     if (!dev.empty()) {
@@ -549,6 +633,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(host));
   }
   if (!host) return DefWindowProcW(window, message, wParam, lParam);
+  if (TaskbarCreatedMessage && message == TaskbarCreatedMessage) {
+    host->trayRegistered = host->trayVersion4 = false;
+    if (host->trayHidden && !host->AddTrayIcon()) host->RestoreWindow();
+    return 0;
+  }
   switch (message) {
     case WM_NCCALCSIZE: return 0;
     case WM_NCACTIVATE:
@@ -584,7 +673,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_SIZE:
       if (wParam == SIZE_MAXIMIZED) host->restoreMaximized = true;
       else if (wParam == SIZE_RESTORED) host->restoreMaximized = false;
-      if (host->controller) host->controller->put_IsVisible(wParam == SIZE_MINIMIZED ? FALSE : TRUE);
+      if (host->controller) host->controller->put_IsVisible(host->trayHidden || wParam == SIZE_MINIMIZED ? FALSE : TRUE);
       if (wParam != SIZE_MINIMIZED) host->Resize();
       return 0;
     case WM_DPICHANGED: {
@@ -611,7 +700,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_CLOSE: host->CloseRequested(); return 0;
     case WM_SYSCOMMAND:
       if ((wParam & 0xfff0) == SC_MINIMIZE) { host->MinimizeWindow(); return 0; }
-      if ((wParam & 0xfff0) == SC_RESTORE && IsIconic(window)) { host->RestoreWindow(); return 0; }
+      if ((wParam & 0xfff0) == SC_RESTORE && (IsIconic(window) || host->trayHidden)) { host->RestoreWindow(); return 0; }
       break;
     case WM_COMMAND:
       if (LOWORD(wParam) == WindowRestoreCommand) { host->RestoreWindow(); return 0; }
@@ -620,6 +709,14 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_HOTKEY:
       if (host->importHotkeyId && wParam == static_cast<WPARAM>(host->importHotkeyId)) host->ImportRequested();
       return 0;
+    case TrayMessage: {
+      const UINT notification = host->trayVersion4 ? LOWORD(lParam) : static_cast<UINT>(lParam);
+      const UINT iconId = host->trayVersion4 ? HIWORD(lParam) : static_cast<UINT>(wParam);
+      if (!host->trayHidden || iconId != TrayIconId) return 0;
+      if (notification == WM_LBUTTONUP || notification == WM_LBUTTONDBLCLK || notification == NIN_SELECT || notification == NIN_KEYSELECT) host->RestoreWindow();
+      else if (notification == WM_CONTEXTMENU || (!host->trayVersion4 && notification == WM_RBUTTONUP)) host->TrayMenu();
+      return 0;
+    }
     case ForceCloseMessage: host->forceClose = true; DestroyWindow(window); return 0;
     case UpdateInstallReplyMessage: {
       std::unique_ptr<std::string> reply(reinterpret_cast<std::string*>(lParam));
@@ -635,6 +732,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
       return 0;
     }
     case WM_DESTROY:
+      host->RemoveTrayIcon();
       if (host->screenCapture) host->screenCapture->Cancel();
       if (host->importHotkeyId) UnregisterHotKey(window, host->importHotkeyId);
       if (!host->profileWindowProperty.empty()) RemovePropW(window, host->profileWindowProperty.c_str());

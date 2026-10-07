@@ -83,6 +83,7 @@ export class NativeApplication {
   async windowState(): Promise<NativeWindowState> { return inspectCapturedWindow(this.process, 'inspect'); }
   async notifyFrameActivation(active: boolean): Promise<NativeWindowState> { return inspectCapturedWindow(this.process, active ? 'frame-active' : 'frame-inactive'); }
   async restoreWindow(): Promise<void> { await inspectCapturedWindow(this.process, 'restore'); }
+  async activateTrayIcon(): Promise<void> { await inspectCapturedWindow(this.process, 'tray-activate'); }
   async requestExplicitExit(): Promise<void> { await inspectCapturedWindow(this.process, 'explicit-exit'); }
   async sendRegisteredHotkey(shortcut: ImportHotkey): Promise<void> { await sendCapturedHotkey(this.process, shortcut); }
   async notifyRegisteredHotkey(shortcut: ImportHotkey): Promise<void> {
@@ -128,7 +129,7 @@ export class NativeApplication {
   }
 }
 
-async function inspectCapturedWindow(child: ChildProcess, action: 'inspect' | 'restore' | 'explicit-exit' | 'hotkey-notification' | 'present-pattern' | 'frame-active' | 'frame-inactive', shortcut?: ImportHotkey, patternWindow = false): Promise<NativeWindowState> {
+async function inspectCapturedWindow(child: ChildProcess, action: 'inspect' | 'restore' | 'tray-activate' | 'explicit-exit' | 'hotkey-notification' | 'present-pattern' | 'frame-active' | 'frame-inactive', shortcut?: ImportHotkey, patternWindow = false): Promise<NativeWindowState> {
   if (process.platform !== 'win32' || !child.pid || child.exitCode !== null) throw new Error('测试原生窗口进程不存在');
   // Enumerate only the captured child PID and expected application class. Never
   // inspect, restore, or close a normal user profile or another application's HWND.
@@ -189,6 +190,7 @@ if ([PWToolsCapturedWindow]::SendMessageTimeout($script:capturedWindow, 0x86, [U
 [void][PWToolsCapturedWindow]::DwmFlush()` : ''}
 ${action === 'present-pattern' && patternWindow ? "if (-not [PWToolsCapturedWindow]::SetWindowPos($script:capturedWindow, [IntPtr]::new(-1), 0, 0, 0, 0, 0x43)) { throw 'Owned pattern presentation failed' }; [void][PWToolsCapturedWindow]::RedrawWindow($script:capturedWindow, [IntPtr]::Zero, [IntPtr]::Zero, 0x105)" : ''}
 ${action === 'restore' ? "if (-not [PWToolsCapturedWindow]::PostMessage($script:capturedWindow, 0x112, [UIntPtr]::new(0xF120), [IntPtr]::Zero)) { throw 'Captured taskbar restore command failed' }" : ''}
+${action === 'tray-activate' ? "if (-not [PWToolsCapturedWindow]::PostMessage($script:capturedWindow, 0x8004, [UIntPtr]::Zero, [IntPtr]::new(0x10400))) { throw 'Captured tray activation failed' }" : ''}
 ${action === 'hotkey-notification' ? `[void][PWToolsCapturedWindow]::PostMessage($script:capturedWindow, 0x312, [UIntPtr]::new(0x7001), [IntPtr]::new(${((0x70 + Number(shortcut!.code.slice(1)) - 1) << 16) | 7}))
 if (-not [PWToolsCapturedWindow]::PostMessage($script:capturedWindow, 0x312, [UIntPtr]::new(0x7002), [IntPtr]::new(${((0x70 + Number(shortcut!.code.slice(1)) - 1) << 16) | 7}))) { throw 'Captured hotkey notification failed' }` : ''}
 $trayIdentifier = [PWToolsCapturedWindow+NotifyIconIdentifier]::new()

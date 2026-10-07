@@ -30,6 +30,7 @@ test('个人模板保存完整默认值，复制开单可改数值，模板编�
   await expect(create.getByLabel('约定陪玩时长小时', { exact: true })).toHaveValue('2');
   await create.getByLabel('约定陪玩时长小时', { exact: true }).fill('3');
   await create.getByLabel(/^订单名称/).fill('本次三小时');
+  await create.getByLabel('订单总价（元）').fill('300');
   const copied = page.waitForResponse(response => /\/api\/bosses\/[^/]+\/orders$/.test(response.url()) && response.request().method() === 'POST');
   await create.getByRole('button', { name: '创建订单', exact: true }).click();
   const order: ServiceOrder = await (await copied).json();

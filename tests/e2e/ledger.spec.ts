@@ -27,7 +27,7 @@ test('先选老板再记场，多老板多订单独立记账，保存和取消�
   await page.getByRole('button', { name: '刷新老板订单', exact: true }).click();
   await expect(orderArticle(page, escort.title)).toContainText('8,000,000');
   await expect(orderArticle(page, second.title)).toContainText('4,000,000');
-  await page.getByRole('button', { name: '返回所有老板', exact: true }).click();
+  await page.getByRole('button', { name: '返回', exact: true }).click();
   await expect(page.getByRole('row', { name: '小桃老板老板汇总', exact: true })).toContainText('12,000,000');
   const b = await addBoss(page, '团团老板', '团团吃大饼');
   const other = await createOrder(page, '团团专属护航', 'escort', async dialog => { await dialog.getByLabel(/^约定带出金额/).fill('2000000'); });
@@ -39,7 +39,7 @@ test('先选老板再记场，多老板多订单独立记账，保存和取消�
   expect((await ledger.get<Boss>(`/bosses/${a.id}`)).remaining_amount).toBe(12000000);
   expect((await ledger.get<Boss>(`/bosses/${b.id}`)).remaining_amount).toBe(1500000);
   expect((await ledger.get<ServiceOrder>(`/orders/${hourly.id}`)).remaining_quantity).toBe(75);
-  await page.getByRole('button', { name: '返回所有老板', exact: true }).click();
+  await page.getByRole('button', { name: '返回', exact: true }).click();
   await page.getByRole('button', { name: '查看小桃老板订单', exact: true }).click();
   const article = orderArticle(page, escort.title);
   await article.getByRole('button', { name: `${escort.title}场次账本`, exact: true }).click();

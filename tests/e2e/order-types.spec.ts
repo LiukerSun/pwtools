@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
-import type { Boss, LedgerEntry, ServiceOrder } from '../../apps/desktop/src/shared/contracts';
+import type { Boss, LedgerEntry, RentalAccount, RentalSession, ServiceOrder } from '../../apps/desktop/src/shared/contracts';
 import { addBoss, confirmRound, createOrder, openLedger, openOrderAction, openRound, orderArticle, selectOption } from './ledger-helpers';
 
 async function openPrivateLedger(page: Page) {
@@ -10,6 +10,56 @@ async function openPrivateLedger(page: Page) {
   await expect(page.getByRole('region', { name: '老板详情与订单', exact: true })).toBeVisible();
   return { ...ledger, boss };
 }
+
+test('订单默认账号只允许租用中账号，已还默认回退且读取失败不能保存', async ({ page }) => {
+  const ledger = await openPrivateLedger(page);
+  const rentals: RentalSession[] = [];
+  for (const name of ['已还默认账号', '租用中默认账号']) {
+    const account = await ledger.post<RentalAccount>('/rental-accounts', { id: randomUUID(), name, note: '' });
+    rentals.push(await ledger.post<RentalSession>('/rental-sessions', {
+      id: randomUUID(), account_id: account.id, coin_per_yuan: 500000,
+      aw_price: 1000, helmet_price: 1000, armor_price: 1000, initial_coins: 10000000,
+      deposit_cents: 20000, started_at: new Date(Date.now() - 3600000).toISOString(), note: '',
+    }));
+  }
+  const oldOrder = await ledger.post<ServiceOrder>(`/bosses/${ledger.boss.id}/orders`, {
+    title: '已有默认账号订单', kind: 'hourly', target_quantity: 120, failure_default_quantity: 0,
+    note: '', price_cents: 20000, participant_count: 1, commission_bps: 0, default_rental_session_id: rentals[0].id,
+  });
+  await ledger.post(`/orders/${oldOrder.id}/entries`, { kind: 'progress', quantity: 30, note: '', occurred_at: null, idempotency_key: randomUUID(), rental_session_id: rentals[0].id });
+  await ledger.patch(`/rental-sessions/${rentals[0].id}/return`, { final_cost_cents: 3000 });
+  await page.getByRole('button', { name: '刷新老板订单', exact: true }).click();
+  const created = await createOrder(page, '过滤默认账号新订单', 'hourly', async form => {
+    await form.getByLabel('约定陪玩时长小时', { exact: true }).fill('1');
+    await form.getByRole('combobox', { name: '默认使用账号', exact: true }).click();
+    await expect(page.getByRole('option', { name: /^已还默认账号/ })).toHaveCount(0);
+    await page.getByRole('option', { name: /^租用中默认账号/ }).click();
+  });
+  expect(created.default_rental_session_id).toBe(rentals[1].id);
+
+  let unavailable = true;
+  await page.route('**/api/rental-sessions', async route => {
+    if (unavailable) return route.fulfill({ status: 503, json: { error: { code: 'UNAVAILABLE', message: '账号状态读取失败，请重试。' } } });
+    return route.continue();
+  });
+  await openOrderAction(page, oldOrder.title, '订单配置');
+  const config = page.getByRole('dialog', { name: '订单配置', exact: true });
+  await expect(config.getByText('账号状态读取失败，请重试。', { exact: true })).toBeVisible();
+  await expect(config.getByRole('button', { name: '保存配置', exact: true })).toBeDisabled();
+  unavailable = false;
+  await config.getByRole('button', { name: '重新读取账号', exact: true }).click();
+  const selected = config.getByRole('combobox', { name: '默认使用账号', exact: true });
+  await expect(selected).toHaveValue('自己账号');
+  await selected.click();
+  await expect(page.getByRole('option', { name: /^已还默认账号/ })).toHaveCount(0);
+  await page.getByRole('option', { name: '自己账号', exact: true }).click();
+  await config.getByRole('button', { name: '保存配置', exact: true }).click();
+  await expect(config).toHaveCount(0);
+  expect((await ledger.get<ServiceOrder>(`/orders/${oldOrder.id}`)).default_rental_session_id).toBeNull();
+  const history = await ledger.get<{ items: RentalSession[] }>('/rental-sessions');
+  expect(history.items.find(rental => rental.id === rentals[0].id)?.round_count).toBe(1);
+  expect(ledger.errors).toEqual([]);
+});
 
 async function showCompletedOrders(page: Page) {
   const completed = page.getByRole('button', { name: /^已完成\s*\d+/ });
@@ -48,7 +98,7 @@ test('三种订单配置分别保存且不提供对赌与物品目录', async ({
   await page.keyboard.press('Escape');
   const after = await ledger.get<Boss>(`/bosses/${ledger.boss.id}`);
   expect(after.active_order_count).toBe(3);
-  await page.getByRole('button', { name: '返回所有老板', exact: true }).click();
+  await page.getByRole('button', { name: '返回', exact: true }).click();
   const row = page.getByRole('row', { name: '三类订单老板老板汇总', exact: true });
   await expect(row).toContainText('2,000,000 哈夫币');
   await expect(row).toContainText('2 小时 15 分钟');

@@ -124,7 +124,7 @@ test(`原生窗口阻止未决记账退出，${loss}和限流后只记一场`, a
       await bridge.register({ email: `pending-${id}@example.test`, password: `Test-${id}!` });
     }, randomUUID());
     await page.reload();
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     const seeded = await page.evaluate(async () => {
       const bridge: DesktopBridge = window.pwtools!;
       const boss = await bridge.createBoss({ display_name: '恢复测试老板', game_id: '', game_name: '', notes: '未决结果核实后离开' });

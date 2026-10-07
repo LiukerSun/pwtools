@@ -10,6 +10,7 @@ test('真实截图经过 WebView2 原生二进制桥：本地 OCR、去重、原
   test.skip(!process.env.PWTOOLS_OCR_SAMPLE, '设置 PWTOOLS_OCR_SAMPLE 为本地三角洲样例，不将用户原图提交到仓库');
   test.setTimeout(240_000);
   const source = await readFile(process.env.PWTOOLS_OCR_SAMPLE!);
+  expect(source.byteLength).toBeGreaterThan(96 * 1024);
   const sha = createHash('sha256').update(source).digest('hex');
   const encoded = source.toString('base64');
   const dataDir = await mkdtemp(join(tmpdir(), 'pwtools-native-e2e-'));
@@ -24,9 +25,9 @@ test('真实截图经过 WebView2 原生二进制桥：本地 OCR、去重、原
     }, randomUUID());
     // Reload restores the session owned by the native host, without exposing its token.
     await page.reload();
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     await expect(page.getByRole('navigation').getByRole('button', { name: '战绩记录', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('navigation').getByRole('button')).toHaveCount(3);
+    await expect(page.getByRole('navigation').getByRole('button')).toHaveCount(4);
     const context = await page.evaluate(async () => {
       const bridge: DesktopBridge = window.pwtools!;
       const boss = await bridge.createBoss({ display_name: '团团老板', game_id: 'boss-001', game_name: '团团吃大饼', notes: '先核对原图再记账' });
@@ -42,27 +43,17 @@ test('真实截图经过 WebView2 原生二进制桥：本地 OCR、去重、原
     const recognitionStarted = Date.now();
     await dialog.getByLabel('导入本场截图', { exact: true }).setInputFiles(process.env.PWTOOLS_OCR_SAMPLE!);
     await expect(dialog.getByLabel(/^带出金额/)).toHaveValue('3,314,221', { timeout: 90_000 });
-    console.info(`Local OCR import and original save: ${(Date.now() - recognitionStarted) / 1000} seconds`);
+    console.info(`Local OCR preview: ${(Date.now() - recognitionStarted) / 1000} seconds; ${source.byteLength} original bytes`);
     await expect(dialog.getByLabel(/^假账扣除/)).toHaveValue('');
     await dialog.getByLabel(/^假账扣除/).fill('314221');
     await expect(dialog.getByRole('region', { name: '本场净值', exact: true }).locator('strong').last()).toHaveText('3,000,000');
-    await dialog.getByRole('button', { name: '保存草稿', exact: true }).click();
+    const previewState = await page.evaluate(async orderId => ({ list: await window.pwtools!.listMatches(1, 20, orderId), order: await window.pwtools!.getOrder(orderId) }), context.order.id);
+    expect(previewState.list.items).toHaveLength(0);
+    expect(previewState.order.record_count).toBe(0);
+    await expect(dialog.getByRole('button', { name: '保存草稿', exact: true })).toHaveCount(0);
+    await dialog.getByRole('button', { name: '确认入账', exact: true }).click();
     await expect(dialog).toHaveCount(0);
-    const savedDraft = await page.evaluate(async orderId => {
-      const bridge = window.pwtools!;
-      return { list: await bridge.listMatches(1, 20, orderId, false), order: await bridge.getOrder(orderId) };
-    }, context.order.id);
-    expect(savedDraft.list.items).toHaveLength(1);
-    expect(savedDraft.list.items[0].confirmed).toBe(false);
-    expect(savedDraft.order.record_count).toBe(0);
     const history = article.getByRole('button', { name: '桌面第一笔护航场次账本', exact: true });
-    await history.click();
-    await article.getByRole('region', { name: '待确认截图', exact: true }).getByRole('button', { name: '继续填写', exact: true }).click();
-    const resumed = page.getByRole('dialog', { name: '校对此场', exact: true });
-    await expect(resumed.getByLabel(/^带出金额/)).toHaveValue('3,314,221');
-    await expect(resumed.getByLabel(/^假账扣除/)).toHaveValue('314,221');
-    await resumed.getByRole('button', { name: '确认入账', exact: true }).click();
-    await expect(resumed).toHaveCount(0);
     await expect(article).toContainText('7,000,000 哈夫币');
     const record = await page.evaluate(async orderId => {
       const bridge = window.pwtools!;
@@ -70,7 +61,6 @@ test('真实截图经过 WebView2 原生二进制桥：本地 OCR、去重、原
       return { record: list.items[0], stats: await bridge.matchStats(orderId), drafts: await bridge.listMatches(1, 20, orderId, false), order: await bridge.getOrder(orderId) };
     }, context.order.id);
     expect(record.record.order_id).toBe(context.order.id);
-    expect(record.record.id).toBe(savedDraft.list.items[0].id);
     expect(record.record.player_name).toBe('团团吃大饼');
     expect(record.record.confirmed).toBe(true);
     expect(record.record.image_sha256).toBe(sha);
@@ -103,7 +93,17 @@ test('真实截图经过 WebView2 原生二进制桥：本地 OCR、去重、原
     }, record.record.id);
     expect(original).toEqual({ sha, type: 'image/png', size: source.byteLength, typedArray: true });
     if (await history.getAttribute('aria-expanded') !== 'true') await history.click();
-    await article.getByRole('button', { name: '查看此场', exact: true }).click();
+    const thumbnail = article.getByRole('button', { name: /^查看对局截图/ });
+    await expect(thumbnail.getByRole('img')).toHaveJSProperty('naturalWidth', 216);
+    expect(record.record.image_width).toBeGreaterThan(216);
+    await thumbnail.click();
+    const preview = page.getByRole('dialog', { name: /^对局截图 ·/ });
+    await expect(preview.getByRole('img', { name: '对局截图原图', exact: true })).toHaveJSProperty('naturalWidth', record.record.image_width);
+    await expect(page.getByRole('dialog', { name: '校对此场', exact: true })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(preview).toHaveCount(0);
+    await expect(thumbnail).toBeFocused();
+    await article.getByRole('button', { name: '修改校对', exact: true }).click();
     const correction = page.getByRole('dialog', { name: '校对此场', exact: true });
     await expect(correction.getByLabel(/^带出金额/)).toHaveValue('3,314,221');
     await expect(correction.getByLabel(/^假账扣除/)).toHaveValue('314,221');
@@ -118,7 +118,7 @@ test('真实截图经过 WebView2 原生二进制桥：本地 OCR、去重、原
     await desktop.close();
     desktop = await launch();
     page = desktop.page;
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     await expect(page.getByRole('navigation').getByRole('button', { name: '战绩记录', exact: true })).toHaveCount(0);
     const restored = await page.evaluate(async ({ orderId, bossId }) => {
       const bridge = window.pwtools!;
@@ -132,7 +132,7 @@ test('真实截图经过 WebView2 原生二进制桥：本地 OCR、去重、原
     await page.getByRole('button', { name: '查看团团老板订单', exact: true }).click();
     const restoredArticle = page.getByRole('article', { name: '桌面第一笔护航订单', exact: true });
     await restoredArticle.getByRole('button', { name: '桌面第一笔护航场次账本', exact: true }).click();
-    await restoredArticle.getByRole('button', { name: '查看此场', exact: true }).click();
+    await restoredArticle.getByRole('button', { name: '修改校对', exact: true }).click();
     const restoredScene = page.getByRole('dialog', { name: '校对此场', exact: true });
     await expect(restoredScene.getByLabel(/^带出金额/)).toHaveValue('3,314,221');
     await expect(restoredScene.getByLabel(/^假账扣除/)).toHaveValue('314,221');
@@ -150,7 +150,7 @@ test('真实截图经过 WebView2 原生二进制桥：本地 OCR、去重、原
     expect(unmatched.record.outcome).toBe('unknown');
     expect(unmatched.record.confirmed).toBe(false);
     expect(unmatched.stats.total_amount).toBe(0);
-    expect(unmatched.stats.draft_count).toBe(1);
+    expect(unmatched.stats.draft_count).toBe(0);
     expect(unmatched.order.remaining_quantity).toBe(5000000);
   } finally {
     await desktop?.close().catch(() => {});

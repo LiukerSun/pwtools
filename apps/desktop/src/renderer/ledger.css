@@ -167,6 +167,18 @@
 .ledger-entry-action:hover { background: var(--panel-soft); color: var(--blue); }
 .ledger-entry-action.delete:hover { color: #d88a84; }
 .ledger-entry-action:disabled { opacity: .45; }
+.ledger-entry-media { flex: 0 0 108px; align-self: center; }
+.ledger-screenshot-retry { display: block; margin: 4px auto 0; font-size: 11px; }
+.ledger-screenshot { position: relative; display: block; width: 108px; height: 61px; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-soft); color: var(--muted); cursor: zoom-in; transition: border-color 140ms var(--motion); }
+.ledger-screenshot:hover { border-color: var(--blue); }
+.ledger-screenshot:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.ledger-screenshot:disabled { cursor: default; opacity: .55; }
+.ledger-screenshot > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.ledger-screenshot-zoom { position: absolute; inset: auto 0 0; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 3px; background: rgb(0 0 0 / .72); color: #fff; font-size: 10px; line-height: 1.2; }
+.ledger-screenshot-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; height: 100%; font-size: 11px; }
+.ledger-screenshot-loading { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 180px; color: var(--muted); }
+.ledger-screenshot-large { max-height: 78vh; overflow: auto; }
+.ledger-screenshot-large > img { display: block; width: 100%; height: auto; }
 .ledger-history-pagination { display: flex; justify-content: end; align-items: center; gap: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
 .ledger-history-pagination > span { color: var(--subtle); font-size: 12px; }
 .ledger-history-empty { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--subtle); padding: 12px 0 5px; line-height: 1.8; }
@@ -277,6 +289,9 @@
   .ledger-order-balance > div:first-child > strong { font-size: 24px; }
   .ledger-order-balance .ledger-order-completed { text-align: left; }
   .ledger-entry { flex-wrap: wrap; }
+  .ledger-entry.has-screenshot .ledger-entry-copy { flex-basis: calc(100% - 24px); }
+  .ledger-entry-media { margin-left: 23px; }
+  .ledger-entry.has-screenshot .ledger-entry-actions { margin-left: auto; align-self: center; }
   .ledger-entry-quantity { margin-left: 23px; flex: 1; }
   .ledger-history-heading > span { display: none; }
   .ledger-onboarding { min-height: 340px; border: 0; border-radius: 0; }

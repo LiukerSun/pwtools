@@ -7,10 +7,14 @@ mod model;
 mod ocr;
 mod order_templates;
 mod rate_limit;
+mod rentals;
 mod retired_fields;
+mod settlements;
 pub mod storage;
 pub mod storage_migration;
+mod transfers;
 mod validation;
+pub mod weapon_build_codes;
 
 use std::{sync::Arc, time::Duration};
 
@@ -40,6 +44,7 @@ pub struct AppState {
     auth_rate_limiter: AuthRateLimiter,
     ocr: OcrService,
     storage: storage::Storage,
+    build_code_provider: weapon_build_codes::BuildCodeProvider,
 }
 
 impl AppState {
@@ -49,6 +54,7 @@ impl AppState {
         let auth_rate_limiter = AuthRateLimiter::with_trusted_proxy_ips(&proxies)?;
         let mut state = Self::with_services(pool, &ocr_url, storage::Storage::from_env()?).await?;
         state.auth_rate_limiter = auth_rate_limiter;
+        state.build_code_provider = weapon_build_codes::BuildCodeProvider::from_env()?;
         Ok(state)
     }
 
@@ -58,6 +64,14 @@ impl AppState {
 
     pub fn storage(&self) -> storage::Storage {
         self.storage.clone()
+    }
+
+    pub fn with_build_code_provider(
+        mut self,
+        provider: weapon_build_codes::BuildCodeProvider,
+    ) -> Self {
+        self.build_code_provider = provider;
+        self
     }
 
     pub async fn with_services(
@@ -79,6 +93,7 @@ impl AppState {
             auth_rate_limiter: AuthRateLimiter::default(),
             ocr: OcrService::new(ocr_url)?,
             storage,
+            build_code_provider: weapon_build_codes::BuildCodeProvider::disabled()?,
         })
     }
 }
@@ -116,6 +131,31 @@ pub fn router(state: AppState, allowed_origins: Vec<HeaderValue>) -> Router {
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/me", get(auth::me))
         .route(
+            "/api/weapon-build-codes",
+            get(weapon_build_codes::list).post(weapon_build_codes::create),
+        )
+        .route(
+            "/api/weapon-build-codes/lookup",
+            post(weapon_build_codes::lookup),
+        )
+        .route(
+            "/api/weapon-build-codes/{id}",
+            axum::routing::patch(weapon_build_codes::update).delete(weapon_build_codes::delete),
+        )
+        .route(
+            "/api/rental-accounts",
+            get(rentals::list_accounts).post(rentals::create_account),
+        )
+        .route(
+            "/api/rental-sessions",
+            get(rentals::list_sessions).post(rentals::create_session),
+        )
+        .route(
+            "/api/rental-sessions/{id}/return",
+            axum::routing::patch(rentals::return_session),
+        )
+        .route("/api/rental-sessions/{id}/analysis", get(rentals::analysis))
+        .route(
             "/api/order-templates",
             get(order_templates::list).post(order_templates::create),
         )
@@ -133,6 +173,10 @@ pub fn router(state: AppState, allowed_origins: Vec<HeaderValue>) -> Router {
         )
         .route("/api/bosses/{id}/orders", post(ledger::create_order))
         .route("/api/orders", get(ledger::list_orders))
+        .route("/api/orders/{id}/archive", post(settlements::archive))
+        .route("/api/orders/{id}/restore", post(settlements::restore))
+        .route("/api/orders/{id}/transfer", post(transfers::create))
+        .route("/api/orders/{id}/transfer-action", post(transfers::action))
         .route(
             "/api/orders/{id}",
             get(ledger::get_order).patch(ledger::update_order),
@@ -158,6 +202,7 @@ pub fn router(state: AppState, allowed_origins: Vec<HeaderValue>) -> Router {
                 .delete(matches::delete),
         )
         .route("/api/matches/{id}/image", get(matches::original_image))
+        .route("/api/matches/{id}/thumbnail", get(matches::thumbnail_image))
         .route("/api/matches/{id}/recognize", post(matches::recognize))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES));
@@ -168,12 +213,18 @@ pub fn router(state: AppState, allowed_origins: Vec<HeaderValue>) -> Router {
         )
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(RequestBodyLimitLayer::new(1024 * 1024));
+    let image_json_routes = Router::new()
+        .route("/api/matches/preview-local", post(matches::preview_local))
+        .route("/api/matches/confirm", post(matches::confirm_image))
+        .layer(DefaultBodyLimit::max(18 * 1024 * 1024))
+        .layer(RequestBodyLimitLayer::new(18 * 1024 * 1024));
     let upload_routes = Router::new()
+        .route("/api/matches/preview", post(matches::preview))
         .route("/api/matches", post(matches::upload))
         .route("/api/matches/local", post(matches::upload_local))
         .layer(DefaultBodyLimit::max(ocr::MAX_IMAGE_BYTES))
         .layer(RequestBodyLimitLayer::new(ocr::MAX_IMAGE_BYTES));
-    normal_routes.merge(upload_routes).merge(local_recognition_routes)
+    normal_routes.merge(upload_routes).merge(local_recognition_routes).merge(image_json_routes)
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "NOT_FOUND", "接口不存在") })
         .method_not_allowed_fallback(|| async { ApiError::new(StatusCode::METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "此接口不支持该请求方式") })
         .layer(middleware::from_fn(normalize_body_limit))

@@ -17,7 +17,7 @@ services:
       retries: 20
     mem_limit: 384m
   api:
-    image: pwtools-api:0.9.12
+    image: pwtools-api:0.9.40-beta
     build: ../services/api
     restart: unless-stopped
     environment:
@@ -28,6 +28,7 @@ services:
       TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-172.30.94.1}
       RUST_LOG: info,tower_http=info
       OCR_URL: http://ocr:8090
+      BUILD_CODE_API_TOKEN: ${BUILD_CODE_API_TOKEN:-}
       OSS_REGION: ${OSS_REGION:?Set OSS region}
       OSS_ENDPOINT: ${OSS_ENDPOINT:?Set OSS endpoint}
       OSS_BUCKET: ${OSS_BUCKET:?Set OSS bucket}
@@ -48,7 +49,7 @@ services:
       start_period: 10s
     mem_limit: 640m
   ocr:
-    image: pwtools-ocr:0.9.4
+    image: pwtools-ocr:0.9.38
     build: ../services/ocr
     restart: unless-stopped
     expose: ["8090"]

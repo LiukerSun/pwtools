@@ -1,5 +1,7 @@
 .update-settings .section-heading { justify-content: space-between; gap: 16px; }
 .update-version { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.update-channel { border-top: 1px solid var(--border); margin-top: 20px; padding-top: 18px; }
+.update-channel > p { margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .update-status { display: inline-flex; align-items: center; gap: 8px; }
 .update-status > svg { color: var(--mint); flex-shrink: 0; }
 .update-settings .settings-row { align-items: flex-start; gap: 20px; }

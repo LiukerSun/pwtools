@@ -498,8 +498,11 @@ async fn upgrade(pool: &PgPool) {
     sqlx::query("INSERT INTO ledger_entries(id,user_id,order_id,kind,quantity,idempotency_key) VALUES($1,$2,$3,'progress',45,$4)").bind(Uuid::new_v4()).bind(owner).bind(order).bind(Uuid::new_v4()).execute(pool).await.expect("old event");
     let before = revision(pool, owner).await;
     sqlx::query("UPDATE account_oss_archives SET uploaded_revision=revision,lease_token=$2,leased_until=now()+interval '1 minute' WHERE user_id=$1").bind(owner).bind(lease).execute(pool).await.expect("active old immutable archive");
-    MIGRATOR.run(pool).await.expect("008 upgrade");
-    assert_eq!(revision(pool, owner).await, before + 1);
+    MIGRATOR
+        .run(pool)
+        .await
+        .expect("template and rental upgrades");
+    assert_eq!(revision(pool, owner).await, before + 2);
     let preserved: (i64, Option<Uuid>) = sqlx::query_as(
         "SELECT uploaded_revision,lease_token FROM account_oss_archives WHERE user_id=$1",
     )
@@ -514,11 +517,15 @@ async fn upgrade(pool: &PgPool) {
             .expect("stale immutable revision")
             .is_none()
     );
-    let snapshot = load_snapshot(pool, owner, before + 1)
+    let snapshot = load_snapshot(pool, owner, before + 2)
         .await
         .expect("new shape")
         .expect("old owner");
     assert_eq!(snapshot["order_templates"], json!([]));
+    assert_eq!(snapshot["rental_accounts"], json!([]));
+    assert_eq!(snapshot["rental_sessions"], json!([]));
+    assert!(snapshot["orders"][0]["price_cents"].is_null());
+    assert!(snapshot["entries"][0]["rental_session_id"].is_null());
     assert_eq!(snapshot["orders"][0]["target_quantity"], 120);
     assert_eq!(snapshot["entries"][0]["quantity"], 45);
     assert!(!snapshot.to_string().contains("private-sentinel"));

@@ -413,7 +413,7 @@ async fn run_flow(app: Router, pool: PgPool) {
         &app,
         "PATCH",
         &failed_path,
-        Some(json!({"outcome":"failed","failure_extra_amount":0,"confirmed":false})),
+        Some(json!({"outcome":"failed","failure_extra_amount":0})),
         Some(token),
     )
     .await;
@@ -555,11 +555,11 @@ async fn run_flow(app: Router, pool: PgPool) {
         )
         .await
         .0,
-        StatusCode::OK
+        StatusCode::UNPROCESSABLE_ENTITY
     );
     assert_eq!(
         balance(&app, token, escort_id).await["remaining_quantity"],
-        11_000_000
+        8_000_000
     );
     assert_eq!(
         call(
@@ -1044,7 +1044,7 @@ async fn current_order_types(
         app,
         "PATCH",
         &path,
-        Some(json!({"amount":900,"fake_amount":100,"outcome":"success","confirmed":false,"item_obtained":null})),
+        Some(json!({"amount":900,"fake_amount":100,"outcome":"success","item_obtained":null})),
         Some(token),
     )
     .await;
@@ -1375,7 +1375,8 @@ async fn retired_orders_are_hidden_and_preserved(
             .as_array()
             .expect("raw evidence")
             .iter()
-            .any(|item| item["id"] == match_id.to_string() && item["item_obtained"] == true)
+            .all(|item| item["id"] != match_id.to_string()),
+        "unconfirmed evidence is excluded from new snapshots; historical backups remain unchanged"
     );
     let original_bytes: Vec<u8> = sqlx::query_scalar("SELECT image_bytes FROM matches WHERE id=$1")
         .bind(match_id)

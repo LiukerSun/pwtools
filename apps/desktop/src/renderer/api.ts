@@ -1,3 +1,4 @@
+import { confirmedImagePayload } from './matchImagePayload';
 import type { ApiErrorData, AuthResponse, DesktopBridge, User } from '../shared/contracts';
 
 export class ClientError extends Error {
@@ -72,6 +73,17 @@ function orderQuery(orderId?: string): string {
 }
 
 const browserBridge: DesktopBridge = {
+  listBuildCodes: () => request('/weapon-build-codes'),
+  createBuildCode: input => request('/weapon-build-codes', { method: 'POST', body: JSON.stringify(input) }),
+  updateBuildCode: (id, input) => request(`/weapon-build-codes/${ledgerId(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  deleteBuildCode: id => request(`/weapon-build-codes/${ledgerId(id)}`, { method: 'DELETE' }),
+  lookupBuildCode: input => request('/weapon-build-codes/lookup', { method: 'POST', body: JSON.stringify(input) }),
+  listRentalAccounts: () => request('/rental-accounts'),
+  createRentalAccount: input => request('/rental-accounts', { method: 'POST', body: JSON.stringify(input) }),
+  listRentalSessions: () => request('/rental-sessions'),
+  createRentalSession: input => request('/rental-sessions', { method: 'POST', body: JSON.stringify(input) }),
+  returnRentalSession: (id, input) => request(`/rental-sessions/${ledgerId(id)}/return`, { method: 'PATCH', body: JSON.stringify(input) }),
+  rentalAnalysis: id => request(`/rental-sessions/${ledgerId(id)}/analysis`),
   health: () => request('/health'),
   register: async (input) => {
     const response = await request<AuthResponse>('/auth/register', { method: 'POST', body: JSON.stringify(input) });
@@ -95,10 +107,12 @@ const browserBridge: DesktopBridge = {
   appInfo: async () => ({ version: '浏览器预览', apiUrl: browserApiUrl, persistentSession: false }),
   getUpdateState: async () => { throw new ClientError('DESKTOP_ONLY', '版本更新仅在桌面应用中可用。'); },
   checkForUpdates: async () => { throw new ClientError('DESKTOP_ONLY', '版本更新仅在桌面应用中可用。'); },
+  setBetaParticipation: async () => { throw new ClientError('DESKTOP_ONLY', '测试体验仅在桌面应用中可用。'); },
   downloadUpdate: async () => { throw new ClientError('DESKTOP_ONLY', '版本更新仅在桌面应用中可用。'); },
   installUpdate: async () => { throw new ClientError('DESKTOP_ONLY', '版本更新仅在桌面应用中可用。'); },
+  confirmMatch: (image, input, record) => request('/matches/confirm', { method: 'POST', body: JSON.stringify(confirmedImagePayload(image, input, record)) }, 100_000),
   uploadMatch: async (input) => {
-    const response = await send('/matches', {
+    const response = await send('/matches/preview', {
       method: 'POST',
       headers: { 'Content-Type': input.content_type, 'X-File-Name': encodeURIComponent(input.name), ...(input.order_id ? { 'X-Order-Id': ledgerId(input.order_id) } : {}) },
       body: new Uint8Array(input.data).buffer,
@@ -115,12 +129,20 @@ const browserBridge: DesktopBridge = {
     const response = await send(`${matchPath(id)}/image`);
     return { content_type: response.headers.get('content-type') || 'image/png', data: new Uint8Array(await response.arrayBuffer()) };
   },
+  matchThumbnail: async id => {
+    const response = await send(`${matchPath(id)}/thumbnail`);
+    return { content_type: response.headers.get('content-type') || 'image/webp', data: new Uint8Array(await response.arrayBuffer()) };
+  },
   matchSettings: () => request('/matches/settings'),
   updateMatchSettings: input => request('/matches/settings', { method: 'PATCH', body: JSON.stringify(input) }),
   listBosses: (search = '') => request(`/bosses?q=${encodeURIComponent(search)}`),
   getBoss: id => request(ledgerPath('bosses', id)),
   createBoss: input => request('/bosses', { method: 'POST', body: JSON.stringify(input) }),
   updateBoss: (id, input) => request(ledgerPath('bosses', id), { method: 'PATCH', body: JSON.stringify(input) }),
+  archiveOrder: (id, input) => request(`${ledgerPath('orders', id)}/archive`, { method: 'POST', body: JSON.stringify(input) }),
+  restoreOrder: (id, settlementId) => request(`${ledgerPath('orders', id)}/restore`, { method: 'POST', body: JSON.stringify({ settlement_id: settlementId }) }),
+  transferOrder: (id, input) => request(`${ledgerPath('orders', id)}/transfer`, { method: 'POST', body: JSON.stringify(input) }),
+  transferOrderAction: (id, input) => request(`${ledgerPath('orders', id)}/transfer-action`, { method: 'POST', body: JSON.stringify(input) }),
   listOrders: bossId => request(`/orders${bossId ? `?boss_id=${encodeURIComponent(ledgerId(bossId))}` : ''}`),
   getOrder: id => request(ledgerPath('orders', id)),
   createOrder: (bossId, input) => request(`${ledgerPath('bosses', bossId)}/orders`, { method: 'POST', body: JSON.stringify(input) }),

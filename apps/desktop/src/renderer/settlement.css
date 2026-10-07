@@ -1,0 +1,14 @@
+.settlement-form { display: grid; gap: 16px; }
+.settlement-form p { margin: 0; line-height: 1.7; }
+.settlement-original { display: grid; grid-template-columns: 1fr auto; gap: 7px; padding: 14px; background: var(--blue-soft); border-radius: 8px; }
+.settlement-original small { grid-column: 1 / -1; color: var(--text-secondary); }
+.settlement-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.settlement-history { padding: 14px 0; border-block: 1px solid var(--border); margin-bottom: 12px; }
+.settlement-history-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.settlement-history summary { cursor: pointer; font-size: 12px; }
+.settlement-history-item { display: grid; gap: 6px; padding: 12px 0; font-size: 12px; }
+.settlement-history-item span { color: var(--text-secondary); }
+.settlement-history-item p { margin: 0; white-space: pre-wrap; }
+.ledger-order-status.archived { color: var(--text-secondary); background: var(--bg-hover); }
+.ledger-archive-section { margin-top: 20px; }
+.ledger-settlement-shortcuts { display: flex; gap: 6px; flex-wrap: wrap; padding: 4px 12px 10px; justify-content: flex-end; }

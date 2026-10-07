@@ -53,7 +53,7 @@ test('WebView2 原生桥、安全边界、DPAPI 会话重启恢复与退出', as
     await page.getByLabel(/^密码/).fill(password);
     await page.getByLabel(/^确认密码/).fill(password);
     await page.getByRole('button', { name: '注册', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     const rendererSecrets = await page.evaluate(async () => {
       const bridge = window.pwtools!;
       const user = await bridge.me();
@@ -77,9 +77,9 @@ test('WebView2 原生桥、安全边界、DPAPI 会话重启恢复与退出', as
     await desktop.close();
     desktop = await launch();
     page = desktop.page;
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '账号菜单', exact: true })).toBeVisible();
-    await expect(page.getByRole('navigation').getByRole('button')).toHaveCount(3);
+    await expect(page.getByRole('navigation').getByRole('button')).toHaveCount(4);
     await expect(page.getByRole('button', { name: '战绩记录', exact: true })).toHaveCount(0);
     expect(await page.evaluate(() => Object.keys(window.pwtools!))).not.toContain('updateProfile');
     expect(await page.evaluate(async () => (await window.pwtools!.me()).email)).toBe(email);

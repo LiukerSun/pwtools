@@ -28,6 +28,7 @@ services:
       TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-}
       RUST_LOG: ${RUST_LOG:-info,tower_http=info}
       OCR_URL: http://ocr:8090
+      BUILD_CODE_API_TOKEN: ${BUILD_CODE_API_TOKEN:-}
       OSS_REGION: ${OSS_REGION:-cn-beijing}
       OSS_ENDPOINT: ${OSS_ENDPOINT:-oss-cn-beijing.aliyuncs.com}
       OSS_BUCKET: ${OSS_BUCKET:?Set OSS_BUCKET in .env}

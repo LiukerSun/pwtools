@@ -4,6 +4,8 @@ import { notifications } from '@mantine/notifications';
 import { Check, ChevronDown, Clock3, Pencil, Settings2, ShieldCheck, Target, Trash2 } from 'lucide-react';
 import type { Boss, FailureMode, FailureTrigger, OrderInput, OrderKind, OrderTemplate, ServiceOrder } from '../shared/contracts';
 import { api, errorInfo } from './api';
+import OrderFinanceFields from './OrderFinanceFields';
+import { MAX_CENTS } from './rentalPresentation';
 import { MAX_QUANTITY, failureSummary, modeLabels, orderInput, orderLabels, quantityText, triggerLabels } from './orderPresentation';
 
 type NavigationState = { dirty: boolean; busy: boolean };
@@ -63,6 +65,7 @@ export default function OrderSetup({ boss, order, template, saveAsTemplate, onCl
   const [managerOpen, setManagerOpen] = useState(false);
   const [managerState, setManagerState] = useState<NavigationState>({ dirty: false, busy: false });
   const [busy, setBusy] = useState(false);
+  const [rentalReady, setRentalReady] = useState(false);
   const [error, setError] = useState('');
   const [discardOpen, setDiscardOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -102,7 +105,15 @@ export default function OrderSetup({ boss, order, template, saveAsTemplate, onCl
   };
   const save = async () => {
     if (submitting.current) return;
+    if (!isTemplate && !rentalReady) { setError('请先读取账号状态，读取失败时请重试。'); return; }
     const values = normalized(input);
+    if (isTemplate) {
+      delete values.price_cents; delete values.participant_count; delete values.commission_bps; delete values.default_rental_session_id;
+    } else if (values.price_cents != null) {
+      values.participant_count ??= 1; values.commission_bps ??= 0;
+      if (!Number.isSafeInteger(values.price_cents) || values.price_cents < 0 || values.price_cents > MAX_CENTS || !Number.isInteger(values.participant_count) || values.participant_count < 1 || values.participant_count > 100 || !Number.isInteger(values.commission_bps) || values.commission_bps < 0 || values.commission_bps > 10_000) { setError('请填写有效的订单总价、接单人数（1–100）和抽成（0–100%）。'); return; }
+    } else if (!order || order.price_cents != null) { setError('请填写订单总价；免费订单填写 0。'); return; }
+    else { values.price_cents = null; values.participant_count = null; values.commission_bps = null; }
     const message = validation(values);
     if (message) { setError(message); return; }
     if (isTemplate && (!templateName.trim() || templateName.trim().length > 80)) { setError('模板名称须为 1–80 字。'); return; }
@@ -141,14 +152,15 @@ export default function OrderSetup({ boss, order, template, saveAsTemplate, onCl
           {(chosen || isTemplate) && <>
             {!order && !isTemplate && <div className="ledger-setup-heading"><span>本次约定</span><small>{boss?.display_name}</small></div>}
             {isTemplate && <TextInput label="模板名称" required maxLength={80} value={templateName} disabled={busy} onChange={(event) => setTemplateName(event.currentTarget.value)} autoFocus />}
-            {locked && <Alert color="blue" title="约定已锁定">已有记录，可改名称、备注{input.kind === 'escort' && input.failure_mode !== 'shortfall' ? '和后续追加金额' : ''}。</Alert>}
-            {(order || isTemplate) && <fieldset className="ledger-kind-options" aria-label="订单类型" disabled={busy || locked}><legend>订单类型</legend>{kinds.map((kind) => <label key={kind} className={input.kind === kind ? 'selected' : ''}><input type="radio" aria-label={orderLabels[kind]} name="edit-order-kind" value={kind} checked={input.kind === kind} onChange={() => { if (kind !== input.kind) guard(() => { setInput({ ...defaults(kind), title: input.title, note: input.note }); setError(''); }); }} /><span><strong>{orderLabels[kind]}</strong><small>{descriptions[kind]}</small></span></label>)}</fieldset>}
+            {locked && <Alert color="blue" title="约定已锁定">已有记录，可改收入、默认用号、名称、备注{input.kind === 'escort' && input.failure_mode !== 'shortfall' ? '和后续追加金额' : ''}。</Alert>}
+            {(order || isTemplate) && <fieldset className="ledger-kind-options" aria-label="订单类型" disabled={busy || locked}><legend>订单类型</legend>{kinds.map((kind) => <label key={kind} className={input.kind === kind ? 'selected' : ''}><input type="radio" aria-label={orderLabels[kind]} name="edit-order-kind" value={kind} checked={input.kind === kind} onChange={() => { if (kind !== input.kind) guard(() => { setInput({ ...input, ...defaults(kind), title: input.title, note: input.note }); setError(''); }); }} /><span><strong>{orderLabels[kind]}</strong><small>{descriptions[kind]}</small></span></label>)}</fieldset>}
             {input.kind === 'hourly' ? <fieldset className="ledger-time-fields"><legend>约定陪玩时长 <span>*</span></legend><div className="ledger-form-two"><NumberInput label="小时" aria-label="约定陪玩时长小时" min={0} max={150_000_000_000} allowDecimal={false} hideControls disabled={busy || locked} value={Math.floor(input.target_quantity / 60) || ''} onChange={(value) => patch({ target_quantity: numeric(value) * 60 + input.target_quantity % 60 })} /><NumberInput label="分钟" aria-label="约定陪玩时长分钟" min={0} max={59} allowDecimal={false} hideControls disabled={busy || locked} value={input.target_quantity % 60} onChange={(value) => patch({ target_quantity: Math.floor(input.target_quantity / 60) * 60 + numeric(value) })} /></div></fieldset> : <>
               {!isTemplate && !order && !boss?.game_name && <Alert color="orange">请先填写老板的截图昵称。</Alert>}
               <NumberInput label={input.kind === 'single_round' ? '单场净带出目标（哈夫币）' : '约定带出金额（哈夫币）'} required min={0} max={MAX_QUANTITY} allowDecimal={false} thousandSeparator="," hideControls disabled={busy || locked} value={input.target_quantity || ''} onChange={(value) => patch({ target_quantity: numeric(value) })} />
               <div className="ledger-amount-presets" aria-label="约定金额快捷填写">{[1, 3, 5, 10].map((amount) => <button type="button" key={amount} disabled={busy || locked} onClick={() => patch({ target_quantity: amount * 1_000_000 })}>{amount * 100} 万</button>)}</div>
             </>}
             <TextInput label="订单名称" placeholder={suggestedTitle(input)} maxLength={120} value={input.title} disabled={busy} onChange={(event) => patch({ title: event.currentTarget.value })} />
+            {!isTemplate && <OrderFinanceFields input={input} onChange={patch} disabled={busy} required={!order || order.price_cents != null} onError={onError} onRentalReadyChange={setRentalReady} />}
             {input.kind === 'escort' && <section className="ledger-setup-summary" aria-label="本次订单约定"><strong>{failureSummary(input)}</strong></section>}
             <button type="button" className="ledger-advanced-toggle" aria-label={`高级约定与备注${locked ? ' · 部分已锁定' : ''}`} aria-expanded={advanced} aria-controls="order-advanced-fields" onClick={() => setAdvanced((value) => !value)}><ChevronDown size={14} />更多设置</button>
             <Collapse expanded={advanced}><div className="ledger-advanced-fields" id="order-advanced-fields">
@@ -163,7 +175,7 @@ export default function OrderSetup({ boss, order, template, saveAsTemplate, onCl
             {isTemplate && <p className="ledger-rule-copy">模板修改不影响已有订单。</p>}
           </>}
         </div>
-        <div className="ledger-modal-actions"><span>{dirty ? '未保存' : ''}</span><Button type="button" variant="default" disabled={busy || managerState.busy} onClick={() => guard(onClose)}>取消</Button><Button type="submit" leftSection={<Check size={14} />} loading={busy} disabled={!chosen && !isTemplate}>{isTemplate ? '保存模板' : order ? '保存配置' : '创建订单'}</Button></div>
+        <div className="ledger-modal-actions"><span>{dirty ? '未保存' : ''}</span><Button type="button" variant="default" disabled={busy || managerState.busy} onClick={() => guard(onClose)}>取消</Button><Button type="submit" leftSection={<Check size={14} />} loading={busy} disabled={(!chosen && !isTemplate) || (!isTemplate && !rentalReady)}>{isTemplate ? '保存模板' : order ? '保存配置' : '创建订单'}</Button></div>
       </form>
     </Modal>
     <Modal opened={discardOpen} onClose={() => { pendingAction.current = null; setDiscardOpen(false); }} title="尚有未保存修改" centered size="sm"><div className="ledger-confirm-copy"><p>放弃本次未保存的修改？</p><div className="ledger-confirm-actions"><Button variant="default" onClick={() => { pendingAction.current = null; setDiscardOpen(false); }}>继续填写</Button><Button color="orange" onClick={() => { const action = pendingAction.current; pendingAction.current = null; setDiscardOpen(false); action?.(); }}>放弃修改</Button></div></div></Modal>

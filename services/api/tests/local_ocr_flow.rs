@@ -191,7 +191,7 @@ async fn flow(app: Router) {
     assert_eq!(duplicate.1["record"]["amount"], 123456);
 
     // Successful and failed local retries both retain a user's explicit edits.
-    assert_eq!(json_request(&app, "PATCH", &path, json!({"player_name":"人工昵称","outcome":"success","amount":654,"fake_amount":0,"confirmed":false,"note":"人工校对"}), token).await.0, StatusCode::OK);
+    assert_eq!(json_request(&app, "PATCH", &path, json!({"player_name":"人工昵称","outcome":"success","amount":654,"fake_amount":0,"note":"人工校对"}), token).await.0, StatusCode::OK);
     payload["recognition"]["players"][1]["amount"] = json!(777);
     payload["recognition"]["raw_text"] = json!("x".repeat(20_000));
     let (_, retried) = json_request(&app, "POST", &local_path, payload.clone(), token).await;

@@ -18,17 +18,22 @@ export async function openLedger(page: Page) {
   const session: { token: string } = await response.json();
   const headers = { Authorization: `Bearer ${session.token}` };
   const get = async <T>(path: string): Promise<T> => {
-    const response = await page.request.get(`http://localhost:8080/api${path}`, { headers });
+    const response = await page.request.get(`${process.env.PWTOOLS_TEST_API_URL || 'http://localhost:8080/api'}${path}`, { headers });
     expect(response.status(), path).toBe(200);
     return response.json();
   };
   const post = async <T>(path: string, data: object): Promise<T> => {
-    const response = await page.request.post(`http://localhost:8080/api${path}`, { headers, data });
+    const response = await page.request.post(`${process.env.PWTOOLS_TEST_API_URL || 'http://localhost:8080/api'}${path}`, { headers, data });
     expect(response.status(), await response.text()).toBe(201);
     return response.json();
   };
-  await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
-  return { get, post, errors };
+  await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
+  const patch = async <T>(path: string, data: object): Promise<T> => {
+    const response = await page.request.patch(`${process.env.PWTOOLS_TEST_API_URL || 'http://localhost:8080/api'}${path}`, { headers, data });
+    expect(response.status(), await response.text()).toBe(200);
+    return response.json();
+  };
+  return { get, post, patch, errors };
 }
 
 export async function addBoss(page: Page, name: string, gameName = '小桃知晚'): Promise<Boss> {
@@ -62,6 +67,7 @@ export async function createOrder(page: Page, title: string, kind: OrderKind, co
   await expect(dialog.getByRole('button', { name: '创建订单', exact: true })).toBeDisabled();
   await dialog.getByRole('radio', { name: `使用${labels[kind]}模板`, exact: true }).check();
   await dialog.getByLabel(/^订单名称/).fill(title);
+  await dialog.getByLabel('订单总价（元）').fill('200');
   await configure(dialog);
   const saved = page.waitForResponse(response => /\/api\/bosses\/[^/]+\/orders$/.test(response.url()) && response.request().method() === 'POST');
   await dialog.getByRole('button', { name: '创建订单', exact: true }).click();
@@ -82,12 +88,13 @@ export async function openRound(page: Page, title: string, manual = true) {
 
 export async function confirmRound(page: Page, dialog: Locator) {
   const saved = page.waitForResponse(response => /\/api\/(?:orders\/[^/]+\/entries|matches\/[^/]+)$/.test(response.url()) && ['POST', 'PATCH'].includes(response.request().method()));
-  await dialog.getByRole('button', { name: '确认入账', exact: true }).click();
+  await dialog.getByRole('button', { name: /^(确认入账|保存校对)$/ }).click();
   const response = await saved;
   expect(response.status(), await response.text()).toBeGreaterThanOrEqual(200);
   expect(response.status()).toBeLessThan(300);
   await expect(dialog).toHaveCount(0);
-  return response.json();
+  const value = await response.json();
+  return value.record ?? value;
 }
 
 export async function openOrderAction(page: Page, title: string, action: string) {

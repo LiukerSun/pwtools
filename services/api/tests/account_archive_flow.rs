@@ -96,7 +96,7 @@ async fn check_archive(pool: PgPool) {
     for excluded in [
         "password_hash",
         "private-password-sentinel",
-        "sessions",
+        "\"sessions\":",
         "token",
         "image_bytes",
         "archive-b@example.test",

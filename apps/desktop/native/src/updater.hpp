@@ -12,12 +12,14 @@ namespace pwtools {
 class Updater {
  public:
   Updater(std::string api_url, std::string current_version,
-          std::filesystem::path data_directory, std::filesystem::path install_directory);
+          std::filesystem::path data_directory, std::filesystem::path install_directory,
+          std::string current_channel = "stable");
   ~Updater();
   Updater(const Updater&) = delete;
   Updater& operator=(const Updater&) = delete;
   nlohmann::json State() const;
   void Check();
+  void SetBetaParticipation(bool enabled);
   void DownloadUpdate();
   void Install();
 

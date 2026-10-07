@@ -1,3 +1,4 @@
+import { confirmedImagePayload } from './matchImagePayload.ts';
 import type { DesktopBridge, MatchImage, MatchUploadResponse } from '../shared/contracts';
 
 export interface NativeRequest {
@@ -78,7 +79,7 @@ export function createNativeBridge(webview: NativeWebView): {
       const timer = setTimeout(() => {
         if (!pending.delete(id)) return;
         reject(new NativeBridgeError('TIMEOUT', '操作超时，请确认保存结果后重试。'));
-      }, method === 'captureScreen' ? screenCaptureTimeout : method === 'uploadMatch' || method === 'recognizeMatch' ? ocrTimeout : ordinaryTimeout);
+      }, method === 'captureScreen' ? screenCaptureTimeout : method === 'uploadMatch' || method === 'recognizeMatch' || method === 'confirmMatch' ? ocrTimeout : ordinaryTimeout);
       pending.set(id, { resolve: value => resolve(value as T), reject, timer });
       try {
         webview.postMessage({ id, method, args });
@@ -125,6 +126,11 @@ export function createNativeBridge(webview: NativeWebView): {
   webview.addEventListener('message', receive);
 
   const bridge: DesktopBridge = {
+    listBuildCodes: () => invoke('listBuildCodes'),
+    createBuildCode: input => invoke('createBuildCode', [input]),
+    updateBuildCode: (id, input) => invoke('updateBuildCode', [id, input]),
+    deleteBuildCode: id => invoke('deleteBuildCode', [id]),
+    lookupBuildCode: input => invoke('lookupBuildCode', [input]),
     health: () => invoke('health'),
     register: input => invoke('register', [input]),
     login: input => invoke('login', [input]),
@@ -152,6 +158,7 @@ export function createNativeBridge(webview: NativeWebView): {
     appInfo: () => invoke('appInfo'),
     getUpdateState: () => invoke('getUpdateState'),
     checkForUpdates: () => invoke('checkForUpdates'),
+    setBetaParticipation: enabled => invoke('setBetaParticipation', [enabled]),
     downloadUpdate: () => invoke('downloadUpdate'),
     installUpdate: () => invoke('installUpdate'),
     onCloseRequested: handler => {
@@ -178,6 +185,7 @@ export function createNativeBridge(webview: NativeWebView): {
       }
       return () => { importHandlers.delete(handler); };
     },
+    confirmMatch: (image, input, record) => invoke('confirmMatch', [confirmedImagePayload(image, input, record)]),
     uploadMatch: input => {
       const { data, ...metadata } = input;
       return invoke<MatchUploadResponse>('uploadMatch', [{ ...metadata, data_base64: bytesToBase64(data) }]);
@@ -189,12 +197,23 @@ export function createNativeBridge(webview: NativeWebView): {
     recognizeMatch: id => invoke('recognizeMatch', [id]),
     deleteMatch: id => invoke('deleteMatch', [id]),
     matchImage: async id => imageFromNative(await invoke('matchImage', [id])),
+    matchThumbnail: async id => imageFromNative(await invoke('matchThumbnail', [id])),
     matchSettings: () => invoke('matchSettings'),
     updateMatchSettings: input => invoke('updateMatchSettings', [input]),
+    listRentalAccounts: () => invoke('listRentalAccounts'),
+    createRentalAccount: input => invoke('createRentalAccount', [input]),
+    listRentalSessions: () => invoke('listRentalSessions'),
+    createRentalSession: input => invoke('createRentalSession', [input]),
+    returnRentalSession: (id, input) => invoke('returnRentalSession', [id, input]),
+    rentalAnalysis: id => invoke('rentalAnalysis', [id]),
     listBosses: (search = '') => invoke('listBosses', [search]),
     getBoss: id => invoke('getBoss', [id]),
     createBoss: input => invoke('createBoss', [input]),
     updateBoss: (id, input) => invoke('updateBoss', [id, input]),
+    archiveOrder: (id, input) => invoke('archiveOrder', [id, input]),
+    transferOrder: (id, input) => invoke('transferOrder', [id, input]),
+    transferOrderAction: (id, input) => invoke('transferOrderAction', [id, input]),
+    restoreOrder: (id, settlementId) => invoke('restoreOrder', [id, { settlement_id: settlementId }]),
     listOrders: bossId => invoke('listOrders', [bossId ?? null]),
     getOrder: id => invoke('getOrder', [id]),
     createOrder: (bossId, input) => invoke('createOrder', [bossId, input]),

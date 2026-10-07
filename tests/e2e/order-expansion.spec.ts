@@ -38,7 +38,7 @@ async function openMockLedger(page: Page, kind: OrderKind, options: { drafts?: M
   const errors: string[] = [];
   const unexpectedRequests: string[] = [];
   const historyRequests = new Set<string>();
-  const expectedHistoryRequests = kind === 'hourly' ? 1 : 2;
+  const expectedHistoryRequests = 1;
   let releaseEntries = () => {};
   const entriesGate = new Promise<void>(resolve => { releaseEntries = resolve; });
   let releaseDrafts = () => {};
@@ -53,6 +53,7 @@ async function openMockLedger(page: Page, kind: OrderKind, options: { drafts?: M
     const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' };
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
     const fulfill = (json: unknown) => route.fulfill({ json, headers });
+    if (pathname === '/api/rental-sessions') return fulfill({ items: [] });
     if (pathname === '/api/health') return fulfill({ status: 'ok', database: 'connected' });
     if (pathname === '/api/auth/login') return fulfill({
       token: 'mock-layout-session', user: { id: bossId, email: 'layout@example.test', created_at: timestamp },
@@ -169,7 +170,7 @@ for (const kind of ['hourly', 'escort'] as const) {
   }
 }
 
-test('护航订单展开后显示已有待确认截图和继续填写入口', async ({ page }) => {
+test('订单展开不再展示旧的未确认截图', async ({ page }) => {
   const draft: MatchRecord = {
     id: '44444444-4444-4444-8444-444444444444', order_id: orderId, boss_id: bossId,
     boss_player_name: '未开局老板', original_name: '尚未确认.png', image_content_type: 'image/png',
@@ -184,27 +185,18 @@ test('护航订单展开后显示已有待确认截图和继续填写入口', as
   const article = orderArticle(page, ledger.order.title);
   await article.getByRole('button', { name: `${ledger.order.title}场次账本`, exact: true }).click();
   const drafts = article.getByRole('region', { name: '待确认截图', exact: true });
-  await expect(drafts).toBeVisible();
-  await expect(drafts.getByRole('article', { name: '尚未确认.png待确认截图', exact: true })).toBeVisible();
-  await expect(drafts.getByRole('button', { name: '继续填写', exact: true })).toBeVisible();
-  await expect(drafts.getByRole('button', { name: '继续填写', exact: true })).toBeEnabled();
+  await expect(drafts).toHaveCount(0);
   await expect(article.getByText('暂无记录', { exact: true })).toBeVisible();
   expect(ledger.errors).toEqual([]);
   expect(ledger.unexpectedRequests).toEqual([]);
 });
 
-test('待确认截图失败可重试，空结果移除错误区并保留暂无记录', async ({ page }) => {
+test('旧的草稿接口故障不影响场次流水', async ({ page }) => {
   const ledger = await openMockLedger(page, 'escort', { failDraftsOnce: true });
   ledger.releaseHistory();
   const article = orderArticle(page, ledger.order.title);
   await article.getByRole('button', { name: `${ledger.order.title}场次账本`, exact: true }).click();
   const drafts = article.getByRole('region', { name: '待确认截图', exact: true });
-  await expect(drafts.getByText('待确认截图未加载', { exact: true })).toBeVisible();
-  await expect(drafts).toContainText('截图加载暂时失败，请重试。');
-  const retry = drafts.getByRole('button', { name: '重新加载截图', exact: true });
-  await expect(retry).toBeVisible();
-  await expect(article.getByText('暂无记录', { exact: true })).toBeVisible();
-  await retry.click();
   await expect(drafts).toHaveCount(0);
   await expect(article.getByText('暂无记录', { exact: true })).toBeVisible();
   expect(ledger.errors).toEqual([]);

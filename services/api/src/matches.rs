@@ -8,6 +8,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Utc};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -25,11 +26,12 @@ use crate::{
     storage_migration::{self, api_storage_error},
 };
 
-const RECORD_COLUMNS: &str = "id, order_id, failure_extra_amount, boss_id, boss_player_name, original_name, image_content_type, image_sha256, image_width, image_height, image_size, image_object_key, players, raw_text, warnings, ocr_status, player_name, outcome, amount, fake_amount, net_amount, credited_amount, item_obtained, manual_result_edited, failure_default_snapshot, confirmed, played_at, note, created_at, updated_at";
+const RECORD_COLUMNS: &str = "id, rental_session_id, order_id, failure_extra_amount, boss_id, boss_player_name, original_name, image_content_type, image_sha256, image_width, image_height, image_size, image_object_key, players, raw_text, warnings, ocr_status, player_name, outcome, amount, fake_amount, net_amount, credited_amount, item_obtained, manual_result_edited, failure_default_snapshot, confirmed, played_at, note, created_at, updated_at";
 const LIST_SCOPE: &str = "user_id=$1 AND (($3::uuid IS NOT NULL AND order_id=$3) OR ($3::uuid IS NULL AND boss_id=$2 AND order_id IS NULL)) AND ($4::boolean IS NULL OR confirmed=$4)";
 
 #[derive(Serialize, FromRow)]
 pub struct MatchRecord {
+    pub rental_session_id: Option<Uuid>,
     pub id: Uuid,
     pub order_id: Option<Uuid>,
     pub failure_extra_amount: i64,
@@ -152,6 +154,8 @@ fn default_page_size() -> i64 {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatchPatch {
+    #[serde(default, deserialize_with = "nullable_patch")]
+    rental_session_id: Option<Option<Uuid>>,
     order_id: Option<Uuid>,
     failure_extra_amount: Option<i64>,
     player_name: Option<String>,
@@ -289,7 +293,14 @@ pub async fn upload(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<UploadResponse>), ApiError> {
-    upload_inner(state, session, headers, body, false).await
+    upload_inner(
+        state,
+        session,
+        headers,
+        body,
+        UploadMode::Legacy { local: false },
+    )
+    .await
 }
 
 pub async fn upload_local(
@@ -298,7 +309,213 @@ pub async fn upload_local(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<UploadResponse>), ApiError> {
-    upload_inner(state, session, headers, body, true).await
+    upload_inner(
+        state,
+        session,
+        headers,
+        body,
+        UploadMode::Legacy { local: true },
+    )
+    .await
+}
+
+// Preview requests are memory-only: no match row, OSS original or account archive.
+pub async fn preview(
+    State(state): State<AppState>,
+    session: AuthenticatedUser,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<(StatusCode, Json<UploadResponse>), ApiError> {
+    upload_inner(
+        state,
+        session,
+        headers,
+        body,
+        UploadMode::Preview {
+            local: false,
+            recognition: None,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageInput {
+    name: String,
+    content_type: String,
+    data_base64: String,
+    order_id: Uuid,
+    recognition: Option<OcrResponse>,
+    input: Option<MatchPatch>,
+}
+
+fn decode_input(input: &ImageInput) -> Result<(HeaderMap, Bytes), ApiError> {
+    if input.name.chars().count() > 255
+        || input.data_base64.len() > crate::ocr::MAX_IMAGE_BYTES * 4 / 3 + 4
+    {
+        return Err(ApiError::validation("截图名称过长或图片超过 12 MiB"));
+    }
+    let bytes = STANDARD
+        .decode(&input.data_base64)
+        .map_err(|_| ApiError::validation("截图编码不正确"))?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&input.content_type)
+            .map_err(|_| ApiError::validation("图片格式不正确"))?,
+    );
+    headers.insert(
+        "x-file-name",
+        HeaderValue::from_str(
+            &percent_encoding::utf8_percent_encode(&input.name, percent_encoding::NON_ALPHANUMERIC)
+                .to_string(),
+        )
+        .map_err(|_| ApiError::validation("图片名称不正确"))?,
+    );
+    headers.insert(
+        "x-order-id",
+        HeaderValue::from_str(&input.order_id.to_string()).unwrap(),
+    );
+    Ok((headers, Bytes::from(bytes)))
+}
+
+pub async fn preview_local(
+    State(state): State<AppState>,
+    session: AuthenticatedUser,
+    ApiJson(input): ApiJson<ImageInput>,
+) -> Result<(StatusCode, Json<UploadResponse>), ApiError> {
+    let (headers, bytes) = decode_input(&input)?;
+    let recognition = input
+        .recognition
+        .map(Recognition::from_response)
+        .transpose()
+        .map_err(ApiError::validation)?;
+    upload_inner(
+        state,
+        session,
+        headers,
+        Ok(bytes),
+        UploadMode::Preview {
+            local: true,
+            recognition,
+        },
+    )
+    .await
+}
+
+pub async fn confirm_image(
+    State(state): State<AppState>,
+    session: AuthenticatedUser,
+    ApiJson(input): ApiJson<ImageInput>,
+) -> Result<(StatusCode, Json<UploadResponse>), ApiError> {
+    let (headers, bytes) = decode_input(&input)?;
+    let patch = input
+        .input
+        .ok_or_else(|| ApiError::validation("请确认本场结果后再保存"))?;
+    if patch.confirmed != Some(true) || patch.order_id != Some(input.order_id) {
+        return Err(ApiError::validation("截图必须确认入账并关联当前订单"));
+    }
+    let recognition = input
+        .recognition
+        .map(Recognition::from_response)
+        .transpose()
+        .map_err(ApiError::validation)?;
+    upload_inner(
+        state,
+        session,
+        headers,
+        Ok(bytes),
+        UploadMode::Confirm {
+            recognition,
+            input: Box::new(patch),
+        },
+    )
+    .await
+}
+
+struct PreviewImage<'a> {
+    id: Uuid,
+    order_id: Option<Uuid>,
+    name: String,
+    mime: &'a str,
+    digest: String,
+    width: i32,
+    height: i32,
+    size: usize,
+    failure: i64,
+}
+
+fn preview_record(
+    image: PreviewImage<'_>,
+    settings: MatchSettings,
+    mut recognition: Recognition,
+) -> MatchRecord {
+    let matched = recognition.matching_player(&settings.boss_player_name);
+    if matched.is_none() && recognition.completed {
+        recognition.warnings.push(format!(
+            "未识别到老板昵称「{}」，请人工核对。",
+            settings.boss_player_name
+        ));
+    }
+    let (player_name, outcome, amount) = matched.unwrap_or((String::new(), Outcome::Unknown, None));
+    // Failure text is shared with legacy OCR; preview originals have not been saved.
+    for warning in &mut recognition.warnings {
+        *warning = warning.replace("原图已保存", "原图仅在本次录入中保留");
+    }
+    let now = Utc::now();
+    MatchRecord {
+        id: image.id,
+        rental_session_id: None,
+        order_id: image.order_id,
+        failure_extra_amount: image.failure,
+        boss_id: settings.boss_id,
+        boss_player_name: settings.boss_player_name,
+        original_name: image.name,
+        image_content_type: image.mime.into(),
+        image_sha256: image.digest,
+        image_width: image.width,
+        image_height: image.height,
+        image_size: image.size as i32,
+        image_object_key: None,
+        players: DbJson(recognition.players),
+        raw_text: recognition.raw_text,
+        warnings: DbJson(recognition.warnings),
+        ocr_status: if recognition.completed {
+            "completed"
+        } else {
+            "failed"
+        }
+        .into(),
+        player_name,
+        outcome: outcome.as_str().into(),
+        amount,
+        fake_amount: None,
+        net_amount: None,
+        credited_amount: None,
+        item_obtained: None,
+        manual_result_edited: false,
+        failure_default_snapshot: Some(image.failure),
+        confirmed: false,
+        played_at: None,
+        note: String::new(),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+enum UploadMode {
+    Legacy {
+        local: bool,
+    },
+    Preview {
+        local: bool,
+        recognition: Option<Recognition>,
+    },
+    Confirm {
+        recognition: Option<Recognition>,
+        input: Box<MatchPatch>,
+    },
 }
 
 async fn upload_inner(
@@ -306,8 +523,13 @@ async fn upload_inner(
     session: AuthenticatedUser,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
-    local: bool,
+    mode: UploadMode,
 ) -> Result<(StatusCode, Json<UploadResponse>), ApiError> {
+    let (local, preview, supplied, confirm) = match mode {
+        UploadMode::Legacy { local } => (local, false, None, None),
+        UploadMode::Preview { local, recognition } => (local, true, recognition, None),
+        UploadMode::Confirm { recognition, input } => (true, false, recognition, Some(*input)),
+    };
     // Take a settings snapshot before image validation or awaiting the external OCR service.
     let order_id = headers
         .get("x-order-id")
@@ -321,6 +543,9 @@ async fn upload_inner(
         .transpose()?;
     let (settings, failure_default) = if let Some(order_id) = order_id {
         let order = ledger::binding(&state, session.user.id, order_id).await?;
+        if confirm.is_none() {
+            ledger::ensure_writable(&order)?;
+        }
         if order.kind == "hourly" {
             return Err(ApiError::validation(
                 "小时单请记录服务时长；战绩截图请关联场次订单",
@@ -377,7 +602,7 @@ async fn upload_inner(
         return Ok((
             StatusCode::OK,
             Json(UploadResponse {
-                record,
+                record: finish_duplicate(&state, session.user.id, record, confirm).await?,
                 duplicate: true,
             }),
         ));
@@ -387,6 +612,35 @@ async fn upload_inner(
         .validate_image(bytes.clone(), content_type)
         .await?;
     let id = Uuid::new_v4();
+    if preview {
+        let recognition = match supplied {
+            Some(value) => value,
+            None if !local => state.ocr.recognize(bytes.clone(), content_type).await,
+            None => Recognition::failure("本地识别暂时不可用，你可以手工填写或重新识别。"),
+        };
+        let record = preview_record(
+            PreviewImage {
+                id,
+                order_id,
+                name: original_name,
+                mime: content_type,
+                digest,
+                width,
+                height,
+                size: bytes.len(),
+                failure: failure_default,
+            },
+            settings,
+            recognition,
+        );
+        return Ok((
+            StatusCode::OK,
+            Json(UploadResponse {
+                record,
+                duplicate: false,
+            }),
+        ));
+    }
     let image_object_key = if state.storage.is_oss() {
         let key = storage::image_key(
             session.user.id,
@@ -438,7 +692,7 @@ async fn upload_inner(
         return Ok((
             StatusCode::OK,
             Json(UploadResponse {
-                record,
+                record: finish_duplicate(&state, session.user.id, record, confirm).await?,
                 duplicate: true,
             }),
         ));
@@ -462,9 +716,9 @@ async fn upload_inner(
         .bind(height)
         .bind(bytes.len() as i32)
         .bind(DbJson(vec![if local {
-            "本地识别尚未完成；原图已保存，可稍后重新识别。".to_owned()
+            "本地识别尚未完成；请在 30 分钟内确认入账，未确认截图会自动清理。".to_owned()
         } else {
-            "自动识别尚未完成；原图已保存，可稍后重新识别。".to_owned()
+            "自动识别尚未完成；请在 30 分钟内确认入账，未确认截图会自动清理。".to_owned()
         }]))
         .bind(&settings.boss_id)
         .bind(&settings.boss_player_name)
@@ -475,7 +729,16 @@ async fn upload_inner(
         .fetch_optional(&mut *transaction)
         .await
         .map_err(|_| ApiError::internal("match upload persistence failed"))?;
-    if let Some(inserted) = inserted {
+    if let Some(mut inserted) = inserted {
+        if let Some(recognition) = supplied {
+            sqlx::query("UPDATE matches SET players=$3,raw_text=$4,warnings=$5,ocr_status=$6 WHERE user_id=$1 AND id=$2")
+                .bind(session.user.id).bind(id).bind(DbJson(recognition.players)).bind(recognition.raw_text).bind(DbJson(recognition.warnings))
+                .bind(if recognition.completed { "completed" } else { "failed" }).execute(&mut *transaction).await.map_err(|_| ApiError::internal("confirmed OCR persistence failed"))?;
+        }
+        if let Some(patch) = confirm {
+            inserted = patch_in(&mut transaction, session.user.id, inserted, patch).await?;
+        }
+
         if let Some(key) = &image_object_key {
             storage_migration::retain_original(&mut transaction, key).await?;
         }
@@ -504,7 +767,7 @@ async fn upload_inner(
         return Ok((
             StatusCode::OK,
             Json(UploadResponse {
-                record,
+                record: finish_duplicate(&state, session.user.id, record, confirm).await?,
                 duplicate: true,
             }),
         ));
@@ -534,6 +797,41 @@ async fn upload_inner(
             duplicate: false,
         }),
     ))
+}
+
+async fn finish_duplicate(
+    state: &AppState,
+    owner: Uuid,
+    record: MatchRecord,
+    confirm: Option<MatchPatch>,
+) -> Result<MatchRecord, ApiError> {
+    // An uncertain confirmation retry returns the original result and never overwrites later edits.
+    let Some(input) = confirm.filter(|_| !record.confirmed) else {
+        return Ok(record);
+    };
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("duplicate confirmation transaction failed"))?;
+    let row = sqlx::query_as::<_, MatchRecord>(&format!(
+        "SELECT {RECORD_COLUMNS} FROM matches WHERE user_id=$1 AND id=$2 FOR UPDATE"
+    ))
+    .bind(owner)
+    .bind(record.id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal("duplicate confirmation lookup failed"))?
+    .ok_or_else(not_found)?;
+    let result = if row.confirmed {
+        row
+    } else {
+        patch_in(&mut tx, owner, row, input).await?
+    };
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("duplicate confirmation commit failed"))?;
+    Ok(result)
 }
 
 pub async fn list(
@@ -620,13 +918,34 @@ pub async fn update(
         .map_err(|_| ApiError::internal("match update transaction failed"))?;
     let query =
         format!("SELECT {RECORD_COLUMNS} FROM matches WHERE user_id = $1 AND id = $2 FOR UPDATE");
-    let mut row = sqlx::query_as::<_, MatchRecord>(&query)
+    let row = sqlx::query_as::<_, MatchRecord>(&query)
         .bind(session.user.id)
         .bind(id)
         .fetch_optional(&mut *transaction)
         .await
         .map_err(|_| ApiError::internal("match update lookup failed"))?
         .ok_or_else(not_found)?;
+    let updated = patch_in(&mut transaction, session.user.id, row, input).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("match update commit failed"))?;
+    Ok(Json(updated))
+}
+
+async fn patch_in(
+    connection: &mut sqlx::PgConnection,
+    owner: Uuid,
+    mut row: MatchRecord,
+    input: MatchPatch,
+) -> Result<MatchRecord, ApiError> {
+    if input.confirmed == Some(false) {
+        return Err(ApiError::validation(
+            "已移除草稿和撤销入账；请修改校对或删除误录对局",
+        ));
+    }
+    crate::retired_fields::item_result(input.retired_item_result.flatten())?;
+    let id = row.id;
     let previous_money = (
         row.outcome.clone(),
         row.amount,
@@ -634,6 +953,9 @@ pub async fn update(
         row.order_id,
     );
     let was_confirmed = row.confirmed;
+    if let Some(rental) = input.rental_session_id {
+        row.rental_session_id = rental;
+    }
     row.manual_result_edited |= input.player_name.is_some()
         || input.outcome.is_some()
         || input.amount.is_some()
@@ -643,7 +965,7 @@ pub async fn update(
         row.order_id = Some(order_id);
     }
     let order_binding = if let Some(order_id) = row.order_id {
-        let mut order = ledger::lock_order(&mut transaction, session.user.id, order_id).await?;
+        let mut order = ledger::lock_order(&mut *connection, owner, order_id).await?;
         if order.kind == "hourly" || order.boss_key != row.boss_id {
             return Err(ApiError::validation("截图只能关联同一老板的场次订单"));
         }
@@ -691,6 +1013,16 @@ pub async fn update(
         }
         row.note = note.to_owned();
     }
+    if row.rental_session_id.is_some() && row.order_id.is_none() {
+        return Err(ApiError::validation("请先选择本场订单"));
+    }
+    crate::rentals::validate_reference(
+        &mut *connection,
+        owner,
+        row.rental_session_id,
+        Some(row.played_at.unwrap_or(row.created_at)),
+    )
+    .await?;
     let net = ledger::money(row.amount, row.fake_amount, row.confirmed)?;
     if let Some(order) = &order_binding {
         let changed = previous_money
@@ -730,10 +1062,10 @@ pub async fn update(
         }
     }
     let query = format!(
-        "UPDATE matches SET player_name = $3, outcome = $4, amount = $5, confirmed = $6, played_at = $7, note = $8, order_id=$9, failure_extra_amount=$10, fake_amount=$11,manual_result_edited=$12,failure_default_snapshot=$13,updated_at = now() WHERE user_id = $1 AND id = $2 RETURNING {RECORD_COLUMNS}"
+        "UPDATE matches SET player_name = $3, outcome = $4, amount = $5, confirmed = $6, played_at = $7, note = $8, order_id=$9, failure_extra_amount=$10, fake_amount=$11,manual_result_edited=$12,failure_default_snapshot=$13,rental_session_id=$14,updated_at = now() WHERE user_id = $1 AND id = $2 RETURNING {RECORD_COLUMNS}"
     );
     let updated = sqlx::query_as::<_, MatchRecord>(&query)
-        .bind(session.user.id)
+        .bind(owner)
         .bind(id)
         .bind(row.player_name)
         .bind(row.outcome)
@@ -746,25 +1078,22 @@ pub async fn update(
         .bind(row.fake_amount)
         .bind(row.manual_result_edited)
         .bind(row.failure_default_snapshot)
-        .fetch_one(&mut *transaction)
+        .bind(row.rental_session_id)
+        .fetch_one(&mut *connection)
         .await
         .map_err(|_| ApiError::internal("match update failed"))?;
     if let Some(order_id) = row.order_id {
-        ledger::validate_order(&mut transaction, session.user.id, order_id).await?;
+        ledger::validate_order(&mut *connection, owner, order_id).await?;
     }
     storage_migration::enqueue_snapshot(
-        &mut transaction,
-        session.user.id,
+        &mut *connection,
+        owner,
         id,
         updated.image_object_key.as_deref(),
         &updated,
     )
     .await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| ApiError::internal("match update commit failed"))?;
-    Ok(Json(updated))
+    Ok(updated)
 }
 
 pub async fn original_image(
@@ -796,6 +1125,52 @@ pub async fn original_image(
         HeaderValue::from_static("private, no-store"),
     );
     Ok((headers, bytes).into_response())
+}
+
+pub async fn thumbnail_image(
+    State(state): State<AppState>,
+    session: AuthenticatedUser,
+    RecordId(id): RecordId,
+) -> Result<Response, ApiError> {
+    let record = find(&state, session.user.id, id).await?;
+    validate_record_order(&state, session.user.id, &record).await?;
+    let bytes = if let Some(key) = record.image_object_key.filter(|_| state.storage.is_oss()) {
+        storage::checked_record_key(&key, session.user.id, id).map_err(api_storage_error)?;
+        state
+            .storage
+            .get_thumbnail(&key)
+            .await
+            .map_err(api_storage_error)?
+    } else {
+        // Local development and not-yet-migrated records have no OSS object to process.
+        let (_, bytes, _) = stored_image(&state, session.user.id, id).await?;
+        tokio::task::spawn_blocking(move || {
+            let image = image::load_from_memory(&bytes)
+                .map_err(|_| ApiError::internal("stored image decode failed"))?;
+            let thumbnail = if image.width() > storage::THUMBNAIL_WIDTH
+                || image.height() > storage::THUMBNAIL_HEIGHT
+            {
+                image.thumbnail(storage::THUMBNAIL_WIDTH, storage::THUMBNAIL_HEIGHT)
+            } else {
+                image
+            };
+            let mut output = std::io::Cursor::new(Vec::new());
+            thumbnail
+                .write_to(&mut output, image::ImageFormat::WebP)
+                .map_err(|_| ApiError::internal("thumbnail encode failed"))?;
+            Ok::<_, ApiError>(output.into_inner())
+        })
+        .await
+        .map_err(|_| ApiError::internal("thumbnail task failed"))??
+    };
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/webp"),
+            (header::CACHE_CONTROL, "private, no-store"),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 #[derive(FromRow)]
@@ -845,6 +1220,17 @@ async fn update_recognition(
         .begin()
         .await
         .map_err(|_| ApiError::internal("recognition update transaction failed"))?;
+    let order_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT order_id FROM matches WHERE user_id=$1 AND id=$2 FOR UPDATE")
+            .bind(user_id)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal("recognition record lock failed"))?
+            .ok_or_else(not_found)?;
+    if let Some(order_id) = order_id {
+        ledger::lock_order(&mut tx, user_id, order_id).await?;
+    }
     if !recognition.completed {
         // An unavailable OCR service provides no replacement data. Keep both manual
         // corrections and the last successful OCR reference, even on an unconfirmed draft.

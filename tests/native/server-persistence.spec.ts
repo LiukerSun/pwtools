@@ -37,7 +37,7 @@ test('真实原生桥在独立进程及全新客户端目录间同步账号、�
     await page.getByLabel(/^密码/).fill(password);
     await page.getByLabel(/^确认密码/).fill(password);
     await page.getByRole('button', { name: '注册', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     const user = await page.evaluate(() => window.pwtools!.me());
     expect(user.email).toBe(email);
 
@@ -59,6 +59,7 @@ test('真实原生桥在独立进程及全新客户端目录间同步账号、�
     const orderForm = page.getByRole('dialog', { name: '新建订单', exact: true });
     await orderForm.getByRole('radio', { name: '使用小时单模板', exact: true }).check();
     await orderForm.getByLabel(/^订单名称/).fill(orderTitle);
+    await orderForm.getByLabel('订单总价（元）').fill('200');
     await orderForm.getByLabel('约定陪玩时长小时', { exact: true }).fill('2');
     await orderForm.getByRole('button', { name: '创建订单', exact: true }).click();
     await expect(orderForm).toHaveCount(0);
@@ -93,7 +94,7 @@ test('真实原生桥在独立进程及全新客户端目录间同步账号、�
     await secondPage.getByLabel(/^邮箱/).fill(email);
     await secondPage.getByLabel(/^密码/).fill(password);
     await secondPage.getByRole('button', { name: '登录', exact: true }).click();
-    await expect(secondPage.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(secondPage.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     expect(await secondPage.evaluate(() => window.pwtools!.me())).toEqual(user);
     expect(await secondPage.evaluate(bossId => window.pwtools!.getBoss(bossId), boss.id)).toMatchObject({ id: boss.id, display_name: bossName, game_id: boss.game_id, game_name: boss.game_name, notes: bossNote, remaining_minutes: 75 });
     expect(await secondPage.evaluate(orderId => window.pwtools!.getOrder(orderId), order.id)).toMatchObject({ id: order.id, boss_id: boss.id, title: orderTitle, kind: 'hourly', target_quantity: 120, completed_quantity: 45, remaining_quantity: 75, record_count: 1 });

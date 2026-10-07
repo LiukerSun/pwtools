@@ -25,6 +25,7 @@
 .round-source > .mantine-Alert-root { margin-top: 13px; font-size: 12px; line-height: 1.7; }
 .round-source-caption { margin: 10px 0; color: var(--subtle); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
 .round-result-fields { display: grid; gap: 15px; }
+.round-results > .rental-account-select { margin-bottom: 15px; }
 .round-fake-field { display: grid; gap: 4px; }
 .round-fake-field > button { justify-self: end; }
 .round-net-preview { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; align-items: center; padding: 13px 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--input); }

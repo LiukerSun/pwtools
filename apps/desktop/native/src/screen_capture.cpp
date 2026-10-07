@@ -269,7 +269,7 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
   Restore restore;
   Completion completion;
   RECT desktop{};
-  bool originalIconic = false, active = false, finishing = false, shown = false, ready = false, backgroundServed = false;
+  bool originalIconic = false, originalVisible = false, active = false, finishing = false, shown = false, ready = false, backgroundServed = false;
   uint64_t generation = 0;
   std::vector<BYTE> background;
   std::vector<RECT> windowBounds;
@@ -298,6 +298,7 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
     registration.hCursor = LoadCursorW(nullptr, IDC_CROSS); registration.lpszClassName = OverlayClass;
     if (!RegisterClassExW(&registration) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) CaptureFailure();
     originalIconic = IsIconic(mainWindow) != FALSE;
+    originalVisible = IsWindowVisible(mainWindow) != FALSE;
     completion = std::move(callback); active = true; finishing = false; shown = false; ready = false; backgroundServed = false;
     pendingResult.reset(); ++generation;
     try {
@@ -305,12 +306,12 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
                                 WS_POPUP, desktop.left, desktop.top, width, height, nullptr, nullptr,
                                 registration.hInstance, this);
       if (!overlay) CaptureFailure();
-      if (!originalIconic) ShowWindow(mainWindow, SW_MINIMIZE);
+      if (originalVisible && !originalIconic) ShowWindow(mainWindow, SW_MINIMIZE);
       DwmFlush();
       if (!SetTimer(overlay, StartTimer, CaptureDelayMs, nullptr) || !SetTimer(overlay, ExpiryTimer, CaptureTimeoutMs, nullptr)) CaptureFailure();
     } catch (...) {
       auto error = std::current_exception(); Stop(false, {});
-      if (!originalIconic && IsWindow(mainWindow) && restore) restore();
+      if (originalVisible && !originalIconic && IsWindow(mainWindow) && restore) restore();
       std::rethrow_exception(error);
     }
   }
@@ -337,7 +338,7 @@ class ScreenCapture::State final : public std::enable_shared_from_this<State> {
     if (overlay) { HWND target = std::exchange(overlay, nullptr); DestroyWindow(target); }
     shown = ready = backgroundServed = false;
     if (notify && IsWindow(mainWindow)) {
-      if ((result.png || !originalIconic) && restore) restore();
+      if ((result.png || (originalVisible && !originalIconic)) && restore) restore();
       if (callback) callback(std::move(result));
     }
   }

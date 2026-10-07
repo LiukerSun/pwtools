@@ -135,6 +135,9 @@ async function installImportFixture(app: NativeApplication) {
   const hourly = order(firstBoss, '仅时长手工订单', 'hourly');
   const escort = order(firstBoss, '甲护航订单', 'escort');
   const single = order(secondBoss, '乙单局订单', 'single_round');
+  const completed: ServiceOrder = { ...order(firstBoss, '已完成护航订单', 'escort'), status: 'completed', completed_quantity: 5000000, remaining_quantity: 0 };
+  const completedSingle: ServiceOrder = { ...order(secondBoss, '已完成单局订单', 'single_round'), status: 'completed', best_round_quantity: 5000000, completed_quantity: 5000000, remaining_quantity: 0 };
+  const archived: ServiceOrder = { ...order(secondBoss, '已归档退款订单', 'escort'), status: 'archived', archived_at: timestamp };
   const record: MatchRecord = {
     id: randomUUID(), order_id: single.id, boss_id: secondBoss.id, boss_player_name: secondBoss.game_name,
     original_name: 'screenshot.png', image_content_type: 'image/png', image_sha256: 'a'.repeat(64), image_width: 1, image_height: 1,
@@ -162,12 +165,14 @@ async function installImportFixture(app: NativeApplication) {
       getOrder: async (id: string) => orders.find(item => item.id === id)!,
       listLedgerEntries: async () => ({ items: [], total: 0, page: 1, page_size: 8 }),
       listMatches: async () => ({ items: [], total: 0, page: 1, page_size: 8 }),
+      listRentalSessions: async () => ({ items: [] }),
       captureScreen: async () => { state.captureCalls++; await bridge.windowControl('restore'); return { name: 'screenshot.png', content_type: 'image/png', data: new Uint8Array(bytes) }; },
       uploadMatch: async (input: MatchUploadInput) => { state.uploads.push({ name: input.name, order_id: input.order_id, data: Array.from(input.data) }); return { record, duplicate: false }; },
       matchImage: async () => ({ content_type: 'image/png', data: new Uint8Array(bytes) }),
       updateMatch: async (id: string, input: MatchUpdateInput) => { state.updates.push({ id, input }); return { ...record, ...input }; },
+      confirmMatch: async (_image, input) => { state.updates.push({ id: record.id, input }); return { record: { ...record, ...input }, duplicate: false }; },
     } satisfies Partial<DesktopBridge>);
-  }, { bosses: [firstBoss, secondBoss], orders: [hourly, escort, single], record, bytes: Array.from(screenshot), timestamp });
+  }, { bosses: [firstBoss, secondBoss], orders: [hourly, escort, single, completed, completedSingle, archived], record, bytes: Array.from(screenshot), timestamp });
   return { firstBoss, secondBoss, hourly, escort, single, record };
 }
 
@@ -189,7 +194,7 @@ test('自定义快捷键持久化，后台截图后选择订单并只上传一�
     await page.getByLabel(/^邮箱/).fill('hotkey-fixture@example.test');
     await page.getByLabel(/^密码/).fill('Isolated-hotkey-password!');
     await page.getByRole('button', { name: '登录', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     await page.getByRole('navigation').getByRole('button', { name: '设置', exact: true }).click();
     const input = page.getByLabel('导入战绩快捷键', { exact: true });
     await input.press('Control+Alt+Shift+F9');
@@ -209,7 +214,7 @@ test('自定义快捷键持久化，后台截图后选择订单并只上传一�
     await page.getByLabel(/^邮箱/).fill('hotkey-fixture@example.test');
     await page.getByLabel(/^密码/).fill('Isolated-hotkey-password!');
     await page.getByRole('button', { name: '登录', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pwtools:import-hotkey')!))).toEqual(PRIMARY);
     await expect(page.getByRole('row', { name: `${fixture.firstBoss.display_name}老板汇总`, exact: true })).toBeVisible();
     await captureImports(app);
@@ -225,8 +230,9 @@ test('自定义快捷键持久化，后台截图后选择订单并只上传一�
     expect((await fixtureState(app)).uploads).toEqual([]);
     await picker.getByLabel('目标订单', { exact: true }).click();
     await expect(page.getByRole('option', { name: /仅时长手工订单/ })).toHaveCount(0);
-    await expect(page.getByRole('option', { name: `${fixture.firstBoss.display_name} / ${fixture.escort.title} · 护航单`, exact: true })).toBeVisible();
-    await page.getByRole('option', { name: `${fixture.secondBoss.display_name} / ${fixture.single.title} · 单局单`, exact: true }).click();
+    await expect(page.getByRole('option').filter({ hasText: /已完成护航订单|已完成单局订单|已归档退款订单/ })).toHaveCount(0);
+    await expect(page.getByRole('option').filter({ hasText: `${fixture.firstBoss.display_name} / ${fixture.escort.title}` })).toBeVisible();
+    await page.getByRole('option').filter({ hasText: `${fixture.secondBoss.display_name} / ${fixture.single.title}` }).click();
     await picker.getByRole('button', { name: '继续导入', exact: true }).click();
     const round = page.getByRole('dialog', { name: '记一场', exact: true });
     await expect(round).toBeVisible();
@@ -262,7 +268,7 @@ test('自定义快捷键持久化，后台截图后选择订单并只上传一�
     await page.getByLabel(/^邮箱/).fill('hotkey-fixture@example.test');
     await page.getByLabel(/^密码/).fill('Isolated-hotkey-password!');
     await page.getByRole('button', { name: '登录', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     await page.getByRole('navigation').getByRole('button', { name: '设置', exact: true }).click();
     await expect(page.getByText('当前：已禁用', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '清除快捷键', exact: true })).toBeDisabled();
@@ -302,7 +308,7 @@ test('截图快捷键保护已有草稿，取消截图不打开导入且识别�
     await page.getByLabel(/^邮箱/).fill('hotkey-fixture@example.test');
     await page.getByLabel(/^密码/).fill('Isolated-hotkey-password!');
     await page.getByRole('button', { name: '登录', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     await nativeCommand(page, 'setImportHotkey', [PRIMARY]);
     await page.getByRole('button', { name: '添加老板', exact: true }).click();
     const draft = page.getByRole('dialog', { name: '添加老板', exact: true });
@@ -338,7 +344,7 @@ test('截图快捷键保护已有草稿，取消截图不打开导入且识别�
     await expect(picker.getByRole('img', { name: '待导入战绩截图', exact: true })).toHaveJSProperty('naturalWidth', 1);
     expect((await fixtureState(app)).uploads).toEqual([]);
     await picker.getByLabel('目标订单', { exact: true }).click();
-    await page.getByRole('option', { name: `${fixture.firstBoss.display_name} / ${fixture.escort.title} · 护航单`, exact: true }).click();
+    await page.getByRole('option').filter({ hasText: `${fixture.firstBoss.display_name} / ${fixture.escort.title}` }).click();
     await picker.getByRole('button', { name: '继续导入', exact: true }).click();
     const round = page.getByRole('dialog', { name: '记一场', exact: true });
     await expect(round).toBeVisible();
@@ -382,7 +388,7 @@ test('截图等待期间重复快捷键不会重拍，取消后可重试且截�
     await page.getByLabel(/^邮箱/).fill('hotkey-fixture@example.test');
     await page.getByLabel(/^密码/).fill('Isolated-hotkey-password!');
     await page.getByRole('button', { name: '登录', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     await nativeCommand(page, 'setImportHotkey', [PRIMARY]);
     await page.evaluate(() => window.pwtools!.windowControl('minimize'));
     await expect.poll(async () => (await app!.windowState()).iconic).toBe(true);
@@ -455,7 +461,7 @@ test('刚登录且订单尚未载入时，快捷键通知仍打开导入并等�
     await page.getByLabel(/^邮箱/).fill('hotkey-fixture@example.test');
     await page.getByLabel(/^密码/).fill('Isolated-hotkey-password!');
     await page.getByRole('button', { name: '登录', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '老板账本', exact: true })).toBeVisible();
+    await expect(page.getByRole('main', { name: '老板账本', exact: true })).toBeVisible();
     // The account is signed in, while both real UI list promises remain blocked.
     await app.notifyRegisteredHotkey(PRIMARY);
     await expect.poll(() => importCount(app!)).toBe(1);
@@ -469,7 +475,7 @@ test('刚登录且订单尚未载入时，快捷键通知仍打开导入并等�
     expect(delayed.orderReads).toBeGreaterThanOrEqual(2);
     await page.evaluate(() => (window as Window & { releaseImportLists?: () => void }).releaseImportLists!());
     await picker.getByLabel('目标订单', { exact: true }).click();
-    await page.getByRole('option', { name: `${fixture.secondBoss.display_name} / ${fixture.single.title} · 单局单`, exact: true }).click();
+    await page.getByRole('option').filter({ hasText: `${fixture.secondBoss.display_name} / ${fixture.single.title}` }).click();
     await picker.getByRole('button', { name: '继续导入', exact: true }).click();
     const round = page.getByRole('dialog', { name: '记一场', exact: true });
     await expect(round.getByLabel(/^带出金额/)).toHaveValue('1,867,449');
